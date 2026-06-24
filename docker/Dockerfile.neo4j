@@ -1,0 +1,27 @@
+# Neo4j 2025.10 Custom Image
+FROM neo4j:2025.10.1
+
+# Copy custom Neo4j configuration
+COPY conf/neo4j.conf /var/lib/neo4j/conf/neo4j.conf
+COPY conf/apoc.conf /var/lib/neo4j/conf/apoc.conf
+
+# Copy custom plugin JARs
+COPY plugins/ /var/lib/neo4j/plugins/
+
+# Fix permissions
+RUN chown -R neo4j:neo4j /var/lib/neo4j/conf/ \
+    && chown -R neo4j:neo4j /var/lib/neo4j/plugins/ \
+    && chmod 640 /var/lib/neo4j/conf/neo4j.conf \
+    && chmod 640 /var/lib/neo4j/conf/apoc.conf \
+    && chmod 644 /var/lib/neo4j/plugins/*.jar 2>/dev/null || true
+
+# Expose default Neo4j ports
+# 7474 - HTTP (Browser UI + REST API)
+# 7473 - HTTPS
+# 7687 - Bolt (driver connections)
+EXPOSE 7474 7473 7687
+
+# Default user
+USER neo4j
+
+# Entrypoint inherited from base image

@@ -1,0 +1,86 @@
+// =============================================================================
+// queries_citizen.txt
+// 10 Cypher queries for the Hamburg CityGML 2.0 LOD2 Neo4j graph
+// Written for citizens curious about Hamburg's 3D city model.
+// Run these in the Neo4j Browser at http://localhost:7474
+// =============================================================================
+
+
+// -----------------------------------------------------------------------------
+// 1. Hamburg at a glance
+//    How many buildings are in the dataset, how tall are they on average,
+//    and how many storeys does a typical Hamburg building have?
+// -----------------------------------------------------------------------------
+
+
+
+// -----------------------------------------------------------------------------
+// 2. What is Hamburg's most common roof material?
+//    Shows the distribution of predicted roof materials across all buildings,
+//    with percentage share.
+// -----------------------------------------------------------------------------
+
+
+
+// -----------------------------------------------------------------------------
+// 3. What are the 20 tallest buildings in Hamburg?
+//    Good to spot landmarks, towers, and high-rises.
+// -----------------------------------------------------------------------------
+
+
+
+// -----------------------------------------------------------------------------
+// 4. Which roof shapes are most popular in Hamburg?
+//    Flat, Gable, Hip, Mono-Pitch — shows the architectural character
+//    of different neighbourhoods.
+// -----------------------------------------------------------------------------
+
+
+
+// -----------------------------------------------------------------------------
+// 5. Solar panel potential — flat-roofed buildings taller than 5 m
+//    Flat roofs on larger buildings are the easiest surfaces for solar
+//    installations. This query finds them and ranks by roof area proxy (height).
+// -----------------------------------------------------------------------------
+
+
+
+// -----------------------------------------------------------------------------
+// 6. How many buildings are there per storey count?
+//    Shows whether Hamburg is a city of single-family houses or
+//    dense apartment blocks.
+// -----------------------------------------------------------------------------
+
+
+
+// -----------------------------------------------------------------------------
+// 7. Which buildings have glass roofs?
+//    Glass roofs typically indicate modern commercial buildings,
+//    train stations, shopping centres, or public spaces.
+// -----------------------------------------------------------------------------
+
+
+
+// -----------------------------------------------------------------------------
+// 8. Hamburg high-rises — buildings taller than 50 metres
+//    How many skyscrapers and tower blocks does Hamburg have?
+// -----------------------------------------------------------------------------
+
+
+
+// -----------------------------------------------------------------------------
+// 9. Buildings with mixed roof materials
+//    Some buildings have more than one material on the roof — interesting for
+//    understanding complex roof landscapes or renovation history.
+// -----------------------------------------------------------------------------
+
+
+
+// -----------------------------------------------------------------------------
+// 10. Buildings in HafenCity — Hamburg's modern harbour district
+//     Filters by bounding box in ETRS89 UTM32 coordinates (metres).
+//     Shows roof materials and height — great for exploring a specific
+//     neighbourhood's architectural character.
+// -----------------------------------------------------------------------------
+
+

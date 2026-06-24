@@ -1,0 +1,14 @@
+# tool|label|metrics
+pykci|run1|elapsed_s=844.09|peak_ws_gb=0.56|pinned_0-7=True|exit=
+pykci|run2|elapsed_s=833.9|peak_ws_gb=0.57|pinned_0-7=True|exit=
+pykci|run3|elapsed_s=825.49|peak_ws_gb=0.49|pinned_0-7=True|exit=
+3dcitykg|run1|elapsed_s=867.02|cpuset=0-7|mem=20g|exit=0
+3dcitykg|run2|elapsed_s=861.31|cpuset=0-7|mem=20g|exit=0
+3dcitykg|run3|elapsed_s=888.13|cpuset=0-7|mem=20g|exit=0
+3dcitydb|run1|elapsed_s=621.59|cpuset=0-7|mem=20g|exit=0
+3dcitydb|run2|elapsed_s=626.95|cpuset=0-7|mem=20g|exit=0
+3dcitydb|run3|elapsed_s=627.99|cpuset=0-7|mem=20g|exit=0
+pykci|memrun|elapsed_s=835.76|peak_ws_gb=0.49|pinned_0-7=True|exit=
+pykci_container|run1|elapsed_s=874.17|cpuset=0-7|mem=20g|exit=0
+pykci_container|run2|elapsed_s=877.64|cpuset=0-7|mem=20g|exit=0
+pykci_container|run3|elapsed_s=867.41|cpuset=0-7|mem=20g|exit=0

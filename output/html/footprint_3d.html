@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>3D Building Models — 100 m Proximity | HafenCity Hamburg</title>
+  <!-- UMD builds: no ES-module CORS issues, works from file:// -->
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/earcut@2.2.4/dist/earcut.dev.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { overflow: hidden; background: #1a2a3a; font-family: system-ui, sans-serif; }
+    #c { display: block; width: 100vw; height: 100vh; }
+
+    #info {
+      position: absolute; top: 16px; left: 16px;
+      background: rgba(10,20,30,.82); color: #eee;
+      padding: 14px 18px; border-radius: 8px;
+      font-size: 13px; line-height: 1.75; max-width: 270px;
+      border: 1px solid rgba(255,255,255,.1);
+    }
+    #info strong { color: #fff; font-size: 14px; }
+    #info .sub { color: #aaa; font-size: 11px; }
+
+    #legend {
+      position: absolute; bottom: 20px; left: 16px;
+      background: rgba(10,20,30,.82); color: #ddd;
+      padding: 11px 16px; border-radius: 8px;
+      font-size: 12px; line-height: 2.1;
+      border: 1px solid rgba(255,255,255,.1);
+    }
+    .dot {
+      display: inline-block; width: 12px; height: 12px;
+      border-radius: 2px; margin-right: 7px; vertical-align: middle;
+    }
+
+    #hint {
+      position: absolute; bottom: 20px; right: 16px;
+      background: rgba(10,20,30,.65); color: rgba(255,255,255,.55);
+      padding: 8px 13px; border-radius: 7px;
+      font-size: 11px; line-height: 1.8; text-align: right;
+    }
+
+    #tooltip {
+      position: fixed;
+      background: rgba(10,20,30,.92); color: #fff;
+      padding: 9px 13px; border-radius: 6px;
+      font-size: 12px; line-height: 1.65;
+      pointer-events: none; display: none;
+      max-width: 260px; z-index: 999;
+      border: 1px solid rgba(255,255,255,.15);
+    }
+    #tooltip strong { font-size: 13px; }
+  </style>
+</head>
+<body>
+
+<canvas id="c"></canvas>
+
+<div id="info">
+  <strong>HafenCity Hamburg — LOD2</strong><br>
+  Reference: <code>DEHHALKA4IB000Cv</code><br>
+  72.9 m · 17 storeys · Flat roof<br>
+  <span class="sub">2 neighbours within 100 m radius</span>
+</div>
+
+<div id="legend">
+  <div><span class="dot" style="background:#66bb6a"></span>Reference building (Cv)</div>
+  <div><span class="dot" style="background:#ef5350"></span>Neighbouring buildings</div>
+  <div><span class="dot" style="background:transparent;border:1px dashed #fff;width:18px;height:0;border-radius:0;margin-right:7px;vertical-align:middle;display:inline-block"></span>100 m radius</div>
+</div>
+
+<div id="hint">
+  Left drag · rotate<br>
+  Scroll · zoom<br>
+  Right drag · pan<br>
+  Hover · details
+</div>
+
+<div id="tooltip"></div>
+
+<script>
+// ── Building data (from Neo4j graph) ─────────────────────────────────────────
+var BUILDINGS = {
+  "DEHHALKA4IB000Cv": {
+    cx: 566443.36, cy: 5932833.0445, gz: 4.941, h: 72.94, storeys: 17,
+    role: "reference",
+    desc: "Trade &amp; Services, 72.9 m, 17 storeys, Flat Roof",
+    surfaces: {
+      GroundSurface: [
+        [[566429.291,5932827.202,4.941],[566432.108,5932828.46,4.941],[566427.163,5932839.533,4.941],
+         [566427.572,5932839.817,4.941],[566450.448,5932855.683,4.941],[566457.79,5932838.884,4.941],
+         [566454.783,5932837.57,4.941],[566459.557,5932826.642,4.941],[566436.623,5932810.406,4.941],
+         [566429.291,5932827.202,4.941]]
+      ],
+      RoofSurface: [
+        [[566453.81,5932839.922,77.881],[566430.838,5932823.659,77.881],[566436.623,5932810.406,77.881],
+         [566459.557,5932826.642,77.881],[566454.783,5932837.57,77.881],[566454.829,5932837.59,77.881],
+         [566453.81,5932839.922,77.881]],
+        [[566432.108,5932828.46,72.229],[566429.291,5932827.202,72.229],[566430.838,5932823.659,72.229],
+         [566453.81,5932839.922,72.229],[566454.829,5932837.59,72.229],[566457.79,5932838.884,72.229],
+         [566450.448,5932855.683,72.229],[566427.572,5932839.817,72.229],[566427.163,5932839.533,72.229],
+         [566432.108,5932828.46,72.229]]
+      ],
+      WallSurface: [
+        [[566429.291,5932827.202,4.941],[566436.623,5932810.406,4.941],[566436.623,5932810.406,77.881],
+         [566430.838,5932823.659,77.881],[566430.838,5932823.659,72.229],[566429.291,5932827.202,72.229],
+         [566429.291,5932827.202,4.941]],
+        [[566454.783,5932837.57,4.941],[566457.79,5932838.884,4.941],[566457.79,5932838.884,72.229],
+         [566454.829,5932837.59,72.229],[566454.829,5932837.59,77.881],[566454.783,5932837.57,77.881],
+         [566454.783,5932837.57,4.941]],
+        [[566427.572,5932839.817,72.229],[566450.448,5932855.683,72.229],[566450.448,5932855.683,4.941],
+         [566427.572,5932839.817,4.941],[566427.572,5932839.817,72.229]],
+        [[566450.448,5932855.683,72.229],[566457.79,5932838.884,72.229],[566457.79,5932838.884,4.941],
+         [566450.448,5932855.683,4.941],[566450.448,5932855.683,72.229]],
+        [[566432.108,5932828.46,72.229],[566427.163,5932839.533,72.229],[566427.163,5932839.533,4.941],
+         [566432.108,5932828.46,4.941],[566432.108,5932828.46,72.229]],
+        [[566459.557,5932826.642,4.941],[566459.557,5932826.642,77.881],[566436.623,5932810.406,77.881],
+         [566436.623,5932810.406,4.941],[566459.557,5932826.642,4.941]],
+        [[566427.163,5932839.533,72.229],[566427.572,5932839.817,72.229],[566427.572,5932839.817,4.941],
+         [566427.163,5932839.533,4.941],[566427.163,5932839.533,72.229]],
+        [[566454.783,5932837.57,4.941],[566454.783,5932837.57,77.881],[566459.557,5932826.642,77.881],
+         [566459.557,5932826.642,4.941],[566454.783,5932837.57,4.941]],
+        [[566453.81,5932839.922,72.229],[566453.81,5932839.922,77.881],[566454.829,5932837.59,77.881],
+         [566454.829,5932837.59,72.229],[566453.81,5932839.922,72.229]],
+        [[566453.81,5932839.922,77.881],[566453.81,5932839.922,72.229],[566430.838,5932823.659,72.229],
+         [566430.838,5932823.659,77.881],[566453.81,5932839.922,77.881]],
+        [[566429.291,5932827.202,72.229],[566432.108,5932828.46,72.229],[566432.108,5932828.46,4.941],
+         [566429.291,5932827.202,4.941],[566429.291,5932827.202,72.229]]
+      ]
+    }
+  },
+  "DEHHALKA4IB000Ce": {
+    cx: 566425.164, cy: 5932883.148, gz: 7.364, h: 32.799, storeys: 9,
+    role: "neighbour",
+    desc: "Residential + Trade &amp; Services, 32.8 m, 9 storeys, Flat Roof",
+    surfaces: {
+      GroundSurface: [
+        [[566448.44,5932886.841,7.364],[566449.417,5932866.51,7.364],[566409.696,5932880.012,7.364],
+         [566400.911,5932899.786,7.364],[566448.44,5932886.841,7.364]]
+      ],
+      RoofSurface: [
+        [[566449.417,5932866.51,40.163],[566448.44,5932886.841,40.163],[566400.911,5932899.786,40.163],
+         [566409.696,5932880.012,40.163],[566449.417,5932866.51,40.163]]
+      ],
+      WallSurface: [
+        [[566400.911,5932899.786,7.364],[566400.911,5932899.786,40.163],[566448.44,5932886.841,40.163],
+         [566448.44,5932886.841,7.364],[566400.911,5932899.786,7.364]],
+        [[566409.696,5932880.012,7.364],[566409.696,5932880.012,40.163],[566400.911,5932899.786,40.163],
+         [566400.911,5932899.786,7.364],[566409.696,5932880.012,7.364]],
+        [[566449.417,5932866.51,7.364],[566449.417,5932866.51,40.163],[566409.696,5932880.012,40.163],
+         [566409.696,5932880.012,7.364],[566449.417,5932866.51,7.364]],
+        [[566449.417,5932866.51,40.163],[566449.417,5932866.51,7.364],[566448.44,5932886.841,7.364],
+         [566448.44,5932886.841,40.163],[566449.417,5932866.51,40.163]]
+      ]
+    }
+  },
+  "DEHHALKA4IB000Cj": {
+    cx: 566491.828, cy: 5932877.324, gz: 8.22, h: 25.93, storeys: 7,
+    role: "neighbour",
+    desc: "Trade &amp; Services, 25.9 m, 7 storeys, Flat Roof",
+    surfaces: {
+      GroundSurface: [
+        [[566500.885,5932861.898,8.22],[566462.554,5932875.89,8.22],[566457.948,5932888.704,8.22],
+         [566456.586,5932892.559,8.22],[566456.519,5932892.75,8.22],[566521.477,5932884.307,8.22],
+         [566527.137,5932871.704,8.22],[566500.885,5932861.898,8.22]]
+      ],
+      RoofSurface: [
+        [[566500.885,5932861.898,34.15],[566527.137,5932871.704,34.15],[566521.477,5932884.307,34.15],
+         [566456.519,5932892.75,34.15],[566456.586,5932892.559,34.15],[566457.948,5932888.704,34.15],
+         [566462.554,5932875.89,34.15],[566500.885,5932861.898,34.15]]
+      ],
+      WallSurface: [
+        [[566462.554,5932875.89,8.22],[566500.885,5932861.898,8.22],[566500.885,5932861.898,34.15],
+         [566462.554,5932875.89,34.15],[566462.554,5932875.89,8.22]],
+        [[566457.948,5932888.704,8.22],[566457.948,5932888.704,34.15],[566456.586,5932892.559,34.15],
+         [566456.586,5932892.559,8.22],[566457.948,5932888.704,8.22]],
+        [[566500.885,5932861.898,8.22],[566527.137,5932871.704,8.22],[566527.137,5932871.704,34.15],
+         [566500.885,5932861.898,34.15],[566500.885,5932861.898,8.22]],
+        [[566456.586,5932892.559,8.22],[566456.586,5932892.559,34.15],[566456.519,5932892.75,34.15],
+         [566456.519,5932892.75,8.22],[566456.586,5932892.559,8.22]],
+        [[566456.519,5932892.75,8.22],[566456.519,5932892.75,34.15],[566521.477,5932884.307,34.15],
+         [566521.477,5932884.307,8.22],[566456.519,5932892.75,8.22]],
+        [[566527.137,5932871.704,8.22],[566521.477,5932884.307,8.22],[566521.477,5932884.307,34.15],
+         [566527.137,5932871.704,34.15],[566527.137,5932871.704,8.22]],
+        [[566462.554,5932875.89,8.22],[566462.554,5932875.89,34.15],[566457.948,5932888.704,34.15],
+         [566457.948,5932888.704,8.22],[566462.554,5932875.89,8.22]]
+      ]
+    }
+  }
+};
+
+// ── Coordinate origin ────────────────────────────────────────────────────────
+var REF_ID = "DEHHALKA4IB000Cv";
+var OX = BUILDINGS[REF_ID].cx;
+var OY = BUILDINGS[REF_ID].cy;
+var OZ = BUILDINGS[REF_ID].gz;
+
+// CityGML [X, Y, Z] → Three.js [x, y(up), z]
+function w2t(p) {
+  return [p[0] - OX, p[2] - OZ, -(p[1] - OY)];
+}
+
+// ── Polygon triangulation: Newell normal + earcut ────────────────────────────
+function newellNormal(pts) {
+  var nx = 0, ny = 0, nz = 0;
+  for (var i = 0; i < pts.length; i++) {
+    var p0 = pts[i], p1 = pts[(i + 1) % pts.length];
+    nx += (p0[1] - p1[1]) * (p0[2] + p1[2]);
+    ny += (p0[2] - p1[2]) * (p0[0] + p1[0]);
+    nz += (p0[0] - p1[0]) * (p0[1] + p1[1]);
+  }
+  return [nx, ny, nz];
+}
+
+function triangulatePoly(ring) {
+  var raw = ring.slice(0, -1);   // drop closing duplicate
+  if (raw.length < 3) return [];
+
+  var pts = raw.map(w2t);        // convert to Three.js coords
+
+  if (pts.length === 3) {
+    return pts[0].concat(pts[1]).concat(pts[2]);
+  }
+
+  var n  = newellNormal(pts);
+  var ax = Math.abs(n[0]), ay = Math.abs(n[1]), az = Math.abs(n[2]);
+  var flat2d;
+
+  if (ay >= ax && ay >= az) {
+    // Horizontal surface (roof / ground) → project onto XZ
+    flat2d = [];
+    for (var i = 0; i < pts.length; i++) flat2d.push(pts[i][0], pts[i][2]);
+  } else if (ax >= az) {
+    // Wall roughly facing X → project onto ZY
+    flat2d = [];
+    for (var i = 0; i < pts.length; i++) flat2d.push(pts[i][2], pts[i][1]);
+  } else {
+    // Wall roughly facing Z → project onto XY
+    flat2d = [];
+    for (var i = 0; i < pts.length; i++) flat2d.push(pts[i][0], pts[i][1]);
+  }
+
+  var indices = earcut(flat2d);
+  var verts = [];
+  for (var i = 0; i < indices.length; i += 3) {
+    verts = verts.concat(pts[indices[i]], pts[indices[i+1]], pts[indices[i+2]]);
+  }
+  return verts;
+}
+
+// ── Renderer ─────────────────────────────────────────────────────────────────
+var canvas = document.getElementById('c');
+var renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+// ── Scene / Camera / Controls ─────────────────────────────────────────────────
+var scene = new THREE.Scene();
+scene.background = new THREE.Color(0x6a9ec7);
+scene.fog = new THREE.FogExp2(0x7ab0d0, 0.0016);
+
+var camera = new THREE.PerspectiveCamera(52, window.innerWidth / window.innerHeight, 0.5, 2000);
+camera.position.set(160, 110, 200);
+
+var controls = new THREE.OrbitControls(camera, renderer.domElement);
+controls.target.set(20, 30, -20);
+controls.enableDamping = true;
+controls.dampingFactor = 0.07;
+controls.minDistance = 15;
+controls.maxDistance = 600;
+controls.maxPolarAngle = Math.PI / 2 - 0.02;
+controls.update();
+
+// ── Lights ────────────────────────────────────────────────────────────────────
+scene.add(new THREE.AmbientLight(0xd0e8ff, 0.55));
+
+var sun = new THREE.DirectionalLight(0xfff5e0, 1.3);
+sun.position.set(200, 350, 120);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near = 1;
+sun.shadow.camera.far = 900;
+sun.shadow.camera.left   = sun.shadow.camera.bottom = -250;
+sun.shadow.camera.right  = sun.shadow.camera.top    =  250;
+scene.add(sun);
+
+scene.add(new THREE.HemisphereLight(0x87ceeb, 0x5a8040, 0.45));
+
+// ── Ground plane ──────────────────────────────────────────────────────────────
+var ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(700, 700),
+  new THREE.MeshLambertMaterial({ color: 0x5a8a50 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -0.15;
+ground.receiveShadow = true;
+scene.add(ground);
+
+scene.add(new THREE.GridHelper(500, 50, 0x334433, 0x2a3a2a));
+
+// ── 100 m radius circle ───────────────────────────────────────────────────────
+(function () {
+  var N = 256;
+  var pts = [];
+  for (var i = 0; i <= N; i++) {
+    var a = (i / N) * Math.PI * 2;
+    pts.push(new THREE.Vector3(Math.cos(a) * 100, 0.4, Math.sin(a) * 100));
+  }
+  var geo = new THREE.BufferGeometry().setFromPoints(pts);
+  var mat = new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 7, gapSize: 4 });
+  var line = new THREE.Line(geo, mat);
+  line.computeLineDistances();
+  scene.add(line);
+
+  // Small pole at origin
+  scene.add(new THREE.Mesh(
+    new THREE.CylinderGeometry(0.4, 0.4, 2, 8),
+    new THREE.MeshBasicMaterial({ color: 0xffffff })
+  ));
+})();
+
+// ── Building meshes ───────────────────────────────────────────────────────────
+var STYLE = {
+  reference: {
+    WallSurface:   0x558b2f,
+    RoofSurface:   0x8bc34a,
+    GroundSurface: 0x33691e
+  },
+  neighbour: {
+    WallSurface:   0xc62828,
+    RoofSurface:   0xef9a9a,
+    GroundSurface: 0x7f0000
+  }
+};
+
+var hoverTargets = [];
+
+Object.keys(BUILDINGS).forEach(function (id) {
+  var bdata = BUILDINGS[id];
+  var styleMap = STYLE[bdata.role];
+
+  Object.keys(bdata.surfaces).forEach(function (stype) {
+    var polys = bdata.surfaces[stype];
+    var color = styleMap[stype] !== undefined ? styleMap[stype] : 0xaaaaaa;
+    var mat = new THREE.MeshLambertMaterial({ color: color, side: THREE.DoubleSide });
+
+    polys.forEach(function (ring) {
+      var verts = triangulatePoly(ring);
+      if (!verts.length) return;
+
+      var geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+      geo.computeVertexNormals();
+
+      var mesh = new THREE.Mesh(geo, mat);
+      mesh.castShadow  = (stype !== 'GroundSurface');
+      mesh.receiveShadow = true;
+      mesh.userData = { id: id, stype: stype, bdata: bdata };
+      scene.add(mesh);
+      if (stype !== 'GroundSurface') hoverTargets.push(mesh);
+    });
+
+    // Edge outlines for wall and roof
+    if (stype !== 'GroundSurface') {
+      polys.forEach(function (ring) {
+        var edgePts = ring.slice(0, -1).map(function (p) {
+          var t = w2t(p);
+          return new THREE.Vector3(t[0], t[1], t[2]);
+        });
+        edgePts.push(edgePts[0].clone());
+        var eGeo = new THREE.BufferGeometry().setFromPoints(edgePts);
+        var eCol = bdata.role === 'reference' ? 0x1b5e20 : 0x4a0000;
+        scene.add(new THREE.Line(eGeo,
+          new THREE.LineBasicMaterial({ color: eCol, transparent: true, opacity: 0.55 })));
+      });
+    }
+  });
+
+  // Dashed connector line from reference to each neighbour
+  if (bdata.role === 'neighbour') {
+    var ref = BUILDINGS[REF_ID];
+    var a = w2t([bdata.cx, bdata.cy, bdata.gz]);
+    var b = w2t([ref.cx,   ref.cy,   ref.gz]);
+    var lGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(b[0], 0.5, b[2]),
+      new THREE.Vector3(a[0], 0.5, a[2])
+    ]);
+    var lMat = new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 4, gapSize: 3,
+                                              transparent: true, opacity: 0.45 });
+    var l = new THREE.Line(lGeo, lMat);
+    l.computeLineDistances();
+    scene.add(l);
+  }
+});
+
+// ── Raycasting / tooltip ──────────────────────────────────────────────────────
+var raycaster = new THREE.Raycaster();
+var mouse = new THREE.Vector2();
+var tooltip = document.getElementById('tooltip');
+var lastId = null;
+
+window.addEventListener('mousemove', function (e) {
+  mouse.x =  (e.clientX / window.innerWidth)  * 2 - 1;
+  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  var hits = raycaster.intersectObjects(hoverTargets, false);
+
+  if (hits.length > 0) {
+    var ud = hits[0].object.userData;
+    if (ud.id !== lastId) {
+      lastId = ud.id;
+      var ref = BUILDINGS[REF_ID];
+      var dist = ud.id === REF_ID
+        ? '&#8212; (reference)'
+        : Math.round(Math.hypot(ud.bdata.cx - ref.cx, ud.bdata.cy - ref.cy)) + ' m from reference';
+      tooltip.innerHTML = '<strong>' + ud.id + '</strong><br>' + ud.bdata.desc + '<br>Distance: ' + dist;
+    }
+    tooltip.style.display = 'block';
+    tooltip.style.left = (e.clientX + 16) + 'px';
+    tooltip.style.top  = (e.clientY - 10) + 'px';
+  } else {
+    tooltip.style.display = 'none';
+    lastId = null;
+  }
+});
+
+canvas.addEventListener('mouseleave', function () {
+  tooltip.style.display = 'none';
+  lastId = null;
+});
+
+// ── Resize ────────────────────────────────────────────────────────────────────
+window.addEventListener('resize', function () {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ── Render loop ───────────────────────────────────────────────────────────────
+(function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+})();
+</script>
+</body>
+</html>

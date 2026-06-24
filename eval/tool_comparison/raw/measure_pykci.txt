@@ -1,0 +1,63 @@
+############ pykci (project Neo4j) — run3 DB ############
+=== total nodes ===
+nodes
+15163965
+=== total relationships ===
+edges
+21250423
+=== nodes per label ===
+label, n
+"Entity", 9843732
+"GeometryRing", 4535018
+"BoundarySurface", 4533530
+"GeometryPolygon", 4533530
+"GeometryLineString", 389197
+"Building", 388267
+"GeometrySolid", 388267
+"TerrainIntersection", 388248
+"BuildingFunction", 131
+"RoofType", 7
+"Dataset", 1
+"City", 1
+"District", 1
+"SpatialLayer", 1
+=== relationships per type ===
+rel, n
+"HAS_BOUNDARY", 4533530
+"HAS_SURFACE_MEMBER", 4533530
+"HAS_POLYGON", 4533530
+"HAS_EXTERIOR_RING", 4533530
+"HAS_LINE", 389197
+"PART_OF", 388268
+"HAS_LOD_SOLID", 388267
+"HAS_FUNCTION", 388267
+"HAS_ROOF_TYPE", 388267
+"LOCATED_IN", 388267
+"RTREE_REFERENCE", 388267
+"HAS_TERRAIN_INTERSECTION", 388248
+"RTREE_CHILD", 7764
+"HAS_INTERIOR_RING", 1488
+"COVERS", 1
+"RTREE_METADATA", 1
+"RTREE_ROOT", 1
+=== indexes ===
+name, type, entityType, labelsOrTypes, properties
+"boundarysurface_id_idx", "RANGE", "NODE", ["BoundarySurface"], ["id"]
+"building_id_idx", "RANGE", "NODE", ["Building"], ["id"]
+"building_location_idx", "POINT", "NODE", ["Building"], ["location"]
+"buildingfunction_id_idx", "RANGE", "NODE", ["BuildingFunction"], ["id"]
+"buildingpart_id_idx", "RANGE", "NODE", ["BuildingPart"], ["id"]
+"cityobject_feature_type_idx", "RANGE", "NODE", ["CityObject"], ["feature_type"]
+"cityobject_id_idx", "RANGE", "NODE", ["CityObject"], ["id"]
+"cityobject_location_idx", "POINT", "NODE", ["CityObject"], ["location"]
+"dataset_id_idx", "RANGE", "NODE", ["Dataset"], ["id"]
+"entity_id_idx", "RANGE", "NODE", ["Entity"], ["id"]
+"geometrylinestring_id_idx", "RANGE", "NODE", ["GeometryLineString"], ["id"]
+"geometrymultisurface_id_idx", "RANGE", "NODE", ["GeometryMultiSurface"], ["id"]
+"geometrypolygon_id_idx", "RANGE", "NODE", ["GeometryPolygon"], ["id"]
+"geometryring_id_idx", "RANGE", "NODE", ["GeometryRing"], ["id"]
+"geometrysolid_id_idx", "RANGE", "NODE", ["GeometrySolid"], ["id"]
+"index_1b9dcc97", "LOOKUP", "RELATIONSHIP", NULL, NULL
+"index_460996c0", "LOOKUP", "NODE", NULL, NULL
+"rooftype_id_idx", "RANGE", "NODE", ["RoofType"], ["id"]
+"terrainintersection_id_idx", "RANGE", "NODE", ["TerrainIntersection"], ["id"]

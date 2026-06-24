@@ -1,0 +1,165 @@
+// =============================================================================
+// queries_citizen.txt
+// 10 Cypher queries for the Hamburg CityGML 2.0 LOD2 Neo4j graph
+// Written for citizens curious about Hamburg's 3D city model.
+// Run these in the Neo4j Browser at http://localhost:7474
+// =============================================================================
+
+
+// -----------------------------------------------------------------------------
+// 1. Hamburg at a glance
+//    How many buildings are in the dataset, how tall are they on average,
+//    and how many storeys does a typical Hamburg building have?
+// -----------------------------------------------------------------------------
+MATCH (b:Building)
+RETURN
+  count(b)                              AS total_buildings,
+  round(avg(b.measured_height) * 10) / 10 AS avg_height_m,
+  round(avg(b.storeys_above_ground) * 10) / 10 AS avg_storeys,
+  max(b.measured_height)                AS tallest_building_m,
+  min(b.measured_height)                AS shortest_building_m
+
+
+// -----------------------------------------------------------------------------
+// 2. What is Hamburg's most common roof material?
+//    Shows the distribution of predicted roof materials across all buildings,
+//    with percentage share.
+// -----------------------------------------------------------------------------
+MATCH (rm:RoofMaterial)<-[r:HAS_ROOF_MATERIAL]-(b:Building)
+WITH rm.name AS material, count(DISTINCT b) AS buildings
+WITH collect({material: material, buildings: buildings}) AS rows, sum(buildings) AS total
+UNWIND rows AS row
+RETURN
+  row.material                                   AS material,
+  row.buildings                                  AS buildings,
+  round(row.buildings * 1000.0 / total) / 10     AS percent
+ORDER BY row.buildings DESC
+
+
+// -----------------------------------------------------------------------------
+// 3. What are the 20 tallest buildings in Hamburg?
+//    Good to spot landmarks, towers, and high-rises.
+// -----------------------------------------------------------------------------
+MATCH (b:Building)
+WHERE b.measured_height IS NOT NULL
+RETURN
+  b.id                 AS gml_id,
+  b.measured_height    AS height_m,
+  b.storeys_above_ground AS storeys,
+  b.description        AS description
+ORDER BY b.measured_height DESC
+LIMIT 20
+
+
+// -----------------------------------------------------------------------------
+// 4. Which roof shapes are most popular in Hamburg?
+//    Flat, Gable, Hip, Mono-Pitch — shows the architectural character
+//    of different neighbourhoods.
+// -----------------------------------------------------------------------------
+MATCH (b:Building)-[:HAS_ROOF_TYPE]->(rt:RoofType)
+RETURN
+  rt.name              AS roof_shape,
+  count(b)             AS buildings
+ORDER BY buildings DESC
+
+
+// -----------------------------------------------------------------------------
+// 5. Solar panel potential — flat-roofed buildings taller than 5 m
+//    Flat roofs on larger buildings are the easiest surfaces for solar
+//    installations. This query finds them and ranks by roof area proxy (height).
+// -----------------------------------------------------------------------------
+MATCH (b:Building)-[:HAS_ROOF_TYPE]->(rt:RoofType {name: "Flat Roof"})
+WHERE b.measured_height >= 5
+RETURN
+  b.id              AS gml_id,
+  b.measured_height AS height_m,
+  b.storeys_above_ground AS storeys,
+  b.description     AS description
+ORDER BY b.measured_height DESC
+LIMIT 50
+
+
+// -----------------------------------------------------------------------------
+// 6. How many buildings are there per storey count?
+//    Shows whether Hamburg is a city of single-family houses or
+//    dense apartment blocks.
+// -----------------------------------------------------------------------------
+MATCH (b:Building)
+WHERE b.storeys_above_ground IS NOT NULL
+RETURN
+  b.storeys_above_ground AS storeys,
+  count(b)               AS buildings
+ORDER BY storeys ASC
+
+
+// -----------------------------------------------------------------------------
+// 7. Which buildings have glass roofs?
+//    Glass roofs typically indicate modern commercial buildings,
+//    train stations, shopping centres, or public spaces.
+// -----------------------------------------------------------------------------
+MATCH (b:Building)-[r:HAS_ROOF_MATERIAL]->(rm:RoofMaterial {name: "glass"})
+RETURN
+  b.id              AS gml_id,
+  r.coverage        AS glass_coverage,
+  b.measured_height AS height_m,
+  b.description     AS description
+ORDER BY r.coverage DESC
+LIMIT 50
+
+
+// -----------------------------------------------------------------------------
+// 8. Hamburg high-rises — buildings taller than 50 metres
+//    How many skyscrapers and tower blocks does Hamburg have?
+// -----------------------------------------------------------------------------
+MATCH (b:Building)
+WHERE b.measured_height > 50
+OPTIONAL MATCH (b)-[:HAS_ROOF_TYPE]->(rt:RoofType)
+OPTIONAL MATCH (b)-[r:HAS_ROOF_MATERIAL]->(rm:RoofMaterial)
+RETURN
+  b.id              AS gml_id,
+  b.measured_height AS height_m,
+  b.storeys_above_ground AS storeys,
+  rt.name           AS roof_shape,
+  collect(rm.name + ' (' + toString(round(r.coverage * 100)) + '%)') AS roof_materials,
+  b.description     AS description
+ORDER BY b.measured_height DESC
+
+
+// -----------------------------------------------------------------------------
+// 9. Buildings with mixed roof materials
+//    Some buildings have more than one material on the roof — interesting for
+//    understanding complex roof landscapes or renovation history.
+// -----------------------------------------------------------------------------
+MATCH (b:Building)-[r:HAS_ROOF_MATERIAL]->(rm:RoofMaterial)
+WITH b, count(rm) AS material_count, collect(rm.name + ' ' + toString(round(r.coverage * 100)) + '%') AS materials
+WHERE material_count > 1
+RETURN
+  b.id              AS gml_id,
+  b.measured_height AS height_m,
+  material_count,
+  materials,
+  b.description     AS description
+ORDER BY material_count DESC, b.measured_height DESC
+LIMIT 50
+
+
+// -----------------------------------------------------------------------------
+// 10. Buildings in HafenCity — Hamburg's modern harbour district
+//     Filters by bounding box in ETRS89 UTM32 coordinates (metres).
+//     Shows roof materials and height — great for exploring a specific
+//     neighbourhood's architectural character.
+// -----------------------------------------------------------------------------
+MATCH (b:Building)
+WHERE b.center_x >= 564500 AND b.center_x <= 567500
+  AND b.center_y >= 5930800 AND b.center_y <= 5932800
+OPTIONAL MATCH (b)-[:HAS_ROOF_TYPE]->(rt:RoofType)
+OPTIONAL MATCH (b)-[r:HAS_ROOF_MATERIAL]->(rm:RoofMaterial)
+RETURN
+  b.id              AS gml_id,
+  b.measured_height AS height_m,
+  b.storeys_above_ground AS storeys,
+  rt.name           AS roof_shape,
+  collect(rm.name + ' (' + toString(round(r.coverage * 100)) + '%)') AS roof_materials,
+  b.description     AS description
+ORDER BY b.measured_height DESC
+

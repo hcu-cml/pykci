@@ -1,0 +1,279 @@
+// -----------------------------------------------------------------------------
+// 1. Hamburg at a glance
+//    How many buildings are in the dataset, how tall are they on average,
+//    and how many storeys does a typical Hamburg building have?
+// -----------------------------------------------------------------------------
+
+>> Thinking...
+
+```cypher
+MATCH (b:Building)
+RETURN count(b) AS total_buildings,
+       avg(b.measured_height) AS avg_height_m,
+       avg(b.storeys_above_ground) AS avg_storeys
+```
+
+There are 388,267 buildings in the dataset. On average, they are 7.747885223313039 meters tall, and a typical building has 1.6623312680973983 storeys.
+
+Query time: 55.305 s
+
+
+// -----------------------------------------------------------------------------
+// 2. What is Hamburg's most common roof material?
+//    Shows the distribution of predicted roof materials across all buildings,
+//    with percentage share.
+// -----------------------------------------------------------------------------
+
+```cypher
+MATCH (b:Building)
+WHERE b.predictedroofmaterial IS NOT NULL
+WITH b.predictedroofmaterial AS material, count(b) AS count
+WITH collect({material: material, count: count}) AS materials, sum(count) AS total
+UNWIND materials AS m
+RETURN m.material AS material, m.count AS count, round(m.count * 100.0 / total, 1) AS percentage
+ORDER BY m.count DESC
+```
+
+Hamburg's most common roof material is **roof_tiles**, with a 55.8% share.
+
+The distribution of predicted roof materials across all buildings is as follows:
+*   **roof_tiles**: 55.8%
+*   **tar_paper**: 26.4%
+*   **concrete**: 11.8%
+*   **metal**: 4.4%
+*   **glass**: 1.7%
+
+Query time: 39.831 s
+
+// -----------------------------------------------------------------------------
+// 3. What are the 20 tallest buildings in Hamburg?
+//    Good to spot landmarks, towers, and high-rises.
+// -----------------------------------------------------------------------------
+
+```cypher
+MATCH (b:Building)
+WHERE b.measured_height IS NOT NULL
+RETURN b.id AS building_id,
+       b.name AS name,
+       b.measured_height AS height_m,
+       b.storeys_above_ground AS storeys,
+       b.function_code AS function_code,
+       b.roof_type_code AS roof_type,
+       b.center_x AS x,
+       b.center_y AS y
+ORDER BY b.measured_height DESC
+LIMIT 20
+```
+
+Based on the query result, here are the 20 tallest buildings, listed in descending order by height:
+
+1. **DEHHALKAJ0000yvD** - 158.47 m
+2. **DEHHALKAJ0004qT4** - 158.256 m
+3. **DEHHALKAP0007WG0** - 139.754 m
+4. **DEHHALKA1FW000LN** - 128.966 m
+5. **DEHHALKAJ0000ovW** - 121.641 m
+6. **DEHHALKAn0006JXQ** - 111.334 m
+7. **DEHHALKA9dh0006P** - 109.401 m
+8. **DEHHALKAJ0000yIP** - 107.929 m
+9. **DEHHALKA1FW000K6** - 99.507 m
+10. **DEHHALKA10006bd3** - 97.196 m
+11. **DEHHALKAJ0000pTk** - 96.328 m
+12. **DEHHALKAP0007cPo** - 94.555 m
+13. **DEHHALKAV0000fCD** - 93.834 m
+14. **DEHHALKA10007wzP** - 88.963 m
+15. **DEHHALKAJ000104O** - 88.438 m
+16. **DEHHALKA6Ec0008g** - 87.124 m
+17. **DEHHALKAJ0000pO5** - 83.843 m
+18. **DEHHALKAJ0000zOL** - 81.731 m
+19. **DEHHALKAJ0000p74** - 80.985 m
+20. **DEHHALKAP0007cG6** - 80.406 m
+
+Query time: 54.446 s
+
+// -----------------------------------------------------------------------------
+// 4. Which roof shapes are most popular in Hamburg?
+//    Flat, Gable, Hip, Mono-Pitch — shows the architectural character
+//    of different neighbourhoods.
+// -----------------------------------------------------------------------------
+
+```cypher
+MATCH (b:Building)-[:HAS_ROOF_TYPE]->(rt:RoofType)
+WHERE b.gemeindeschluessel STARTS WITH '02'
+RETURN rt.name AS roof_type, rt.code AS code, count(b) AS building_count
+ORDER BY building_count DESC
+```
+
+Based on the query results, the **Flat Roof** is the most popular with 169,964 buildings, followed closely by the **Gable Roof** with 162,368 buildings. The **Hip Roof** (29,990) and **Mono-Pitch Roof** (21,202) are less common.
+
+Query time: 47.554 s
+
+
+// -----------------------------------------------------------------------------
+// 5. Solar panel potential — flat-roofed buildings taller than 5 m
+//    Flat roofs on larger buildings are the easiest surfaces for solar
+//    installations. This query finds them and ranks by roof area proxy (height).
+// -----------------------------------------------------------------------------
+
+```cypher
+MATCH (b:Building)
+WHERE b.roof_type_code = '1000'
+  AND b.measured_height > 5
+RETURN b.id AS building_id,
+       b.name AS name,
+       b.measured_height AS height_m,
+       b.storeys_above_ground AS storeys,
+       b.function_code AS function_code
+ORDER BY b.measured_height DESC
+```
+
+Based on the query results, I found **300+ flat-roofed buildings taller than 5 meters**, ranked by height (as a proxy for roof area).
+
+**Top 10 buildings by height (roof area proxy):**
+
+| Rank | Building ID | Height (m) | Storeys | Function Code |
+|------|-------------|------------|---------|---------------|
+| 1 | DEHHALKAJ0000yvD | 158.47 | None | 31001_2540 |
+| 2 | DEHHALKAJ0004qT4 | 158.256 | None | 51001_1008 |
+| 3 | DEHHALKA1FW000LN | 128.966 | 2 | 31001_2500 |
+| 4 | DEHHALKAn0006JXQ | 111.334 | None | 51001_1008 |
+| 5 | DEHHALKA9dh0006P | 109.401 | None | 51002_1290 |
+| 6 | DEHHALKAJ0000yIP | 107.929 | 27 | 31001_2071 |
+| 7 | DEHHALKA1FW000K6 | 99.507 | 1 | 31001_2500 |
+| 8 | DEHHALKA10006bd3 | 97.196 | 26 | 31001_2010 |
+| 9 | DEHHALKAP0007cPo | 94.555 | 29 | 31001_1010 |
+| 10 | DEHHALKAV0000fCD | 93.834 | 21 | 31001_3020 |
+
+**Summary:**
+- **Total buildings:** 300+ flat-roofed buildings
+- **Height range:** 35.5m to 158.47m
+- **All buildings exceed the 5m minimum height requirement**
+- **Best candidates for solar installation:** The tallest buildings (100m+) offer the largest roof area potential
+
+The buildings are already ranked by height, which serves as a proxy for roof area. The top candidates for solar panel installation are the first 10 buildings listed above, with heights exceeding 90 meters.
+
+Query time: 50.443 s
+
+
+// -----------------------------------------------------------------------------
+// 6. How many buildings are there per storey count?
+//    Shows whether Hamburg is a city of single-family houses or
+//    dense apartment blocks.
+// -----------------------------------------------------------------------------
+
+```cypher
+MATCH (b:Building)
+WHERE b.storeys_above_ground IS NOT NULL
+RETURN b.storeys_above_ground AS storeys, count(b) AS building_count
+ORDER BY storeys ASC
+```
+
+Based on the query result, the number of buildings per storey count is as follows:
+
+*   **1 storey:** 244,389 buildings
+*   **2 storeys:** 75,353 buildings
+*   **3 storeys:** 24,071 buildings
+*   **4 storeys:** 16,698 buildings
+*   **5 storeys:** 9,056 buildings
+*   **6 storeys:** 3,158 buildings
+*   **7 storeys:** 1,208 buildings
+*   **8 storeys:** 695 buildings
+*   **9 storeys:** 470 buildings
+*   **10 storeys:** 274 buildings
+*   **11–29 storeys:** Ranging from 62 buildings (11 storeys) down to 1 building (27 and 29 storeys).
+
+This distribution shows that Hamburg is predominantly a city of **single-family houses**. The vast majority of buildings (over 244,000) have only 1 storey, while dense apartment blocks (buildings with 10 or more storeys) are relatively rare.
+
+Query time: 42.771 s
+
+
+// -----------------------------------------------------------------------------
+// 7. Which buildings have glass roofs?
+//    Glass roofs typically indicate modern commercial buildings,
+//    train stations, shopping centres, or public spaces.
+// -----------------------------------------------------------------------------
+
+```cypher
+MATCH (b:Building)
+WHERE b.predictedroofmaterial = 'glass'
+RETURN b.id AS building_id,
+       b.name AS name,
+       b.function_code AS function_code,
+       b.measured_height AS height_m,
+       b.storeys_above_ground AS storeys,
+       b.center_x AS x,
+       b.center_y AS y,
+       b.source AS dataset
+ORDER BY b.measured_height DESC
+```
+
+Based on the query results provided, there is no information about roof materials or types (such as glass roofs) in the building data. The available fields include:
+
+- building_id
+- name
+- function_code
+- height_m
+- storeys
+- x, y coordinates
+- dataset
+
+None of these fields indicate whether a building has a glass roof. While function codes like '51009_1610' or '51003_1205' might represent certain building types, there is no explicit data linking these codes to glass roof characteristics.
+
+**No results found** for buildings with glass roofs based on the available query data.
+
+Query time: 59.416 s
+
+
+// -----------------------------------------------------------------------------
+// 8. Hamburg high-rises — buildings taller than 50 meters.
+//    How many skyscrapers and tower blocks does Hamburg have?
+// -----------------------------------------------------------------------------
+    
+Thinking...
+
+```cypher
+MATCH (b:Building)
+WHERE b.measured_height IS NOT NULL AND b.measured_height > 50
+WITH count(b) AS total_skyscrapers
+MATCH (b:Building)
+WHERE b.measured_height IS NOT NULL AND b.measured_height > 50
+RETURN b.id AS building_id,
+       b.name AS name,
+       b.measured_height AS height_m,
+       b.function_code AS function_code,
+       b.roof_type_code AS roof_type,
+       b.storeys_above_ground AS storeys,
+       b.gemeindeschluessel AS municipality_key
+ORDER BY b.measured_height DESC
+LIMIT 20
+```
+
+20
+
+Query time: 34.624 s
+
+
+// -----------------------------------------------------------------------------
+// 9. Buildings with mixed roof materials
+//    Some buildings have more than one material on the roof — interesting for
+//    understanding complex roof landscapes or renovation history.
+// -----------------------------------------------------------------------------
+
+Thinking...
+[error] {neo4j_code: Neo.ClientError.Statement.SyntaxError} {message: Unknown function 'apoc.coll.distinct' (line 12, column 11 (offset: 675))
+"     size(apoc.coll.distinct(all_materials)) AS distinct_materials"
+           ^} {gql_status: 42001} {gql_status_description: error: syntax error or access rule violation - invalid syntax}
+
+DID NOT WORK!!!
+
+// -----------------------------------------------------------------------------
+// 10. Buildings in HafenCity — Hamburg's modern harbour district
+//     Filters by bounding box in ETRS89 UTM32 coordinates (meters).
+//     Shows roof materials and height — great for exploring a specific
+//     neighbourhood's architectural character.
+// -----------------------------------------------------------------------------
+
+Thinking...
+[error] {neo4j_code: Neo.ClientError.Procedure.ProcedureCallFailed} {message: Failed to invoke procedure `spatial.bbox`: Caused by: java.lang.NullPointerException: Cannot read field "x" because "p1" is null} {gql_status: 52N37} {gql_status_description: error: procedure exception - procedure execution error. Execution of the procedure spatial.bbox() failed.}
+
+DID NOT WORK!!!
+

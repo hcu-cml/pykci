@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>graph_tiles</title>
+<script>window.CESIUM_BASE_URL='https://cdn.jsdelivr.net/npm/cesium@1.116.0/Build/Cesium/';</script>
+<script src="https://cdn.jsdelivr.net/npm/cesium@1.116.0/Build/Cesium/Cesium.js"></script>
+<link href="https://cdn.jsdelivr.net/npm/cesium@1.116.0/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{width:100%;height:100%;overflow:hidden;
+           font-family:'Segoe UI',system-ui,sans-serif;font-size:13px}
+#cesiumContainer{width:100%;height:100%}
+
+#topbar{
+  position:absolute;top:0;left:0;right:0;z-index:100;
+  background:rgba(18,28,50,.88);backdrop-filter:blur(6px);
+  display:flex;align-items:center;gap:8px;padding:6px 12px;
+  border-bottom:1px solid rgba(15,52,96,.7);
+}
+#topbar h1{font-size:13px;font-weight:600;color:#90caf9;margin-right:auto;white-space:nowrap}
+.ctrl-lbl{font-size:11px;color:#90caf9;white-space:nowrap}
+#opacity-slider{width:80px;cursor:pointer;accent-color:#1565c0}
+#opacity-val{font-size:11px;color:#90caf9;min-width:28px}
+.btn{background:#1565c0;border:none;border-radius:4px;color:#fff;
+      padding:3px 9px;cursor:pointer;font-size:11px;white-space:nowrap}
+.btn:hover{background:#1976d2}
+.btn.off{background:#37474f}
+.stat{font-size:10px;color:#546e7a;white-space:nowrap}
+#loading{font-size:11px;color:#80cbc4;white-space:nowrap}
+
+#left-panel{
+  position:absolute;top:40px;left:0;bottom:0;width:185px;z-index:100;
+  background:rgba(18,28,50,.88);backdrop-filter:blur(6px);
+  border-right:1px solid rgba(15,52,96,.6);
+  display:flex;flex-direction:column;overflow:hidden;
+}
+.panel-title{
+  font-size:10px;font-weight:600;color:#546e7a;padding:7px 10px;
+  text-transform:uppercase;letter-spacing:.5px;
+  border-bottom:1px solid rgba(15,52,96,.6);flex-shrink:0;
+}
+#legend{overflow-y:auto;padding:6px;flex:1}
+.leg-item{
+  display:flex;align-items:center;gap:6px;padding:3px 5px;
+  border-radius:4px;cursor:pointer;user-select:none;color:#e0e0e0;
+}
+.leg-item:hover{background:rgba(15,52,96,.6)}
+.leg-item.off{opacity:.3}
+.leg-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+
+#right-panel{
+  position:absolute;top:40px;right:0;bottom:0;width:260px;z-index:100;
+  background:rgba(18,28,50,.88);backdrop-filter:blur(6px);
+  border-left:1px solid rgba(15,52,96,.6);
+  display:flex;flex-direction:column;overflow:hidden;
+}
+#info-body{overflow-y:auto;padding:10px;flex:1}
+.prop{margin-bottom:8px}
+.prop-key{font-size:10px;color:#546e7a;text-transform:uppercase;letter-spacing:.4px}
+.prop-val{font-size:12px;color:#e0e0e0;word-break:break-all;margin-top:1px}
+.chip{display:inline-block;border-radius:3px;padding:1px 6px;font-size:10px;margin:1px;color:#fff}
+.empty{color:#37474f;font-size:12px;padding:10px}
+
+.cesium-credit-container{display:none!important}
+
+#edge-note{
+  position:absolute;bottom:10px;left:50%;transform:translateX(-50%);
+  background:rgba(18,28,50,.82);color:#80cbc4;
+  padding:4px 12px;border-radius:4px;font-size:11px;
+  z-index:100;pointer-events:none;display:none;
+}
+</style>
+</head>
+<body>
+<div id="cesiumContainer"></div>
+
+<div id="topbar">
+  <h1>Graph Tiles — graph_tiles</h1>
+  <span class="ctrl-lbl">Buildings</span>
+  <input id="opacity-slider" type="range" min="0" max="100" value="50" step="5">
+  <span id="opacity-val">50%</span>
+  <button class="btn" id="btn-edges">Edges ON</button>
+  <button class="btn" id="btn-mode">Dark Mode</button>
+  <span class="stat">131603 nodes &middot; 132639 edges &middot; 2026-06-16 13:40</span>
+  <span id="loading">Loading nodes…</span>
+</div>
+
+<div id="left-panel">
+  <div class="panel-title">Node types</div>
+  <div id="legend"><div class="empty">Loading…</div></div>
+</div>
+
+<div id="right-panel">
+  <div class="panel-title">Properties</div>
+  <div id="info-body"><div class="empty">Click a node</div></div>
+</div>
+
+<div id="edge-note">Zoom in to see edges (&lt; 2 km altitude)</div>
+
+<script>
+const LABEL_COLORS   = {"Building": "#FF7043", "Dataset": "#FFD54F", "District": "#AED581", "City": "#81D4FA", "BuildingFunction": "#CE93D8", "RoofType": "#F48FB1", "RoofSurface": "#FF8A65", "WallSurface": "#CFD8DC", "GroundSurface": "#BCAAA4", "ClosureSurface": "#B0BEC5", "OuterCeilingSurface": "#90A4AE", "OuterFloorSurface": "#A1887F", "GeometrySolid": "#80CBC4", "GeometryPolygon": "#4DB6AC", "GeometryRing": "#26A69A", "GeometryLineString": "#80DEEA", "TerrainIntersection": "#A5D6A7", "Road": "#78909C", "Railway": "#CE93D8", "Track": "#AB47BC", "Square": "#FFCC80", "TransportationComplex": "#90A4AE", "SolitaryVegetationObject": "#81C784", "PlantCover": "#66BB6A", "WaterBody": "#4FC3F7", "LandUse": "#DCE775", "CityFurniture": "#CE93D8", "ReliefFeature": "#BCAAA4", "Bridge": "#A1887F", "Tunnel": "#78909C", "CityObjectGroup": "#80CBC4", "default": "#90A4AE"};
+const BUILDING_URL   = "http://localhost:8080/tileset.json";
+const EDGE_ALT_LIMIT = 2000;   // metres — edges shown below this altitude
+
+let GRAPH_NODES = null;
+let GRAPH_EDGES = null;
+let hiddenGroups = new Set();
+
+// ── Viewer ────────────────────────────────────────────────────────────────────
+const _CARTO_CREDIT = '© OpenStreetMap contributors © CARTO';
+const viewer = new Cesium.Viewer('cesiumContainer', {
+  imageryProvider:      false,
+  terrainProvider:      new Cesium.EllipsoidTerrainProvider(),
+  baseLayerPicker:      false,
+  geocoder:             false,
+  homeButton:           false,
+  sceneModePicker:      false,
+  navigationHelpButton: false,
+  animation:            false,
+  timeline:             false,
+  infoBox:              false,
+  selectionIndicator:   false,
+});
+viewer.scene.globe.enableLighting = false;
+viewer.scene.fog.enabled = false;
+viewer.imageryLayers.removeAll();
+
+const layerDark = viewer.imageryLayers.addImageryProvider(
+  new Cesium.UrlTemplateImageryProvider({
+    url: 'https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}.png',
+    credit: _CARTO_CREDIT, maximumLevel: 19,
+  })
+);
+layerDark.show = false;
+
+const layerLight = viewer.imageryLayers.addImageryProvider(
+  new Cesium.UrlTemplateImageryProvider({
+    url: 'https://basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png',
+    credit: _CARTO_CREDIT, maximumLevel: 19,
+  })
+);
+
+let isDark = false;
+function applyMode(dark) {
+  isDark = dark;
+  layerLight.show = !dark;
+  layerDark.show  =  dark;
+  viewer.scene.globe.baseColor = dark
+    ? new Cesium.Color(0.06, 0.06, 0.08, 1)
+    : new Cesium.Color(0.88, 0.76, 0.42, 1);
+  document.body.style.background = dark ? '#111' : '#d8eecf';
+  document.getElementById('btn-mode').textContent = dark ? 'Light Mode' : 'Dark Mode';
+}
+applyMode(false);
+
+// ── Building 3D Tiles (optional) ──────────────────────────────────────────────
+let buildingTileset = null;
+let tileOpacity = 0.5;
+
+function applyBuildingOpacity(v) {
+  tileOpacity = v;
+  if (!buildingTileset) return;
+  buildingTileset.style = new Cesium.Cesium3DTileStyle({
+    color: `color('white', ${v})`,
+  });
+}
+
+(async () => {
+  if (!BUILDING_URL) return;
+  try {
+    buildingTileset = await Cesium.Cesium3DTileset.fromUrl(BUILDING_URL);
+    viewer.scene.primitives.add(buildingTileset);
+    applyBuildingOpacity(tileOpacity);
+    await viewer.zoomTo(buildingTileset);
+  } catch (e) {
+    console.warn('Building tiles not loaded:', e.message);
+  }
+})();
+
+// ── Graph Node 3D Tiles ───────────────────────────────────────────────────────
+let graphTileset = null;
+let selectedFeature = null;
+let hoveredFeature  = null;
+
+const SELECT_COLOR = Cesium.Color.fromCssColorString('#B3E5FC').withAlpha(1.0);
+const HOVER_COLOR  = Cesium.Color.fromCssColorString('#FFF9C4').withAlpha(1.0);
+const RESET_COLOR  = Cesium.Color.WHITE;
+
+(async () => {
+  try {
+    graphTileset = await Cesium.Cesium3DTileset.fromUrl('tileset.json', {
+      maximumScreenSpaceError: 16,
+    });
+    viewer.scene.primitives.add(graphTileset);
+
+    graphTileset.style = new Cesium.Cesium3DTileStyle({
+      color:     'rgb(${r}, ${g}, ${b})',
+      pointSize: '${pixelSize}',
+    });
+
+    if (!buildingTileset) {
+      await viewer.zoomTo(graphTileset);
+    }
+  } catch (e) {
+    console.error('Graph tiles failed:', e);
+  }
+})();
+
+// ── Edges ─────────────────────────────────────────────────────────────────────
+const lineColl = viewer.scene.primitives.add(new Cesium.PolylineCollection());
+let showEdges  = true;
+const edgeMat  = Cesium.Material.fromType('Color', {
+  color: Cesium.Color.fromCssColorString('#546E7A').withAlpha(0.5),
+});
+const edgeNote = document.getElementById('edge-note');
+
+function refreshEdges() {
+  lineColl.removeAll();
+  if (!showEdges || !GRAPH_NODES || !GRAPH_EDGES) return;
+
+  const alt = viewer.camera.positionCartographic.height;
+  if (alt > EDGE_ALT_LIMIT) {
+    edgeNote.style.display = 'block';
+    return;
+  }
+  edgeNote.style.display = 'none';
+
+  // Compute view rectangle for frustum culling
+  const rect = viewer.camera.computeViewRectangle(viewer.scene.globe.ellipsoid);
+  const toD  = Cesium.Math.toDegrees;
+  const rW   = rect ? toD(rect.west)  - 0.001 : -180;
+  const rS   = rect ? toD(rect.south) - 0.001 : -90;
+  const rE   = rect ? toD(rect.east)  + 0.001 : 180;
+  const rN   = rect ? toD(rect.north) + 0.001 : 90;
+
+  for (const e of GRAPH_EDGES) {
+    const n1 = GRAPH_NODES[e.fi], n2 = GRAPH_NODES[e.ti];
+    if (!n1 || !n2) continue;
+    // Both endpoints out of view → skip
+    const in1 = n1.lon >= rW && n1.lon <= rE && n1.lat >= rS && n1.lat <= rN;
+    const in2 = n2.lon >= rW && n2.lon <= rE && n2.lat >= rS && n2.lat <= rN;
+    if (!in1 && !in2) continue;
+    lineColl.add({
+      positions: Cesium.Cartesian3.fromDegreesArrayHeights([
+        n1.lon, n1.lat, n1.alt,
+        n2.lon, n2.lat, n2.alt,
+      ]),
+      width:    1.5,
+      material: edgeMat,
+    });
+  }
+}
+
+viewer.camera.moveEnd.addEventListener(refreshEdges);
+
+// ── Legend builder ────────────────────────────────────────────────────────────
+function buildLegend(nodes) {
+  const groups = [...new Set(nodes.map(n => n.group))].sort();
+  const leg = document.getElementById('legend');
+  leg.innerHTML = '';
+  for (const g of groups) {
+    const color = LABEL_COLORS[g] || LABEL_COLORS.default;
+    const item  = document.createElement('div');
+    item.className = 'leg-item';
+    item.dataset.group = g;
+    item.innerHTML = `<span class="leg-dot" style="background:${color}"></span><span>${g}</span>`;
+    item.addEventListener('click', () => {
+      hiddenGroups.has(g) ? hiddenGroups.delete(g) : hiddenGroups.add(g);
+      item.classList.toggle('off');
+      // Re-apply tileset style to show/hide groups via colour alpha
+      if (graphTileset) {
+        graphTileset.style = new Cesium.Cesium3DTileStyle({
+          show:      hiddenGroups.size
+            ? 'false'   // placeholder — group filtering via style not directly supported
+            : 'true',
+          color:     'rgb(${r}, ${g}, ${b})',
+          pointSize: '${pixelSize}',
+        });
+      }
+    });
+    leg.appendChild(item);
+  }
+}
+
+// ── Property panel ────────────────────────────────────────────────────────────
+function renderPanel(node) {
+  if (!node) return;
+  let h = '<div class="prop"><span class="prop-key">Labels</span><div class="prop-val">';
+  for (const l of (node.labels || [])) {
+    const c = LABEL_COLORS[l] || '#616161';
+    h += `<span class="chip" style="background:${c}">${l}</span>`;
+  }
+  h += '</div></div>';
+  for (const [k, v] of Object.entries(node.props || {}).sort()) {
+    h += `<div class="prop"><span class="prop-key">${k}</span>`
+       + `<div class="prop-val">${String(v)}</div></div>`;
+  }
+  document.getElementById('info-body').innerHTML = h;
+}
+
+// ── Data loading ──────────────────────────────────────────────────────────────
+Promise.all([
+  fetch('nodes.json').then(r => r.json()),
+  fetch('edges.json').then(r => r.json()),
+]).then(([nodes, edges]) => {
+  GRAPH_NODES = nodes;
+  GRAPH_EDGES = edges;
+  document.getElementById('loading').textContent =
+    `${nodes.length} nodes · ${edges.length} edges loaded`;
+  setTimeout(() => { document.getElementById('loading').style.display = 'none'; }, 3000);
+  buildLegend(nodes);
+  refreshEdges();
+}).catch(err => {
+  document.getElementById('loading').textContent = 'nodes.json load failed — serve via HTTP';
+  console.error(err);
+});
+
+// ── Picking ───────────────────────────────────────────────────────────────────
+const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+
+handler.setInputAction(click => {
+  const picks = viewer.scene.drillPick(click.position);
+
+  // 1. Graph node pick (point cloud feature with nodeIndex)
+  const ptHit = picks.find(p =>
+    p instanceof Cesium.Cesium3DTileFeature &&
+    p.tileset === graphTileset
+  );
+  if (ptHit) {
+    if (selectedFeature && selectedFeature !== ptHit) selectedFeature.color = RESET_COLOR;
+    selectedFeature = ptHit;
+    ptHit.color = SELECT_COLOR;
+    if (GRAPH_NODES) {
+      const idx = ptHit.getProperty('nodeIndex');
+      if (idx != null) renderPanel(GRAPH_NODES[idx]);
+    }
+    return;
+  }
+
+  // 2. Building tile feature
+  const bldHit = picks.find(p =>
+    p instanceof Cesium.Cesium3DTileFeature &&
+    p.tileset === buildingTileset
+  );
+  if (bldHit) {
+    if (selectedFeature) { selectedFeature.color = RESET_COLOR; selectedFeature = null; }
+    bldHit.color = SELECT_COLOR;
+    selectedFeature = bldHit;
+    return;
+  }
+
+  // 3. Empty click
+  if (selectedFeature) { selectedFeature.color = RESET_COLOR; selectedFeature = null; }
+  document.getElementById('info-body').innerHTML = '<div class="empty">Click a node</div>';
+}, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+handler.setInputAction(mv => {
+  const p = viewer.scene.pick(mv.endPosition);
+  const f = (p instanceof Cesium.Cesium3DTileFeature && p.tileset === graphTileset) ? p : null;
+  if (f !== hoveredFeature) {
+    if (hoveredFeature && hoveredFeature !== selectedFeature) hoveredFeature.color = RESET_COLOR;
+    hoveredFeature = f;
+    if (f && f !== selectedFeature) f.color = HOVER_COLOR;
+    viewer.container.style.cursor = f ? 'pointer' : '';
+  }
+}, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+
+// ── Controls ──────────────────────────────────────────────────────────────────
+const opSlider = document.getElementById('opacity-slider');
+const opVal    = document.getElementById('opacity-val');
+opSlider.addEventListener('input', () => {
+  opVal.textContent = opSlider.value + '%';
+  applyBuildingOpacity(opSlider.value / 100);
+});
+
+document.getElementById('btn-edges').addEventListener('click', e => {
+  showEdges = !showEdges;
+  e.target.textContent = showEdges ? 'Edges ON' : 'Edges OFF';
+  e.target.classList.toggle('off', !showEdges);
+  refreshEdges();
+});
+
+document.getElementById('btn-mode').addEventListener('click', () => applyMode(!isDark));
+</script>
+</body>
+</html>

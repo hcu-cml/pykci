@@ -1,0 +1,67 @@
+{
+  "dataset": "FZK-Haus (KIT)",
+  "axis": "Level of Detail (LoD0-4)",
+  "appearance_excluded": true,
+  "by_lod": {
+    "0": {
+      "dominant_new_construct": "footprint, roof edge, address",
+      "missing_naive": 79,
+      "missing_final": 0,
+      "source_instances": {
+        "elements": 49,
+        "attributes": 16,
+        "texts": 22,
+        "coords": 30,
+        "total": 117
+      }
+    },
+    "1": {
+      "dominant_new_construct": "lod1Solid",
+      "missing_naive": 145,
+      "missing_final": 0,
+      "source_instances": {
+        "elements": 65,
+        "attributes": 16,
+        "texts": 22,
+        "coords": 90,
+        "total": 193
+      }
+    },
+    "2": {
+      "dominant_new_construct": "typed boundary surfaces",
+      "missing_naive": 53,
+      "missing_final": 0,
+      "source_instances": {
+        "elements": 112,
+        "attributes": 23,
+        "texts": 30,
+        "coords": 111,
+        "total": 276
+      }
+    },
+    "3": {
+      "dominant_new_construct": "openings, composite surfaces",
+      "missing_naive": 828,
+      "missing_final": 0,
+      "source_instances": {
+        "elements": 1036,
+        "attributes": 36,
+        "texts": 43,
+        "coords": 4191,
+        "total": 5306
+      }
+    },
+    "4": {
+      "dominant_new_construct": "full interior, orientable surfaces",
+      "missing_naive": 270887,
+      "missing_final": 0,
+      "source_instances": {
+        "elements": 59699,
+        "attributes": 208,
+        "texts": 194,
+        "coords": 215265,
+        "total": 275366
+      }
+    }
+  }
+}

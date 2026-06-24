@@ -1,0 +1,139 @@
+{
+  "timestamp": "20260614T193003",
+  "source_file": "input\\citygml\\FZKHaus\\FZK-Haus-LoD2-KIT-IAI-KHH-B36-V1.gml",
+  "export_file": "output\\citygml\\FZK-Haus-LoD2-KIT-IAI-KHH-B36-V1_export.gml",
+  "summary": {
+    "PASS": 15,
+    "FAIL": 0,
+    "WARN": 0,
+    "GAP": 0,
+    "total": 15
+  },
+  "source_inventory": {
+    "srs_name": "urn:adv:crs:ETRS89_UTM32*DE_DHHN92_NH",
+    "total_polygons": 7,
+    "total_triangles": 0,
+    "features": {
+      "Building": {
+        "count": 1,
+        "ids": [
+          "UUID_d281adfc-4901-0f52-540b-4cc1a9325f82"
+        ],
+        "geoms_per_id": {
+          "UUID_d281adfc-4901-0f52-540b-4cc1a9325f82": [
+            "lod2Solid",
+            "lod2MultiSurface"
+          ]
+        },
+        "poly_count_per_id": {
+          "UUID_d281adfc-4901-0f52-540b-4cc1a9325f82": 7
+        },
+        "bsurf_counts_per_id": {
+          "UUID_d281adfc-4901-0f52-540b-4cc1a9325f82": {
+            "WallSurface": 4,
+            "RoofSurface": 2,
+            "GroundSurface": 1
+          }
+        },
+        "scalar_per_id": {
+          "UUID_d281adfc-4901-0f52-540b-4cc1a9325f82": {
+            "function": "1000",
+            "class": "1000",
+            "usage": "1000",
+            "roofType": "1030"
+          }
+        },
+        "spot_poly_id": "PolyID7350_878_759628_120742",
+        "sample_matrix": null,
+        "sample_ref": null
+      }
+    },
+    "unsupported": {}
+  },
+  "checks": [
+    {
+      "name": "dataset_node_exists",
+      "status": "PASS",
+      "detail": "Dataset node source='FZK-Haus-LoD2-KIT-IAI-KHH-B36-V1.gml' found"
+    },
+    {
+      "name": "dataset_crs",
+      "status": "PASS",
+      "detail": "CRS: urn:adv:crs:ETRS89_UTM32*DE_DHHN92_NH  LOD: LOD2"
+    },
+    {
+      "name": "building_id_completeness",
+      "status": "PASS",
+      "detail": "1/1 Building nodes present"
+    },
+    {
+      "name": "building_bsurf_count[UUID_d281adfc-4901-0f52-540b-4cc1a9325f82]",
+      "status": "PASS",
+      "detail": "7 boundary surfaces ({'WallSurface': 4, 'RoofSurface': 2, 'GroundSurface': 1})"
+    },
+    {
+      "name": "building_poly_count[UUID_d281adfc-4901-0f52-540b-4cc1a9325f82]",
+      "status": "PASS",
+      "detail": "7 polygons via boundary surfaces in graph"
+    },
+    {
+      "name": "building_pos_list_verbatim",
+      "status": "PASS",
+      "detail": "polygon PolyID7350_878_759628_120742: pos_list preserved verbatim"
+    },
+    {
+      "name": "spatial_layer_exists",
+      "status": "PASS",
+      "detail": "spatial WKT layer 'features' exists"
+    },
+    {
+      "name": "cityobject_bbox_wkt_stored",
+      "status": "PASS",
+      "detail": "no non-Building CityObjects in source — nothing to store"
+    },
+    {
+      "name": "cityobject_location_stored",
+      "status": "PASS",
+      "detail": "no non-Building CityObjects in source — nothing to store"
+    },
+    {
+      "name": "export_file_exists",
+      "status": "PASS",
+      "detail": "10 KB"
+    },
+    {
+      "name": "export_parses_as_xml",
+      "status": "PASS",
+      "detail": "valid XML"
+    },
+    {
+      "name": "export_count[Building]",
+      "status": "PASS",
+      "detail": "1/1"
+    },
+    {
+      "name": "export_ids[Building]",
+      "status": "PASS",
+      "detail": "all 1 IDs present"
+    },
+    {
+      "name": "export_scalars[Building/UUID_d281adfc-4901-0]",
+      "status": "PASS",
+      "detail": "{'function': '1000', 'class': '1000', 'usage': '1000', 'roofType': '1030'}"
+    },
+    {
+      "name": "export_pos_list_verbatim[Building]",
+      "status": "PASS",
+      "detail": "polygon PolyID7350_878_759628_120742: pos_list verbatim preserved"
+    }
+  ],
+  "out_of_scope": [
+    "app:Appearance / ParameterizedTexture / X3DMaterial — texture/appearance data",
+    "bldg:BuildingInstallation, bldg:Door, bldg:Window — nested Building sub-features",
+    "brid:BridgeConstructionElement, brid:BridgeInstallation — nested Bridge sub-features",
+    "tun:TunnelInstallation — nested Tunnel sub-feature",
+    "bldg:lod{N}MultiSurface on Building element directly (not via boundedBy) — only boundary-surface polygons and solid are ingested for buildings",
+    "grp:CityObjectGroup member xlink:href references — group membership not stored in graph",
+    "dem:TINRelief export format — reconstructed as gml:Polygon chain in gml:MultiSurface, not as original gml:TriangulatedSurface/gml:Triangle"
+  ]
+}

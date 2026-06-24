@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+
+# Claude Code project config — not part of the public repo
+CLAUDE.md
+
+# Neo4j Graph Data Science plugin: redistribution-restricted and ~62 MB.
+# Download it into docker/plugins/ yourself (see README "Neo4j plugins").
+# The other plugin JARs (APOC, Spatial, GenAI) are bundled.
+docker/plugins/neo4j-graph-data-science-*.jar
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

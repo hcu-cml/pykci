@@ -1,0 +1,17 @@
+=== unlabeled nodes (neo4j-spatial RTree internal index nodes) ===
+unlabeled_rtree_nodes
+7766
+=== SpatialLayer node ===
+spatial_layer_nodes
+1
+=== spatial RTREE relationships total ===
+rtree_edges
+396033
+=== DB disk size (bytes + human) ===
+store_bytes:
+12224503350
+txlog_bytes:
+16569956095
+---human---
+12G	/data/databases/neo4j
+16G	/data/transactions/neo4j

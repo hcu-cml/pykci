@@ -1,0 +1,23 @@
+# pykci CityGML→Neo4j ingestion, containerized for an apples-to-apples
+# benchmark against 3DCityKG and 3DCityDB (all reading the GML via a bind mount,
+# all under the same Docker cpuset/memory envelope).
+#
+# Build (context = repo root):
+#   docker build -f docker/Dockerfile.ingest -t pykci-ingest .
+#
+# Run (shares the neo4j container's network namespace so the script's hardcoded
+# bolt://localhost:7687 reaches Neo4j; input mounted read-only):
+#   docker run --rm --network container:neo4j \
+#     --cpuset-cpus 0-7 --memory 20g --memory-swap 20g \
+#     -v /abs/path/to/input:/input:ro \
+#     pykci-ingest /input/citygml/hamburg_citygml2_lod2_2025.gml
+FROM python:3.13-slim
+
+# Versions pinned to match the project venv (lxml/numpy ship manylinux wheels,
+# so no build toolchain is needed).
+RUN pip install --no-cache-dir lxml==6.1.0 neo4j==6.2.0 numpy==2.4.4
+
+WORKDIR /app
+COPY ingest_citygml.py /app/ingest_citygml.py
+
+ENTRYPOINT ["python", "ingest_citygml.py"]

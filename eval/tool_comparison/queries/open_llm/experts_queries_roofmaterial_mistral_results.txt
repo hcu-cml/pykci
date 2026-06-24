@@ -1,0 +1,490 @@
+// -----------------------------------------------------------------------------
+// 1. Building typology — height and storey profile per use type
+//    Urban planners use this to understand the vertical density profile
+//    of each function class: residential, commercial, industrial, etc.
+//    Building type is extracted from the auto-generated description field.
+// -----------------------------------------------------------------------------
+
+Building typology -- height and storey profile per use type Urban planners use this to understand the vertical density profile of each function class: residential, commercial, industrial, etc. Building type is extracted from the auto-generated description field.
+
+```cypher
+MATCH (b:Building)
+WHERE b.description CONTAINS 'residential' OR
+      b.description CONTAINS 'commercial' OR
+      b.description CONTAINS 'industrial' OR
+      b.description CONTAINS 'office' OR
+      b.description CONTAINS 'public' OR
+      b.description CONTAINS 'mixed'
+WITH b,
+     CASE
+       WHEN b.description CONTAINS 'residential' THEN 'residential'
+       WHEN b.description CONTAINS 'commercial' THEN 'commercial'
+       WHEN b.description CONTAINS 'industrial' THEN 'industrial'
+       WHEN b.description CONTAINS 'office' THEN 'office'
+       WHEN b.description CONTAINS 'public' THEN 'public'
+       WHEN b.description CONTAINS 'mixed' THEN 'mixed-use'
+       ELSE 'other'
+     END AS use_type
+RETURN use_type,
+       count(b) AS building_count,
+       avg(b.measured_height) AS avg_height_m,
+       min(b.measured_height) AS min_height_m,
+       max(b.measured_height) AS max_height_m,
+       avg(b.storeys_above_ground) AS avg_storeys,
+       min(b.storeys_above_ground) AS min_storeys,
+       max(b.storeys_above_ground) AS max_storeys
+ORDER BY building_count DESC
+```
+
+No results found.
+
+Query time: 62.925 s
+
+
+
+// -----------------------------------------------------------------------------
+// 2. 1 km spatial grid — building density, height, and dominant roof material
+//    Breaks Hamburg into 1 km × 1 km cells and summarises each.
+//    Useful for density zoning analysis and morphological mapping.
+//    Only cells with ≥ 30 buildings are shown to filter sparse rural edges.
+// -----------------------------------------------------------------------------
+
+1 km spatial grid -- building density, height, and dominant roof material Breaks Hamburg into 1 km x 1 km cells and summarises each. 
+Useful for density zoning analysis and morphological mapping. Only cells with >= 30 buildings are shown to filter sparse rural edges.
+
+[error] {neo4j_code: Neo.ClientError.Statement.SyntaxError} {message: Variable `x` not defined (line 15, column 3 (offset: 690))
+"  x + 500 AS cell_center_x,"
+   ^} {gql_status: 42001} {gql_status_description: error: syntax error or access rule violation - invalid syntax}
+
+
+DOES NOT WORK!!!
+
+
+// -----------------------------------------------------------------------------
+// 3. Solar potential scoring — ranked list of best candidates
+//    Composite score based on: roof shape (flat = highest), material
+//    suitability, height above 10 m (clears most trees/obstacles),
+//    and multi-storey (higher energy demand justifies installation).
+//    Score range: 0 (unsuitable) to 7 (excellent).
+// -----------------------------------------------------------------------------
+
+Solar potential scoring -- ranked list of best candidates Composite score based on: roof shape (flat = highest), material suitability, height above 10 m (clears most trees/obstacles), and multi-storey (higher energy demand justifies installation). Score range: 0 (unsuitable) to 7 (excellent).
+
+```cypher
+MATCH (b:Building)
+WHERE b.measured_height > 10
+  AND b.storeys_above_ground > 1
+  AND b.roof_type_code = '1000'
+  AND b.predictedroofmaterial IN ['concrete', 'glass', 'metal', 'roof_tiles', 'tar_paper']
+WITH b,
+     CASE
+       WHEN b.roof_type_code = '1000' THEN 3 ELSE 0
+     END AS roof_shape_score,
+     CASE
+       WHEN b.predictedroofmaterial IN ['concrete', 'metal', 'roof_tiles', 'tar_paper'] THEN 2
+       WHEN b.predictedroofmaterial = 'glass' THEN 1
+       ELSE 0
+     END AS material_score,
+     CASE WHEN b.measured_height > 10 THEN 1 ELSE 0 END AS height_score,
+     CASE WHEN b.storeys_above_ground > 1 THEN 1 ELSE 0 END AS storeys_score
+WITH b, roof_shape_score + material_score + height_score + storeys_score AS composite_score
+WHERE composite_score > 0
+RETURN b.id AS building_id,
+       b.name AS building_name,
+       b.roof_type_code AS roof_type,
+       b.predictedroofmaterial AS roof_material,
+       b.measured_height AS height_m,
+       b.storeys_above_ground AS storeys,
+       composite_score
+ORDER BY composite_score DESC, b.measured_height DESC
+LIMIT 100
+```
+
+Here is the ranked list of the **best solar potential candidates** based on the given composite score of **7 (excellent)**. All buildings in the query result meet the criteria for excellent solar potential, as they share the following traits:
+
+- **Roof type**: `1000` (flat roof, highest suitability)
+- **Roof material**: Mostly `tar_paper`, `concrete`, `roof_tiles`, or `metal` (all suitable for solar panels)
+- **Height**: All exceed **10m** (clearing most obstacles)
+- **Storeys**: Multi-storey (justifying installation due to higher energy demand)
+
+### **Top Candidates (Sorted by Height, Descending)**
+*(Higher buildings may have fewer shading obstructions and better sun exposure.)*
+
+| Rank | **Building ID**       | **Height (m)** | **Storeys** | **Roof Material** | **Composite Score** |
+|------|-----------------------|----------------|-------------|-------------------|---------------------|
+| 1    | DEHHALKA1FW000LN      | 128.966        | 2           | tar_paper         | 7                   |
+| 2    | DEHHALKAJ0000yIP      | 107.929        | 27          | tar_paper         | 7                   |
+| 3    | DEHHALKA10006bd3      | 97.196         | 26          | tar_paper         | 7                   |
+| 4    | DEHHALKAP0007cPo      | 94.555         | 29          | concrete          | 7                   |
+| 5    | DEHHALKAV0000fCD      | 93.834         | 21          | tar_paper         | 7                   |
+| 6    | DEHHALKA10007wzP      | 88.963         | 24          | concrete          | 7                   |
+| 7    | DEHHALKAJ000104O      | 88.438         | 23          | concrete          | 7                   |
+| 8    | DEHHALKAJ0000zOL      | 81.731         | 21          | concrete          | 7                   |
+| 9    | DEHHALKAJ0000p74      | 80.985         | 22          | roof_tiles        | 7                   |
+| 10   | DEHHALKAP0007cG6      | 80.406         | 26          | concrete          | 7                   |
+| ...  | ...                   | ...            | ...         | ...               | ...                 |
+
+*(Full list continues for all 100 buildings in the query result, all with a **composite score of 7**.)*
+
+### **Key Observations:**
+1. **All buildings in the result are excellent candidates** (score = 7).
+2. **Tallest buildings (128.966m – 50m)** may have the best solar potential due to minimal shading.
+3. **Roof materials** (`tar_paper`, `concrete`, `roof_tiles`, `metal`) are all solar-friendly.
+4. **Multi-storey buildings** (up to 29 storeys) justify solar installation due to high energy demand.
+
+### **Recommendation:**
+- **Prioritize the tallest buildings first** (e.g., `DEHHALKA1FW000LN` at **128.966m**) for maximum sunlight exposure.
+- **Concrete and tar_paper roofs** are the most common and durable for solar panel mounting.
+- **All listed buildings are viable**—selection can be further refined based on **roof area, orientation, or local shading analysis**.
+
+Would you like a filtered subset (e.g., only buildings > 100m tall, or with a specific roof material)?
+
+Query time: 106.632 s
+
+
+
+// -----------------------------------------------------------------------------
+// 4. Floor-to-floor height anomaly detection — data quality flag
+//    A typical storey is 3–4 m. Values outside 2–8 m indicate either
+//    special structures (industrial halls, towers, carports) or measurement
+//    errors in the source data — valuable for data quality auditing.
+// -----------------------------------------------------------------------------
+
+Floor-to-floor height anomaly detection — data quality flag A typical storey is 3–4 m. Values outside 2–8 m indicate either special structures errors in the source data — valuable for data quality auditing. (industrial halls, towers, carports) or measurement
+
+```cypher
+MATCH (b:Building)
+WHERE b.measured_height IS NOT NULL AND b.storeys_above_ground IS NOT NULL
+  AND b.storeys_above_ground > 0
+WITH b,
+     b.measured_height / b.storeys_above_ground AS floor_to_floor_height
+WHERE floor_to_floor_height < 2 OR floor_to_floor_height > 8
+RETURN b.id AS building_id,
+       b.measured_height AS height_m,
+       b.storeys_above_ground AS storeys,
+       round(floor_to_floor_height, 2) AS floor_to_floor_height_m,
+       CASE
+         WHEN floor_to_floor_height < 2 THEN 'too_low'
+         ELSE 'too_high'
+       END AS anomaly_type
+ORDER BY abs(floor_to_floor_height - 5.5) DESC
+```
+
+The query results show **547 buildings** flagged with the anomaly type **"too_high"** for their floor-to-floor height.
+
+### Key Observations:
+1. **Single-Storey Buildings with Extreme Heights**:
+   - Many buildings have **1 storey** but floor-to-floor heights **far exceeding 8 m** (e.g., `DEHHALKAJ0000ovW` with **121.64 m**).
+   - These are likely **data errors** (e.g., misclassified towers, industrial structures, or incorrect unit conversions).
+
+2. **Multi-Storey Buildings with Unrealistic Heights**:
+   - Some buildings with **2–5 storeys** have floor-to-floor heights **> 20 m** (e.g., `DEHHALKAP0007WG0` with **5 storeys** and **27.95 m** per floor).
+   - These may represent **special structures** (e.g., towers, atriums) but should be validated.
+
+3. **Borderline Cases (2–8 m Range)**:
+   - A few buildings (e.g., `DEHHALKA8os0000c` with **20.09 m**) are **just above 8 m**, which could still be anomalies depending on context.
+
+### Conclusion:
+The **"too_high"** flag effectively identifies **potential data quality issues** or **special-case structures** where floor-to-floor heights deviate from typical **3–4 m** expectations. Further manual review is recommended for:
+- **Single-storey buildings > 8 m** (likely errors).
+- **Multi-storey buildings > 6 m per floor** (possible special structures).
+
+Would you like a breakdown by **storey count** or **height range** for deeper analysis?
+
+Query time: 128.453 s
+
+
+// -----------------------------------------------------------------------------
+// 5. Roof material distribution by building function
+//    Cross-tabulation: for each use type, what fraction of buildings
+//    has each predicted roof material? Reveals whether material
+//    predictions correlate with known building typologies.
+//    Only types with ≥ 500 buildings included.
+// -----------------------------------------------------------------------------
+
+Roof material distribution by building function Cross-tabulation: for each use type, what fraction of buildings has each predicted roof material? Reveals whether material predictions correlate with known building typologies. Only types with ≥ 500 buildings included.
+
+[error] {neo4j_code: Neo.ClientError.Statement.SyntaxError} {message: Invalid input 'OVER': expected an expression, ',', 'AS', 'ORDER BY', 'CALL', 'CREATE', 'LOAD CSV', 'DELETE', 'DETACH', 'FINISH', 'FOREACH', 'INSERT', 'LIMIT', 'MATCH', 'MERGE', 'NODETACH', 'OFFSET', 'OPTIONAL', 'REMOVE', 'RETURN', 'SET', 'SKIP', 'UNION', 'UNWIND', 'USE', 'WHERE', 'WITH' or <EOF> (line 4, column 44 (offset: 222))
+"WITH function, material, total, sum(total) OVER (PARTITION BY function) AS func_total"
+                                            ^} {gql_status: 42001} {gql_status_description: error: syntax error or access rule violation - invalid syntax}
+DOES NOT WORK!!!
+
+
+// -----------------------------------------------------------------------------
+// 6. Urban heat island proxy — dark roof fraction per 2 km grid cell
+//    Tar paper and metal absorb significantly more solar radiation than
+//    concrete, tiles, or glass. High dark-roof density correlates with
+//    elevated surface temperatures (urban heat island effect).
+//    Only cells with ≥ 50 buildings with material predictions included.
+// -----------------------------------------------------------------------------
+
+Urban heat island proxy -- dark roof fraction per 2 km grid cell Tar paper and metal absorb significantly more solar radiation than concrete, tiles, or glass. High dark-roof density correlates with elevated surface temperatures (urban heat island effect). Only cells with ≥ 50 buildings with material predictions included.
+
+Thinking...
+[error] {neo4j_code: Neo.ClientError.Procedure.ProcedureNotFound} {message: There is no procedure with the name `apoc.util.round` registered for this database instance. Please ensure you've spelled the procedure name correctly and that the procedure is properly deployed.} {gql_status: 42001} {gql_status_description: error: syntax error or access rule violation - invalid syntax}
+DOES NOT WORK!!!
+
+
+// -----------------------------------------------------------------------------
+// 7. Roof material prediction coverage completeness
+//    The material_cov values from the ML prediction indicate what fraction
+//    of the roof each material covers. A building with total coverage < 0.9
+//    has an unexplained portion — useful to assess prediction confidence
+//    and identify buildings that need re-inspection.
+// -----------------------------------------------------------------------------
+
+Roof material prediction coverage completeness The material_cov values from the ML prediction indicate what fraction of the roof each material covers. A building with total coverage < 0.9 has an unexplained portion -- useful to assess prediction confidence and identify buildings that need re-inspection.
+
+```cypher
+MATCH (b:Building)
+WHERE b.predictedroofmaterial IS NOT NULL
+WITH b, split(b.predictedroofmaterial, '|') AS parts
+WITH b, [part IN parts | toFloat(split(part, ':')[1])] AS covs
+WITH b, reduce(total=0.0, c IN covs | total + c) AS total_cov
+WHERE total_cov < 0.9
+RETURN b.id, b.name, total_cov, b.predictedroofmaterial
+ORDER BY total_cov ASC
+```
+
+No results found.
+
+Query time: 10.963 s
+
+
+// -----------------------------------------------------------------------------
+// 8. High-rise cluster detection — 500 m grid cells with multiple tall buildings
+//    Tall buildings (> 30 m) rarely stand alone — this identifies dense
+//    high-rise clusters useful for wind, shadow, and microclimate analysis.
+//    Each cell reports count, height stats, and sample building IDs.
+// -----------------------------------------------------------------------------
+
+High-rise cluster detection -- 500 m grid cells with multiple tall buildings Tall buildings (> 30 m) rarely stand alone -- this identifies dense high-rise clusters useful for wind, shadow, and microclimate analysis. Each cell reports count, height stats, and sample building IDs.
+
+[error] {neo4j_code: Neo.ClientError.Statement.SyntaxError} {message: Type mismatch: expected Integer but was Float (line 6, column 34 (offset: 339))
+"UNWIND range(floor(minX / 500.0) * 500, ceil(maxX / 500.0) * 500, 500) AS cellX"
+                                  ^} {gql_status: 22G03} {gql_status_description: error: data exception - invalid value type}
+
+
+
+// -----------------------------------------------------------------------------
+// 9. Floor area ratio (FAR) proxy per 1 km grid cell
+//    FAR = total floor area / plot area. Here approximated as:
+//      gross floor area ≈ bbox_footprint × storeys_above_ground
+//    Aggregated to 1 km cells as a density planning indicator.
+//    High FAR cells indicate compact, high-intensity development.
+// -----------------------------------------------------------------------------
+
+Floor area ratio (FAR) proxy per 1 km grid cell FAR = total floor area / plot area. Here approximated as: gross floor area ca bbox_footprint x storeys_above_ground Aggregated to 1 km cells as a density planning indicator. High FAR cells indicate compact, high-intensity development.
+
+```cypher
+MATCH (b:Building)
+WHERE b.storeys_above_ground IS NOT NULL AND b.bbox_min_x IS NOT NULL
+WITH
+  floor(toInteger(b.bbox_min_x / 1000)) AS cell_x,
+  floor(toInteger(b.bbox_min_y / 1000)) AS cell_y,
+  (b.bbox_max_x - b.bbox_min_x) * (b.bbox_max_y - b.bbox_min_y) AS footprint,
+  b.storeys_above_ground AS storeys
+WITH cell_x, cell_y,
+     sum(footprint * storeys) AS total_floor_area,
+     sum(footprint) AS total_plot_area
+WHERE total_plot_area > 0
+RETURN
+  cell_x * 1000 AS x_min,
+  cell_y * 1000 AS y_min,
+  (cell_x + 1) * 1000 AS x_max,
+  (cell_y + 1) * 1000 AS y_max,
+  total_floor_area / total_plot_area AS far,
+  total_floor_area,
+  total_plot_area,
+  count(*) AS building_count
+ORDER BY far DESC
+```
+
+The **Floor Area Ratio (FAR)** is a key urban planning metric that measures the **density of development** in a given area. It is calculated as:
+
+**FAR = Total Floor Area / Plot Area**
+
+In your dataset, FAR is approximated for **1 km grid cells** by aggregating the **gross floor area** (derived from building footprints multiplied by the number of storeys above ground) and dividing it by the **plot area** (the land area of the grid cell). This provides a **density indicator** for urban development, where:
+
+- **High FAR (≥ 3.0–4.0+)** → **Ultra-high-density** (e.g., Manhattan, Hong Kong, Singapore)
+  - Dominated by **skyscrapers, mixed-use megastructures, or near-total lot coverage** with tall buildings.
+  - Example cells in your data:
+    - **FAR = 4.28** (e.g., `x_min=566000, y_min=5932000`) → Likely a **central business district (CBD)** with **high-rise offices/residential**.
+    - **FAR = 4.24** (e.g., `x_min=567000, y_min=5932000`) → **Superblocks or dense urban cores**.
+
+- **Moderate FAR (2.0–3.0)** → **High-density urban** (e.g., Paris, Barcelona, Tokyo suburbs)
+  - **Mid-rise buildings (5–15 storeys), row houses, or mixed-use zones**.
+  - Example cells:
+    - **FAR = 2.5–3.0** (e.g., `x_min=561000, y_min=5936000`) → **Residential towers or commercial strips**.
+    - **FAR = 2.8** (e.g., `x_min=560000, y_min=5937000`) → **Transit-oriented development (TOD) areas**.
+
+- **Low FAR (1.0–2.0)** → **Suburban or low-intensity urban** (e.g., most European cities, U.S. suburbs)
+  - **Low-rise buildings (2–4 storeys), detached houses, or industrial zones**.
+  - Example cells:
+    - **FAR = 1.5–1.8** (e.g., `x_min=557000, y_min=5926000`) → **Suburban neighborhoods or light industrial areas**.
+    - **FAR = 1.4** (e.g., `x_min=573000, y_min=5950000`) → **Sparse development or greenfield sites**.
+
+- **Very Low FAR (< 1.0)** → **Rural, agricultural, or underdeveloped**
+  - **Single-storey structures, open land, or low-impact uses**.
+  - Example cells:
+    - **FAR = 0.5–1.0** (e.g., `x_min=549000, y_min=5937000`) → **Villages, parks, or industrial outskirts**.
+    - **FAR = 0.1–0.5** (e.g., `x_min=572000, y_min=5952000`) → **Farmland or natural areas**.
+
+---
+
+### **Key Observations from Your Data:**
+1. **Highest FAR Cells (4.0+)**
+   - **Compact urban cores** with **near-100% lot coverage** and **high-rise dominance** (e.g., CBDs, financial districts).
+   - Example: `FAR = 4.28` (likely a **downtown area** with **50+ storey buildings**).
+
+2. **Moderate-High FAR (2.0–4.0)**
+   - **Mixed-use zones** (residential + commercial) or **transit hubs**.
+   - Common in **Asian megacities (e.g., Shanghai, Seoul)** or **European inner cities (e.g., Berlin, Amsterdam)**.
+
+3. **Low FAR (< 2.0)**
+   - **Suburban sprawl** (e.g., U.S. Sun Belt cities) or **historical low-rise districts** (e.g., parts of Rome, Kyoto).
+   - **Industrial zones** may also show low FAR if buildings are single-storey (e.g., warehouses).
+
+4. **Outliers & Edge Cases**
+   - **Extremely low FAR (e.g., 0.05–0.1)** → **Parks, water bodies, or unbuilt land**.
+   - **FAR = 0** → **No development** (e.g., `x_min=555000, y_min=5938000` with `total_floor_area = 24675.34` but **FAR = 2.08**—likely a **data error** or **misclassified land use**).
+
+---
+
+### **Planning Implications:**
+| **FAR Range** | **Development Type**          | **Planning Strategy**                          | **Example Cities**          |
+|--------------|-------------------------------|-----------------------------------------------|-----------------------------|
+| **4.0+**     | Ultra-high-density (CBD)      | **Vertical expansion, mixed-use zoning**      | Hong Kong, Manhattan        |
+| **2.0–4.0**  | High-density urban            | **Transit-oriented, infill development**      | Tokyo, Barcelona            |
+| **1.0–2.0**  | Suburban/mid-density          | **Low-rise housing, green spaces**            | Paris suburbs, Berlin       |
+| **< 1.0**    | Rural/low-intensity           | **Agricultural, conservation, or future growth** | Rural France, U.S. Midwest |
+
+---
+### **Recommendations for Analysis:**
+1. **Visualize FAR on a Heatmap**
+   - Use **QGIS, Python (Matplotlib/Seaborn), or Tableau** to plot FAR values.
+   - **High FAR clusters** = **Urban growth hotspots**.
+   - **Low FAR gaps** = **Potential for densification**.
+
+2. **Compare with Other Metrics**
+   - **Population density** → Correlate FAR with **residential vs. commercial use**.
+   - **Green space ratio** → High FAR + low green space = **Urban heat island risk**.
+   - **Transport networks** → High FAR near **metro stations** = **Good TOD**.
+
+3. **Identify Anomalies**
+   - **High FAR but low population** → **Commercial/industrial zones** (e.g., office districts).
+   - **Low FAR in central areas** → **Underutilized land** (opportunity for redevelopment).
+
+4. **Policy Applications**
+   - **Zoning reforms**: Increase FAR limits in **low-FAR urban areas** to encourage density.
+   - **Infrastructure planning**: Prioritize **public transport** in high-FAR corridors.
+   - **Housing affordability**: High FAR can indicate **luxury high-rises** (check income data).
+
+---
+### **Example Python Code for FAR Analysis:**
+```python
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# Load data (assuming it's in a DataFrame)
+data = pd.DataFrame([...])  # Your list of dictionaries
+
+# Calculate FAR (already done in your data, but verify)
+data['far'] = data['total_floor_area'] / data['plot_area']
+
+# Plot FAR distribution
+plt.hist(data['far'], bins=50, color='skyblue', edgecolor='black')
+plt.axvline(x=2.0, color='red', linestyle='--', label='Moderate FAR')
+plt.axvline(x=4.0, color='green', linestyle='--', label='High FAR')
+plt.xlabel('Floor Area Ratio (FAR)')
+plt.ylabel('Number of 1 km Grid Cells')
+plt.title('FAR Distribution Across Grid Cells')
+plt.legend()
+plt.show()
+
+# Identify top 10 highest FAR cells
+top_far = data.nlargest(10, 'far')[['x_min', 'y_min', 'far', 'total_floor_area', 'plot_area']]
+print("Top 10 Highest FAR Cells:")
+print(top_far)
+```
+
+---
+### **Conclusion:**
+Your **1 km grid FAR dataset** effectively captures **urban density patterns**, with:
+- **FAR > 3.0** = **Hyper-dense cores** (likely **CBDs or Asian megacities**).
+- **FAR 2.0–3.0** = **Compact European-style cities**.
+- **FAR < 1.5** = **Suburban or rural areas**.
+
+**Next Steps:**
+- **Overlay with land use data** (residential/commercial/industrial).
+- **Compare with nighttime lights (VIIRS)** to validate development intensity.
+- **Track FAR changes over time** (if historical data is available).
+
+Would you like help with **specific visualizations or spatial analysis**?
+
+Query time: 341.576 s
+
+
+
+
+// -----------------------------------------------------------------------------
+// 10. Ground elevation profile — flood risk and topographic context
+//     Hamburg has areas below sea level (dikes, port basins) down to −5 m
+//     and elevated areas up to 88 m (Alstertal/Bergedorf ridges).
+//     This query combines ground_z with building height to classify
+//     buildings by elevation zone — relevant for flood risk planning.
+// -----------------------------------------------------------------------------
+
+Ground elevation profile -- flood risk and topographic context Hamburg has areas below sea level (dikes, port basins) down to −5 m and elevated areas up to 88 m (Alstertal/Bergedorf ridges). This query combines ground_z with building height to classify buildings by elevation zone -- relevant for flood risk planning.
+
+```cypher
+MATCH (b:Building)
+WITH b,
+     CASE
+       WHEN b.ground_z < -5 THEN 'Below Sea Level (< -5 m)'
+       WHEN b.ground_z < 0 THEN 'Below Sea Level (-5 m to 0 m)'
+       WHEN b.ground_z < 5 THEN 'Lowland (0 m to 5 m)'
+       WHEN b.ground_z < 20 THEN 'Mid-Elevation (5 m to 20 m)'
+       WHEN b.ground_z < 50 THEN 'Highland (20 m to 50 m)'
+       ELSE 'Very High (>= 50 m)'
+     END AS elevation_zone,
+     coalesce(b.measured_height, 0) AS height
+RETURN elevation_zone,
+       count(b) AS building_count,
+       avg(height) AS avg_height_m,
+       min(b.ground_z) AS min_ground_z,
+       max(b.ground_z) AS max_ground_z
+ORDER BY min_ground_z
+```
+
+Here is the ground elevation profile for Hamburg, categorized by elevation zones with building counts, average building heights, and ground elevation ranges:
+
+1. **Below Sea Level (-5 m to 0 m)**
+   - **Building Count:** 603
+   - **Average Building Height:** 5.42 m
+   - **Ground Elevation Range:** -4.989 m to 0.0 m
+
+2. **Lowland (0 m to 5 m)**
+   - **Building Count:** 69,707
+   - **Average Building Height:** 7.04 m
+   - **Ground Elevation Range:** 0.0 m to 4.999 m
+
+3. **Mid-Elevation (5 m to 20 m)**
+   - **Building Count:** 136,855
+   - **Average Building Height:** 8.62 m
+   - **Ground Elevation Range:** 5.0 m to 19.999 m
+
+4. **Highland (20 m to 50 m)**
+   - **Building Count:** 173,599
+   - **Average Building Height:** 7.37 m
+   - **Ground Elevation Range:** 20.0 m to 49.999 m
+
+5. **Very High (>= 50 m)**
+   - **Building Count:** 7,503
+   - **Average Building Height:** 7.44 m
+   - **Ground Elevation Range:** 50.0 m to 88.712 m
+
+This classification highlights flood risk areas (e.g., below sea level) and topographic highs (e.g., Alstertal/Bergedorf ridges). The data is relevant for urban planning and flood risk assessment.
+
+Query time: 98.624 s
+

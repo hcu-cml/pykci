@@ -1,0 +1,267 @@
+==== C1 Hamburg at a glance ====
+SQL: SELECT count(*) AS buildings, round(avg(height)::numeric,1) AS avg_h, round(avg(storeys)::numeric,1) AS avg_storeys FROM bld;
+-- exec(incl psql): 3.441s --
+    388267 |   7.7 |         1.7
+
+==== C2 Most common roof material (+pct) ====
+SQL: SELECT material, count(*) AS n, round(100.0*count(*)/sum(count(*)) OVER (),1) AS pct FROM bld WHERE material IS NOT NULL GROUP BY material ORDER BY n DESC;
+-- exec(incl psql): 3.861s --
+ roof_tiles | 108659 | 55.8
+ tar_paper  |  51435 | 26.4
+ concrete   |  22923 | 11.8
+ metal      |   8550 |  4.4
+ glass      |   3232 |  1.7
+
+==== C3 20 tallest buildings ====
+SQL: SELECT gmlid, round(height::numeric,3) AS height_m, function, material FROM bld WHERE height IS NOT NULL ORDER BY height DESC LIMIT 20;
+-- exec(incl psql): 2.694s --
+ DEHHALKAJ0000yvD |  158.470 | 31001_2540 | tar_paper
+ DEHHALKAJ0004qT4 |  158.256 | 51001_1008 | tar_paper
+ DEHHALKAP0007WG0 |  139.754 | 31001_1010 | roof_tiles
+ DEHHALKA1FW000LN |  128.966 | 31001_2500 | tar_paper
+ DEHHALKAJ0000ovW |  121.641 | 31001_3040 | tar_paper
+ DEHHALKAn0006JXQ |  111.334 | 51001_1008 | 
+ DEHHALKA9dh0006P |  109.401 | 51002_1290 | 
+ DEHHALKAJ0000yIP |  107.929 | 31001_2071 | tar_paper
+ DEHHALKA1FW000K6 |   99.507 | 31001_2500 | tar_paper
+ DEHHALKA10006bd3 |   97.196 | 31001_2010 | tar_paper
+ DEHHALKAJ0000pTk |   96.328 | 31001_3030 | tar_paper
+ DEHHALKAP0007cPo |   94.555 | 31001_1010 | concrete
+ DEHHALKAV0000fCD |   93.834 | 31001_3020 | tar_paper
+ DEHHALKA10007wzP |   88.963 | 31001_2010 | concrete
+ DEHHALKAJ000104O |   88.438 | 31001_2010 | concrete
+ DEHHALKA6Ec0008g |   87.124 | 51002_1290 | 
+ DEHHALKAJ0000pO5 |   83.843 | 31001_3040 | roof_tiles
+ DEHHALKAJ0000zOL |   81.731 | 31001_2010 | concrete
+ DEHHALKAJ0000p74 |   80.985 | 31001_2010 | roof_tiles
+ DEHHALKAP0007cG6 |   80.406 | 31001_1120 | concrete
+
+==== C4 Roof shapes popularity ====
+SQL: SELECT rooftype, CASE rooftype WHEN '1000' THEN 'Flat' WHEN '2100' THEN 'Mono-Pitch' WHEN '2200' THEN 'Offset Mono-Pitch' WHEN '3100' THEN 'Gable' WHEN '3200' THEN 'Hip' WHEN '3300' THEN 'Half-Hip' WHEN '3400' THEN 'Mansard' WHEN '3500' THEN 'Tent/Pyramid' WHEN '4000' THEN 'Tower' WHEN '5000' THEN 'Mixed' ELSE 'Other' END AS shape, count(*) AS n FROM bld WHERE rooftype IS NOT NULL GROUP BY rooftype ORDER BY n DESC;
+-- exec(incl psql): 3.383s --
+ 1000     | Flat         | 169964
+ 3100     | Gable        | 162368
+ 3200     | Hip          |  29990
+ 2100     | Mono-Pitch   |  21202
+ 3500     | Tent/Pyramid |   4054
+ 4000     | Tower        |    596
+ 9999     | Other        |     93
+
+==== C5 Solar: flat roofs >5m (count) ====
+SQL: SELECT count(*) AS flat_over_5m FROM bld WHERE rooftype='1000' AND height>5;
+-- exec(incl psql): 2.381s --
+        70162
+
+==== C6 Buildings per storey count ====
+SQL: SELECT storeys, count(*) AS n FROM bld WHERE storeys IS NOT NULL GROUP BY storeys ORDER BY storeys;
+-- exec(incl psql): 3.199s --
+       1 | 244389
+       2 |  75353
+       3 |  24071
+       4 |  16698
+       5 |   9056
+       6 |   3158
+       7 |   1208
+       8 |    695
+       9 |    470
+      10 |    274
+      11 |     62
+      12 |     58
+      13 |     70
+      14 |     51
+      15 |     32
+      16 |     39
+      17 |     15
+      18 |     13
+      19 |      6
+      20 |      4
+      21 |      6
+      22 |      7
+      23 |      2
+      24 |      2
+      26 |      3
+      27 |      1
+
+==== C7 Glass roofs (count) ====
+SQL: SELECT count(*) AS glass_roofs FROM bld WHERE material='glass';
+-- exec(incl psql): 3.209s --
+        3232
+
+==== C8 High-rises > 50 m ====
+SQL: SELECT count(*) AS over_50m FROM bld WHERE height>50;
+-- exec(incl psql): 2.341s --
+      149
+
+==== C9 Mixed roof materials (FEASIBILITY) ====
+SQL: SELECT max(c) AS max_materials_per_building FROM (SELECT feature_id, count(*) AS c FROM citydb.property WHERE name='PredictedRoofMaterial' GROUP BY feature_id) t;
+-- exec(incl psql): 0.382s --
+                          1
+
+==== C10 HafenCity bbox (envelope centroid) ====
+SQL: SELECT count(*) AS buildings, round(avg(height)::numeric,1) AS avg_h, count(material) AS with_material FROM bld WHERE cx BETWEEN 565000 AND 567000 AND cy BETWEEN 5933000 AND 5934000;
+-- exec(incl psql): 0.607s --
+       783 |  24.2 |           707
+
+==== E1 Typology by function code ====
+SQL: SELECT function, count(*) AS n, round(avg(height)::numeric,1) AS avg_h, round(avg(storeys)::numeric,1) AS avg_storeys FROM bld WHERE function IS NOT NULL GROUP BY function ORDER BY n DESC LIMIT 15;
+-- exec(incl psql): 2.629s --
+ 31001_1010 | 207236 |   9.5 |         1.9
+ 31001_2460 |  58501 |   3.0 |         1.0
+ 31001_1310 |  32681 |   3.2 |         1.0
+ 31001_1120 |   9878 |  16.0 |         3.7
+ 31001_1313 |   8879 |   4.2 |         1.0
+ 51009_1610 |   8027 |   5.9 |            
+ 31001_2010 |   7568 |  12.5 |         3.0
+ 31001_1100 |   6867 |   9.1 |         1.8
+ 31001_2140 |   6253 |   6.2 |         1.2
+ 31001_2100 |   5279 |   7.5 |         1.5
+ 31001_2700 |   3276 |   5.0 |         1.1
+ 31001_2463 |   3020 |   4.5 |         1.0
+ 31001_2500 |   2860 |   5.1 |         1.1
+ 31001_2740 |   2821 |   4.3 |         1.0
+ 31001_3020 |   2591 |   9.5 |         2.1
+
+==== E2 1km grid: density/height/dominant material (>=30) ====
+SQL: , grid AS (SELECT floor(cx/1000)::int AS gx, floor(cy/1000)::int AS gy, count(*) AS buildings, round(avg(height)::numeric,1) AS avg_h, mode() WITHIN GROUP (ORDER BY material) FILTER (WHERE material IS NOT NULL) AS dominant_material FROM bld GROUP BY 1,2) SELECT gx AS x_km, gy AS y_km, buildings, avg_h, dominant_material FROM grid WHERE buildings>=30 ORDER BY buildings DESC LIMIT 15;
+-- exec(incl psql): 2.982s --
+  570 | 5946 |      1836 |   6.9 | roof_tiles
+  578 | 5926 |      1747 |   6.8 | roof_tiles
+  573 | 5944 |      1671 |   6.8 | roof_tiles
+  563 | 5942 |      1654 |   7.0 | roof_tiles
+  563 | 5943 |      1573 |   7.4 | roof_tiles
+  573 | 5942 |      1552 |   7.1 | roof_tiles
+  567 | 5927 |      1543 |   5.7 | roof_tiles
+  558 | 5935 |      1543 |   8.8 | roof_tiles
+  563 | 5924 |      1531 |   9.9 | roof_tiles
+  566 | 5921 |      1524 |   7.3 | roof_tiles
+  559 | 5942 |      1516 |   7.1 | roof_tiles
+  565 | 5920 |      1510 |   7.2 | roof_tiles
+  573 | 5943 |      1496 |   6.8 | roof_tiles
+  570 | 5947 |      1495 |   6.3 | roof_tiles
+  564 | 5923 |      1482 |  10.0 | roof_tiles
+
+==== E3 Solar potential score 0-7 (ranked) ====
+SQL: SELECT gmlid, (CASE rooftype WHEN '1000' THEN 3 WHEN '2100' THEN 1 ELSE 0 END + CASE material WHEN 'concrete' THEN 2 WHEN 'tar_paper' THEN 2 WHEN 'metal' THEN 2 WHEN 'roof_tiles' THEN 1 ELSE 0 END + CASE WHEN height>10 THEN 1 ELSE 0 END + CASE WHEN storeys>1 THEN 1 ELSE 0 END) AS score, rooftype, material, round(height::numeric,2) AS h FROM bld ORDER BY score DESC, height DESC LIMIT 15;
+-- exec(incl psql): 2.804s --
+ DEHHALKA1FW000LN |     7 | 1000     | tar_paper | 128.97
+ DEHHALKAJ0000yIP |     7 | 1000     | tar_paper | 107.93
+ DEHHALKA10006bd3 |     7 | 1000     | tar_paper |  97.20
+ DEHHALKAP0007cPo |     7 | 1000     | concrete  |  94.56
+ DEHHALKAV0000fCD |     7 | 1000     | tar_paper |  93.83
+ DEHHALKA10007wzP |     7 | 1000     | concrete  |  88.96
+ DEHHALKAJ000104O |     7 | 1000     | concrete  |  88.44
+ DEHHALKAJ0000zOL |     7 | 1000     | concrete  |  81.73
+ DEHHALKAP0007cG6 |     7 | 1000     | concrete  |  80.41
+ DEHHALKAJ0000pPz |     7 | 1000     | tar_paper |  78.41
+ DEHHALKAJ0000owJ |     7 | 1000     | metal     |  73.93
+ DEHHALKAP000188S |     7 | 1000     | tar_paper |  73.32
+ DEHHALKA4IB000Cv |     7 | 1000     | concrete  |  72.94
+ DEHHALKAP0000v7r |     7 | 1000     | concrete  |  72.63
+ DEHHALKAJ0000pRb |     7 | 1000     | concrete  |  72.28
+
+==== E4 Floor-to-floor anomaly (<2 or >8 m) count ====
+SQL: SELECT count(*) AS anomalies FROM bld WHERE storeys>0 AND height IS NOT NULL AND (height/storeys<2 OR height/storeys>8);
+-- exec(incl psql): 2.439s --
+     68545
+
+==== E5 Roof material x function code (>=500) ====
+SQL: , ft AS (SELECT function, count(*) AS type_total FROM bld WHERE material IS NOT NULL AND function IS NOT NULL GROUP BY function HAVING count(*)>=500) SELECT b.function, ft.type_total, b.material, round(100.0*count(*)/ft.type_total,1) AS pct FROM bld b JOIN ft ON ft.function=b.function WHERE b.material IS NOT NULL GROUP BY b.function, ft.type_total, b.material ORDER BY b.function, pct DESC LIMIT 30;
+-- exec(incl psql): 3.658s --
+ 31001_1010 |     129738 | roof_tiles | 67.6
+ 31001_1010 |     129738 | tar_paper  | 18.0
+ 31001_1010 |     129738 | concrete   | 10.6
+ 31001_1010 |     129738 | metal      |  3.2
+ 31001_1010 |     129738 | glass      |  0.7
+ 31001_1020 |       1309 | tar_paper  | 43.2
+ 31001_1020 |       1309 | roof_tiles | 37.9
+ 31001_1020 |       1309 | concrete   |  9.5
+ 31001_1020 |       1309 | metal      |  7.0
+ 31001_1020 |       1309 | glass      |  2.4
+ 31001_1100 |       5721 | roof_tiles | 71.5
+ 31001_1100 |       5721 | tar_paper  | 17.4
+ 31001_1100 |       5721 | concrete   |  8.5
+ 31001_1100 |       5721 | metal      |  1.9
+ 31001_1100 |       5721 | glass      |  0.7
+ 31001_1120 |       9451 | roof_tiles | 52.9
+ 31001_1120 |       9451 | tar_paper  | 30.9
+ 31001_1120 |       9451 | concrete   | 14.8
+ 31001_1120 |       9451 | metal      |  1.1
+ 31001_1120 |       9451 | glass      |  0.3
+ 31001_1130 |        770 | roof_tiles | 59.0
+ 31001_1130 |        770 | tar_paper  | 26.4
+ 31001_1130 |        770 | concrete   | 12.3
+ 31001_1130 |        770 | metal      |  2.1
+ 31001_1130 |        770 | glass      |  0.3
+ 31001_1210 |        735 | roof_tiles | 88.7
+
+==== E6 Heat-island: dark-roof pct per 2km cell (>=50) ====
+SQL: , grid AS (SELECT floor(cx/2000)::int AS gx, floor(cy/2000)::int AS gy, count(*) AS withmat, count(*) FILTER (WHERE material IN ('tar_paper','metal')) AS dark FROM bld WHERE material IS NOT NULL GROUP BY 1,2) SELECT gx AS x_2km, gy AS y_2km, withmat, dark, round(100.0*dark/withmat,1) AS dark_pct FROM grid WHERE withmat>=50 ORDER BY dark_pct DESC LIMIT 15;
+-- exec(incl psql): 4.227s --
+   281 |  2964 |     519 |  374 |     72.1
+   284 |  2965 |     502 |  339 |     67.5
+   277 |  2966 |     153 |  103 |     67.3
+   281 |  2965 |     234 |  155 |     66.2
+   284 |  2966 |    1234 |  801 |     64.9
+   286 |  2965 |     666 |  429 |     64.4
+   282 |  2963 |     638 |  404 |     63.3
+   283 |  2965 |     404 |  250 |     61.9
+   280 |  2965 |     208 |  119 |     57.2
+   290 |  2965 |      70 |   40 |     57.1
+   283 |  2966 |     642 |  364 |     56.7
+   285 |  2965 |     517 |  289 |     55.9
+   282 |  2965 |     710 |  383 |     53.9
+   280 |  2962 |     434 |  230 |     53.0
+   282 |  2966 |    1090 |  567 |     52.0
+
+==== E7 Material coverage completeness (FEASIBILITY) ====
+SQL: SELECT count(*) AS coverage_attribute_rows FROM citydb.property WHERE name ILIKE '%cov%' OR name ILIKE '%coverage%';
+-- exec(incl psql): 2.946s --
+                       0
+
+==== E8 High-rise clusters: 500m cells, >30m, >=2 ====
+SQL: , grid AS (SELECT floor(cx/500)::int AS gx, floor(cy/500)::int AS gy, count(*) AS tall, round(avg(height)::numeric,1) AS avg_h, round(max(height)::numeric,1) AS max_h, (array_agg(gmlid ORDER BY height DESC))[1:3] AS sample FROM bld WHERE height>30 GROUP BY 1,2) SELECT gx AS x_500m, gy AS y_500m, tall, avg_h, max_h, sample FROM grid WHERE tall>=2 ORDER BY tall DESC LIMIT 15;
+-- exec(incl psql): 2.591s --
+   1132 |  11868 |   48 |  33.2 |  41.6 | {DEHHALKAJ0000yzK,DEHHALKAJ0000zVg,DEHHALKAJ00011tb}
+   1131 |  11867 |   46 |  37.0 | 121.6 | {DEHHALKAJ0000ovW,DEHHALKAJ0000oze,DEHHALKAJ0000pBE}
+   1131 |  11868 |   39 |  33.3 |  39.1 | {DEHHALKAJ0000zZz,DEHHALKA5uz000Bh,DEHHALKAJ0000pw5}
+   1125 |  11860 |   38 |  39.9 |  51.2 | {DEHHALKA900013gY,DEHHALKAJ00059ZE,DEHHALKA90000oAh}
+   1132 |  11867 |   34 |  35.3 |  62.4 | {DEHHALKA4Tc000PJ,DEHHALKAJ0000zKa,DEHHALKAJ00011Fb}
+   1130 |  11868 |   29 |  36.7 |  52.2 | {DEHHALKAJ0000z3H,DEHHALKAJ0000yMI,DEHHALKAJ0000z3x}
+   1130 |  11867 |   26 |  33.9 |  45.3 | {DEHHALKAJ0000pCN,DEHHALKAJ0000oe7,DEHHALKAJ0000pBu}
+   1131 |  11866 |   26 |  35.2 |  83.8 | {DEHHALKAJ0000pO5,DEHHALKA10003Sci,DEHHALKAJ0000paE}
+   1130 |  11866 |   23 |  37.4 |  78.4 | {DEHHALKAJ0000pPz,DEHHALKAJ0000p4i,DEHHALKAJ0000pGL}
+   1131 |  11869 |   23 |  36.3 |  51.4 | {DEHHALKA3XF000GO,DEHHALKA3XF000Gb,DEHHALKAJ0000yx7}
+   1132 |  11866 |   22 |  37.5 |  56.1 | {DEHHALKA2FI00005,DEHHALKA10003TSo,DEHHALKAJ0000ybf}
+   1134 |  11867 |   19 |  35.3 |  49.6 | {DEHHALKAJ00012Gy,DEHHALKA3Ak0001Y,DEHHALKAJ00012fz}
+   1130 |  11869 |   16 |  39.1 |  97.2 | {DEHHALKA10006bd3,DEHHALKAJ0000ypO,DEHHALKA9iO0007Y}
+   1133 |  11867 |   15 |  35.8 |  42.6 | {DEHHALKA9G2000NL,DEHHALKA2on0009w,DEHHALKA9qA000Bg}
+   1125 |  11854 |   14 |  52.7 | 129.0 | {DEHHALKA1FW000LN,DEHHALKA1FW000Kw,DEHHALKA1FW000Jq}
+
+==== E9 FAR proxy per 1km cell (>=30) ====
+SQL: , grid AS (SELECT floor(cx/1000)::int AS gx, floor(cy/1000)::int AS gy, count(*) AS buildings, sum(dx*dy*storeys) AS gfa FROM bld WHERE storeys IS NOT NULL GROUP BY 1,2) SELECT gx AS x_km, gy AS y_km, buildings, round(gfa::numeric) AS gfa_m2, round((gfa/1000000.0)::numeric,3) AS far FROM grid WHERE buildings>=30 ORDER BY far DESC LIMIT 15;
+-- exec(incl psql): 4.133s --
+  565 | 5934 |       454 | 4602135 | 4.602
+  565 | 5933 |       472 | 4258634 | 4.259
+  567 | 5933 |       296 | 4104060 | 4.104
+  567 | 5934 |       596 | 4078903 | 4.079
+  566 | 5933 |       253 | 3704933 | 3.705
+  566 | 5934 |       501 | 3670831 | 3.671
+  567 | 5937 |       844 | 3055973 | 3.056
+  564 | 5937 |      1079 | 2916242 | 2.916
+  568 | 5936 |       678 | 2692245 | 2.692
+  563 | 5935 |      1297 | 2669849 | 2.670
+  562 | 5934 |       937 | 2635829 | 2.636
+  570 | 5937 |       494 | 2598126 | 2.598
+  564 | 5936 |       664 | 2489275 | 2.489
+  561 | 5934 |      1017 | 2406468 | 2.406
+  563 | 5937 |       957 | 2396740 | 2.397
+
+==== E10 Ground elevation zones (envelope ZMin) ====
+SQL: SELECT CASE WHEN ground_z<0 THEN '1 below sea (<0m)' WHEN ground_z<5 THEN '2 low (0-5m)' WHEN ground_z<20 THEN '3 mid (5-20m)' WHEN ground_z<50 THEN '4 elevated (20-50m)' ELSE '5 high (>50m)' END AS zone, count(*) AS buildings, round(avg(height)::numeric,1) AS avg_h, round(min(ground_z)::numeric,1) AS min_gz, round(max(ground_z)::numeric,1) AS max_gz FROM bld GROUP BY zone ORDER BY zone;
+-- exec(incl psql): 2.433s --
+ 1 below sea (<0m)   |       600 |   5.4 |   -5.0 |    0.0
+ 2 low (0-5m)        |     69710 |   7.0 |    0.0 |    5.0
+ 3 mid (5-20m)       |    136855 |   8.6 |    5.0 |   20.0
+ 4 elevated (20-50m) |    173599 |   7.4 |   20.0 |   50.0
+ 5 high (>50m)       |      7503 |   7.4 |   50.0 |   88.7
+

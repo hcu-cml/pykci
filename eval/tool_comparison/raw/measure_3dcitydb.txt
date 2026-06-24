@@ -1,0 +1,117 @@
+############ 3DCityDB v5 (postgres) — measurement ############
+=== logical DB size (pg_database_size, excludes OS/WAL) ===
+ db_size |    bytes    
+---------+-------------
+ 10 GB   | 10967488191
+(1 row)
+
+=== number of user tables per schema (excl system) ===
+ table_schema | tables 
+--------------+--------
+ tiger        |     34
+ citydb       |     17
+ topology     |      2
+ public       |      1
+(4 rows)
+
+=== rows per table (all non-system base tables) ===
+ schemaname |         relname          |   rows   | total_size 
+------------+--------------------------+----------+------------
+ citydb     | property                 | 16422595 | 4043 MB
+ citydb     | geometry_data            |  5310087 | 3973 MB
+ citydb     | feature                  |  4922022 | 2382 MB
+ citydb     | address                  |   388835 | 41 MB
+ public     | spatial_ref_sys          |     8500 | 7144 kB
+ tiger      | pagc_rules               |     4354 | 856 kB
+ tiger      | pagc_lex                 |     2938 | 336 kB
+ tiger      | pagc_gaz                 |      835 | 128 kB
+ tiger      | street_type_lookup       |      609 | 128 kB
+ citydb     | codelist_entry           |      350 | 88 kB
+ citydb     | datatype                 |      149 | 120 kB
+ citydb     | objectclass              |      117 | 168 kB
+ tiger      | state_lookup             |       59 | 104 kB
+ tiger      | secondary_unit_lookup    |       39 | 40 kB
+ tiger      | direction_lookup         |       28 | 40 kB
+ citydb     | namespace                |       18 | 32 kB
+ tiger      | loader_lookuptables      |       13 | 64 kB
+ tiger      | geocode_settings_default |        7 | 32 kB
+ citydb     | codelist                 |        3 | 48 kB
+ tiger      | loader_platform          |        2 | 32 kB
+ tiger      | loader_variables         |        1 | 32 kB
+ citydb     | database_srs             |        1 | 32 kB
+ tiger      | zip_lookup               |        0 | 8192 bytes
+ tiger      | zip_lookup_base          |        0 | 8192 bytes
+ tiger      | county                   |        0 | 32 kB
+ tiger      | zcta5                    |        0 | 16 kB
+ tiger      | countysub_lookup         |        0 | 24 kB
+ citydb     | appearance               |        0 | 40 kB
+ tiger      | geocode_settings         |        0 | 16 kB
+ citydb     | tex_image                |        0 | 16 kB
+ citydb     | implicit_geometry        |        0 | 32 kB
+ tiger      | zip_state_loc            |        0 | 8192 bytes
+ tiger      | cousub                   |        0 | 32 kB
+ tiger      | zip_lookup_all           |        0 | 0 bytes
+ tiger      | place                    |        0 | 32 kB
+ citydb     | ade                      |        0 | 16 kB
+ tiger      | addr                     |        0 | 24 kB
+ tiger      | edges                    |        0 | 40 kB
+ tiger      | addrfeat                 |        0 | 48 kB
+ citydb     | surface_data             |        0 | 32 kB
+ topology   | topology                 |        0 | 24 kB
+ tiger      | tabblock20               |        0 | 16 kB
+ topology   | layer                    |        0 | 24 kB
+ citydb     | appear_to_surface_data   |        0 | 24 kB
+ tiger      | tract                    |        0 | 16 kB
+ tiger      | county_lookup            |        0 | 24 kB
+ tiger      | place_lookup             |        0 | 24 kB
+ tiger      | state                    |        0 | 40 kB
+ tiger      | zip_state                |        0 | 8192 bytes
+ tiger      | featnames                |        0 | 32 kB
+ tiger      | bg                       |        0 | 16 kB
+ citydb     | surface_data_mapping     |        0 | 32 kB
+ tiger      | faces                    |        0 | 40 kB
+ tiger      | tabblock                 |        0 | 16 kB
+(54 rows)
+
+=== exact counts for key tables ===
+ feature | geometry_data | property 
+---------+---------------+----------
+ 4921797 |       5310045 | 16420733
+(1 row)
+
+=== total indexes (non-system) ===
+ total_indexes 
+---------------
+           133
+(1 row)
+
+=== SPATIAL (GIST) indexes — count + list ===
+ gist_spatial_indexes 
+----------------------
+                    8
+(1 row)
+
+ schemaname |   tablename   |           indexname           
+------------+---------------+-------------------------------
+ tiger      | addrfeat      | idx_addrfeat_geom_gist
+ tiger      | cousub        | tige_cousub_the_geom_gist
+ tiger      | edges         | idx_tiger_edges_the_geom_gist
+ tiger      | faces         | tiger_faces_the_geom_gist
+ citydb     | feature       | feature_envelope_spx
+ citydb     | geometry_data | geometry_data_spx
+ tiger      | place         | tiger_place_the_geom_gist
+ tiger      | state         | idx_tiger_state_the_geom_gist
+(8 rows)
+
+=== PostGIS spatial-reference metadata (spatial_ref_sys) rows ===
+ spatial_ref_sys_rows 
+----------------------
+                 8500
+(1 row)
+
+=== size of spatial (GIST) indexes total ===
+ gist_index_size 
+-----------------
+ 425 MB
+(1 row)
+

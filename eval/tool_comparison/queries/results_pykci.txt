@@ -1,0 +1,341 @@
+==== C1 Hamburg at a glance ====
+CYPHER: MATCH (b:Building) RETURN count(b) AS buildings, round(avg(b.measured_height),1) AS avg_height_m, round(avg(b.storeys_above_ground),1) AS avg_storeys;
+-- exec(incl shell): 1.750s --
+buildings, avg_height_m, avg_storeys
+388267, 7.7, 1.7
+
+==== C2 Most common roof material (+ pct) ====
+CYPHER: MATCH (b:Building) WHERE b.predictedroofmaterial IS NOT NULL WITH b.predictedroofmaterial AS m, count(*) AS n WITH collect({m:m,n:n}) AS rows, sum(n) AS tot UNWIND rows AS r RETURN r.m AS material, r.n AS n, round(100.0*r.n/tot,1) AS pct ORDER BY n DESC;
+-- exec(incl shell): 1.698s --
+material, n, pct
+"roof_tiles", 108659, 55.8
+"tar_paper", 51435, 26.4
+"concrete", 22923, 11.8
+"metal", 8550, 4.4
+"glass", 3232, 1.7
+
+==== C3 20 tallest buildings ====
+CYPHER: MATCH (b:Building) WHERE b.measured_height IS NOT NULL RETURN b.id AS id, b.measured_height AS height_m, b.function_code AS fn, b.predictedroofmaterial AS material ORDER BY b.measured_height DESC LIMIT 20;
+-- exec(incl shell): 1.605s --
+id, height_m, fn, material
+"DEHHALKAJ0000yvD", 158.47, "31001_2540", "tar_paper"
+"DEHHALKAJ0004qT4", 158.256, "51001_1008", "tar_paper"
+"DEHHALKAP0007WG0", 139.754, "31001_1010", "roof_tiles"
+"DEHHALKA1FW000LN", 128.966, "31001_2500", "tar_paper"
+"DEHHALKAJ0000ovW", 121.641, "31001_3040", "tar_paper"
+"DEHHALKAn0006JXQ", 111.334, "51001_1008", NULL
+"DEHHALKA9dh0006P", 109.401, "51002_1290", NULL
+"DEHHALKAJ0000yIP", 107.929, "31001_2071", "tar_paper"
+"DEHHALKA1FW000K6", 99.507, "31001_2500", "tar_paper"
+"DEHHALKA10006bd3", 97.196, "31001_2010", "tar_paper"
+"DEHHALKAJ0000pTk", 96.328, "31001_3030", "tar_paper"
+"DEHHALKAP0007cPo", 94.555, "31001_1010", "concrete"
+"DEHHALKAV0000fCD", 93.834, "31001_3020", "tar_paper"
+"DEHHALKA10007wzP", 88.963, "31001_2010", "concrete"
+"DEHHALKAJ000104O", 88.438, "31001_2010", "concrete"
+"DEHHALKA6Ec0008g", 87.124, "51002_1290", NULL
+"DEHHALKAJ0000pO5", 83.843, "31001_3040", "roof_tiles"
+"DEHHALKAJ0000zOL", 81.731, "31001_2010", "concrete"
+"DEHHALKAJ0000p74", 80.985, "31001_2010", "roof_tiles"
+"DEHHALKAP0007cG6", 80.406, "31001_1120", "concrete"
+
+==== C4 Roof shapes popularity ====
+CYPHER: MATCH (b:Building) WHERE b.roof_type_code IS NOT NULL WITH b.roof_type_code AS code, count(*) AS n RETURN code, CASE code WHEN '1000' THEN 'Flat' WHEN '2100' THEN 'Mono-Pitch' WHEN '2200' THEN 'Offset Mono-Pitch' WHEN '3100' THEN 'Gable' WHEN '3200' THEN 'Hip' WHEN '3300' THEN 'Half-Hip' WHEN '3400' THEN 'Mansard' WHEN '3500' THEN 'Tent/Pyramid' WHEN '4000' THEN 'Tower' WHEN '5000' THEN 'Mixed' ELSE 'Other' END AS roof_shape, n ORDER BY n DESC;
+-- exec(incl shell): 1.760s --
+code, roof_shape, n
+"1000", "Flat", 169964
+"3100", "Gable", 162368
+"3200", "Hip", 29990
+"2100", "Mono-Pitch", 21202
+"3500", "Tent/Pyramid", 4054
+"4000", "Tower", 596
+"9999", "Other", 93
+
+==== C5 Solar: flat roofs >5m (ranked) ====
+CYPHER: MATCH (b:Building) WHERE b.roof_type_code='1000' AND b.measured_height > 5 RETURN count(b) AS flat_over_5m;
+-- exec(incl shell): 1.780s --
+flat_over_5m
+70162
+
+==== C5b Solar: top 15 flat roofs by height ====
+CYPHER: MATCH (b:Building) WHERE b.roof_type_code='1000' AND b.measured_height > 5 RETURN b.id AS id, b.measured_height AS height_m, b.predictedroofmaterial AS material ORDER BY b.measured_height DESC LIMIT 15;
+-- exec(incl shell): 1.860s --
+id, height_m, material
+"DEHHALKAJ0000yvD", 158.47, "tar_paper"
+"DEHHALKAJ0004qT4", 158.256, "tar_paper"
+"DEHHALKA1FW000LN", 128.966, "tar_paper"
+"DEHHALKAn0006JXQ", 111.334, NULL
+"DEHHALKA9dh0006P", 109.401, NULL
+"DEHHALKAJ0000yIP", 107.929, "tar_paper"
+"DEHHALKA1FW000K6", 99.507, "tar_paper"
+"DEHHALKA10006bd3", 97.196, "tar_paper"
+"DEHHALKAP0007cPo", 94.555, "concrete"
+"DEHHALKAV0000fCD", 93.834, "tar_paper"
+"DEHHALKA10007wzP", 88.963, "concrete"
+"DEHHALKAJ000104O", 88.438, "concrete"
+"DEHHALKAJ0000zOL", 81.731, "concrete"
+"DEHHALKAJ0000p74", 80.985, "roof_tiles"
+"DEHHALKAP0007cG6", 80.406, "concrete"
+
+==== C6 Buildings per storey count ====
+CYPHER: MATCH (b:Building) WHERE b.storeys_above_ground IS NOT NULL RETURN b.storeys_above_ground AS storeys, count(*) AS n ORDER BY storeys;
+-- exec(incl shell): 1.699s --
+storeys, n
+1, 244389
+2, 75353
+3, 24071
+4, 16698
+5, 9056
+6, 3158
+7, 1208
+8, 695
+9, 470
+10, 274
+11, 62
+12, 58
+13, 70
+14, 51
+15, 32
+16, 39
+17, 15
+18, 13
+19, 6
+20, 4
+21, 6
+22, 7
+23, 2
+24, 2
+26, 3
+27, 1
+29, 1
+
+==== C7 Glass roofs (count + sample) ====
+CYPHER: MATCH (b:Building) WHERE b.predictedroofmaterial='glass' RETURN count(b) AS glass_roofs;
+-- exec(incl shell): 1.777s --
+glass_roofs
+3232
+
+==== C7b Glass roofs sample ====
+CYPHER: MATCH (b:Building) WHERE b.predictedroofmaterial='glass' RETURN b.id AS id, b.measured_height AS h, b.function_code AS fn ORDER BY b.measured_height DESC LIMIT 10;
+-- exec(incl shell): 1.749s --
+id, h, fn
+"DEHHALKA1FW000L7", 43.471, "51003_1201"
+"DEHHALKA2F2000NF", 41.094, "51009_1610"
+"DEHHALKA7000AhvA", 41.056, "51009_1610"
+"DEHHALKAJ000597y", 39.744, "51009_1610"
+"DEHHALKA5uz000Bh", 38.196, "31001_2010"
+"DEHHALKAP0005ff9", 37.146, "51009_1610"
+"DEHHALKAJ0000y6C", 31.382, "31001_2460"
+"DEHHALKAJ0000oyw", 29.941, "31001_2010"
+"DEHHALKAJ000585z", 29.662, "51009_1610"
+"DEHHALKAJ00059rc", 29.213, "51009_1610"
+
+==== C8 High-rises > 50 m ====
+CYPHER: MATCH (b:Building) WHERE b.measured_height > 50 RETURN count(b) AS over_50m;
+-- exec(incl shell): 1.674s --
+over_50m
+149
+
+==== C9 Mixed roof materials (FEASIBILITY CHECK) ====
+CYPHER: MATCH (b:Building) WHERE b.predictedroofmaterial IS NOT NULL AND (b.predictedroofmaterial CONTAINS ';' OR b.predictedroofmaterial CONTAINS ',') RETURN count(b) AS buildings_with_multiple_materials;
+-- exec(incl shell): 1.683s --
+buildings_with_multiple_materials
+0
+
+==== C10 HafenCity bbox (≈565000-567000 E, 5933000-5934000 N) ====
+CYPHER: MATCH (b:Building) WHERE b.center_x>=565000 AND b.center_x<=567000 AND b.center_y>=5933000 AND b.center_y<=5934000 RETURN count(b) AS buildings, round(avg(b.measured_height),1) AS avg_h, count(b.predictedroofmaterial) AS with_material;
+-- exec(incl shell): 1.659s --
+buildings, avg_h, with_material
+783, 24.2, 707
+
+==== E1 Typology: height/storey per use type ====
+CYPHER: MATCH (b:Building) WHERE b.description IS NOT NULL WITH split(b.description, ',')[0] AS use_type, b RETURN use_type, count(*) AS n, round(avg(b.measured_height),1) AS avg_h, round(avg(b.storeys_above_ground),1) AS avg_storeys ORDER BY n DESC LIMIT 15;
+-- exec(incl shell): 2.430s --
+use_type, n, avg_h, avg_storeys
+"Detached House", 207236, 9.5, 1.9
+"Building", 58780, 4.6, 1.1
+"Parking Building", 58501, 3.0, 1.0
+"Residential Building with Trade and Services", 9878, 16.0, 3.7
+"Canopy / Shelter", 8027, 5.9, NULL
+"Trade and Services Building", 7568, 12.5, 3.0
+"Mixed-Use Building with Residential", 6867, 9.1, 1.8
+"Storage Building", 6253, 6.2, 1.2
+"Industrial and Commercial Building", 5279, 7.5, 1.5
+"Garage", 3020, 4.5, 1.0
+"Utilities / Supply Building", 2860, 5.1, 1.1
+"Building for Education and Research", 2591, 9.5, 2.1
+"Commercial Building", 1704, 7.7, 1.6
+"Residential Home / Dormitory", 1417, 10.7, 2.8
+"Building for Social Purposes", 1283, 7.4, 1.6
+
+==== E2 1km grid: density/height/dominant material (>=30) ====
+CYPHER: MATCH (b:Building) WHERE b.center_x IS NOT NULL WITH toInteger(floor(b.center_x/1000.0)) AS gx, toInteger(floor(b.center_y/1000.0)) AS gy, b WITH gx, gy, count(b) AS buildings, round(avg(b.measured_height),1) AS avg_h, [m IN collect(b.predictedroofmaterial) WHERE m IS NOT NULL] AS mats WHERE buildings>=30 WITH gx, gy, buildings, avg_h, apoc.coll.frequencies(mats) AS freq WITH gx, gy, buildings, avg_h, CASE WHEN size(freq)=0 THEN 'n/a' ELSE apoc.coll.sortMaps(freq,'count')[0].item END AS dominant_material RETURN gx AS x_km, gy AS y_km, buildings, avg_h, dominant_material ORDER BY buildings DESC LIMIT 15;
+-- exec(incl shell): 1.881s --
+x_km, y_km, buildings, avg_h, dominant_material
+570, 5946, 1836, 6.9, "roof_tiles"
+578, 5926, 1747, 6.8, "roof_tiles"
+573, 5944, 1671, 6.8, "roof_tiles"
+563, 5942, 1654, 7.0, "roof_tiles"
+563, 5943, 1573, 7.4, "roof_tiles"
+573, 5942, 1552, 7.1, "roof_tiles"
+558, 5935, 1543, 8.8, "roof_tiles"
+567, 5927, 1543, 5.7, "roof_tiles"
+563, 5924, 1531, 9.9, "roof_tiles"
+566, 5921, 1524, 7.3, "roof_tiles"
+559, 5942, 1516, 7.1, "roof_tiles"
+565, 5920, 1510, 7.2, "roof_tiles"
+573, 5943, 1496, 6.8, "roof_tiles"
+570, 5947, 1495, 6.3, "roof_tiles"
+564, 5923, 1482, 10.0, "roof_tiles"
+
+==== E3 Solar potential score 0-7 (ranked) ====
+CYPHER: MATCH (b:Building) WITH b, (CASE b.roof_type_code WHEN '1000' THEN 3 WHEN '2100' THEN 1 ELSE 0 END) + (CASE b.predictedroofmaterial WHEN 'concrete' THEN 2 WHEN 'tar_paper' THEN 2 WHEN 'metal' THEN 2 WHEN 'roof_tiles' THEN 1 ELSE 0 END) + (CASE WHEN b.measured_height>10 THEN 1 ELSE 0 END) + (CASE WHEN b.storeys_above_ground>1 THEN 1 ELSE 0 END) AS score RETURN b.id AS id, score, b.roof_type_code AS roof, b.predictedroofmaterial AS material, b.measured_height AS h ORDER BY score DESC, h DESC LIMIT 15;
+-- exec(incl shell): 2.103s --
+id, score, roof, material, h
+"DEHHALKA1FW000LN", 7, "1000", "tar_paper", 128.966
+"DEHHALKAJ0000yIP", 7, "1000", "tar_paper", 107.929
+"DEHHALKA10006bd3", 7, "1000", "tar_paper", 97.196
+"DEHHALKAP0007cPo", 7, "1000", "concrete", 94.555
+"DEHHALKAV0000fCD", 7, "1000", "tar_paper", 93.834
+"DEHHALKA10007wzP", 7, "1000", "concrete", 88.963
+"DEHHALKAJ000104O", 7, "1000", "concrete", 88.438
+"DEHHALKAJ0000zOL", 7, "1000", "concrete", 81.731
+"DEHHALKAP0007cG6", 7, "1000", "concrete", 80.406
+"DEHHALKAJ0000pPz", 7, "1000", "tar_paper", 78.407
+"DEHHALKAJ0000owJ", 7, "1000", "metal", 73.928
+"DEHHALKAP000188S", 7, "1000", "tar_paper", 73.321
+"DEHHALKA4IB000Cv", 7, "1000", "concrete", 72.94
+"DEHHALKAP0000v7r", 7, "1000", "concrete", 72.627
+"DEHHALKAJ0000pRb", 7, "1000", "concrete", 72.28
+
+==== E4 Floor-to-floor anomaly (<2 or >8 m) ====
+CYPHER: MATCH (b:Building) WHERE b.storeys_above_ground>0 AND b.measured_height IS NOT NULL WITH b, b.measured_height/b.storeys_above_ground AS ffh WHERE ffh<2 OR ffh>8 RETURN count(b) AS anomalies;
+-- exec(incl shell): 1.763s --
+anomalies
+68545
+
+==== E4b Floor-to-floor anomaly sample ====
+CYPHER: MATCH (b:Building) WHERE b.storeys_above_ground>0 AND b.measured_height IS NOT NULL WITH b, b.measured_height/b.storeys_above_ground AS ffh WHERE ffh<2 OR ffh>8 RETURN b.id AS id, b.measured_height AS h, b.storeys_above_ground AS storeys, round(ffh,2) AS floor_to_floor_m, b.function_code AS fn ORDER BY ffh DESC LIMIT 12;
+-- exec(incl shell): 1.791s --
+id, h, storeys, floor_to_floor_m, fn
+"DEHHALKAJ0000ovW", 121.641, 1, 121.64, "31001_3040"
+"DEHHALKA1FW000K6", 99.507, 1, 99.51, "31001_2500"
+"DEHHALKA1FW000Kw", 80.192, 1, 80.19, "31001_2500"
+"DEHHALKAJ0000sAQ", 79.496, 1, 79.5, "31001_2140"
+"DEHHALKAJ0000sLU", 67.498, 1, 67.5, "31001_2140"
+"DEHHALKAJ0000rll", 67.258, 1, 67.26, "31001_2140"
+"DEHHALKAJ0000rqu", 67.186, 1, 67.19, "31001_2140"
+"DEHHALKAJ0000sMJ", 65.933, 1, 65.93, "31001_2140"
+"DEHHALKAJ0000sMb", 65.418, 1, 65.42, "31001_2140"
+"DEHHALKAJ0000tIg", 65.342, 1, 65.34, "31001_2140"
+"DEHHALKAJ0000tFV", 64.602, 1, 64.6, "31001_2140"
+"DEHHALKA1FW000LN", 128.966, 2, 64.48, "31001_2500"
+
+==== E5 Roof material x use type (>=500) ====
+CYPHER: MATCH (b:Building) WHERE b.predictedroofmaterial IS NOT NULL AND b.description IS NOT NULL WITH split(b.description,',')[0] AS use_type, b.predictedroofmaterial AS mat WITH use_type, count(*) AS type_total, collect(mat) AS mats WHERE type_total>=500 UNWIND ['roof_tiles','tar_paper','concrete','metal','glass'] AS m RETURN use_type, type_total, m AS material, round(100.0*size([x IN mats WHERE x=m])/type_total,1) AS pct ORDER BY use_type, pct DESC;
+-- exec(incl shell): 2.167s --
+use_type, type_total, material, pct
+"Building", 12606, "roof_tiles", 36.4
+"Building", 12606, "tar_paper", 32.4
+"Building", 12606, "concrete", 13.7
+"Building", 12606, "glass", 9.0
+"Building", 12606, "metal", 8.6
+"Building for Education and Research", 2495, "tar_paper", 68.5
+"Building for Education and Research", 2495, "roof_tiles", 18.1
+"Building for Education and Research", 2495, "concrete", 9.1
+"Building for Education and Research", 2495, "metal", 2.5
+"Building for Education and Research", 2495, "glass", 1.8
+"Building for Social Purposes", 1139, "tar_paper", 49.3
+"Building for Social Purposes", 1139, "roof_tiles", 37.3
+"Building for Social Purposes", 1139, "concrete", 10.6
+"Building for Social Purposes", 1139, "metal", 1.4
+"Building for Social Purposes", 1139, "glass", 1.3
+"Canopy / Shelter", 4366, "tar_paper", 38.5
+"Canopy / Shelter", 4366, "metal", 19.4
+"Canopy / Shelter", 4366, "concrete", 17.6
+"Canopy / Shelter", 4366, "glass", 12.3
+"Canopy / Shelter", 4366, "roof_tiles", 12.2
+"Commercial Building", 1399, "tar_paper", 61.3
+"Commercial Building", 1399, "roof_tiles", 17.9
+"Commercial Building", 1399, "concrete", 15.5
+"Commercial Building", 1399, "metal", 3.5
+"Commercial Building", 1399, "glass", 1.9
+"Detached House", 129738, "roof_tiles", 67.6
+"Detached House", 129738, "tar_paper", 18.0
+
+==== E6 Heat-island: dark-roof pct per 2km cell (>=50) ====
+CYPHER: MATCH (b:Building) WHERE b.predictedroofmaterial IS NOT NULL AND b.center_x IS NOT NULL WITH toInteger(floor(b.center_x/2000.0)) AS gx, toInteger(floor(b.center_y/2000.0)) AS gy, b WITH gx, gy, count(*) AS withmat, sum(CASE WHEN b.predictedroofmaterial IN ['tar_paper','metal'] THEN 1 ELSE 0 END) AS dark WHERE withmat>=50 RETURN gx AS x_2km, gy AS y_2km, withmat, dark, round(100.0*dark/withmat,1) AS dark_pct ORDER BY dark_pct DESC LIMIT 15;
+-- exec(incl shell): 1.816s --
+x_2km, y_2km, withmat, dark, dark_pct
+281, 2964, 519, 374, 72.1
+284, 2965, 502, 339, 67.5
+277, 2966, 153, 103, 67.3
+281, 2965, 234, 155, 66.2
+284, 2966, 1234, 801, 64.9
+286, 2965, 666, 429, 64.4
+282, 2963, 638, 404, 63.3
+283, 2965, 404, 250, 61.9
+280, 2965, 208, 119, 57.2
+290, 2965, 70, 40, 57.1
+283, 2966, 642, 364, 56.7
+285, 2965, 517, 289, 55.9
+282, 2965, 710, 383, 53.9
+280, 2962, 434, 230, 53.0
+282, 2966, 1090, 567, 52.0
+
+==== E7 Material coverage completeness (FEASIBILITY CHECK) ====
+CYPHER: MATCH (b:Building) WHERE b.predictedroofmaterial IS NOT NULL WITH b LIMIT 1 RETURN [k IN keys(b) WHERE toLower(k) CONTAINS 'cov' OR toLower(k) CONTAINS 'material'] AS material_related_keys;
+-- exec(incl shell): 1.554s --
+material_related_keys
+["predictedroofmaterial"]
+
+==== E8 High-rise clusters: 500m cells, >30m, >=2 ====
+CYPHER: MATCH (b:Building) WHERE b.measured_height>30 AND b.center_x IS NOT NULL WITH toInteger(floor(b.center_x/500.0)) AS gx, toInteger(floor(b.center_y/500.0)) AS gy, b WITH gx, gy, count(*) AS tall, round(avg(b.measured_height),1) AS avg_h, round(max(b.measured_height),1) AS max_h, collect(b.id)[0..3] AS sample WHERE tall>=2 RETURN gx AS x_500m, gy AS y_500m, tall, avg_h, max_h, sample ORDER BY tall DESC LIMIT 15;
+-- exec(incl shell): 1.657s --
+x_500m, y_500m, tall, avg_h, max_h, sample
+1132, 11868, 48, 33.2, 41.6, ["DEHHALKAJ0000ySA", "DEHHALKAJ0000ylv", "DEHHALKA4dr0009V"]
+1131, 11867, 46, 37.0, 121.6, ["DEHHALKA1PN0007t", "DEHHALKA1PN00089", "DEHHALKAJ0000p9H"]
+1131, 11868, 39, 33.3, 39.1, ["DEHHALKAJ0000yCC", "DEHHALKAJ0000yq0", "DEHHALKAJ0000q0B"]
+1125, 11860, 38, 39.9, 51.2, ["DEHHALKA900013fz", "DEHHALKAJ0000uNT", "DEHHALKA40000Euo"]
+1132, 11867, 34, 35.3, 62.4, ["DEHHALKAJ00011Pa", "DEHHALKAJ0000uHz", "DEHHALKAJ00011px"]
+1130, 11868, 29, 36.7, 52.2, ["DEHHALKAJ0000pts", "DEHHALKAJ0000ofr", "DEHHALKA4bO00068"]
+1131, 11866, 26, 35.2, 83.8, ["DEHHALKAJ0000oyG", "DEHHALKAJ0000pEV", "DEHHALKAJ0000pZj"]
+1130, 11867, 26, 33.9, 45.3, ["DEHHALKAJ0000osb", "DEHHALKAJ0000odG", "DEHHALKAJ0000p3I"]
+1131, 11869, 23, 36.3, 51.4, ["DEHHALKAJ0000y3l", "DEHHALKAJ0000z3t", "DEHHALKA3XF000Gb"]
+1130, 11866, 23, 37.4, 78.4, ["DEHHALKAJ0000pA8", "DEHHALKAJ0000od4", "DEHHALKA6UY0000J"]
+1132, 11866, 22, 37.5, 56.1, ["DEHHALKA10006Nmg", "DEHHALKAJ00011H8", "DEHHALKAJ00011zS"]
+1134, 11867, 19, 35.3, 49.6, ["DEHHALKAJ00059AU", "DEHHALKA3Ak0001Y", "DEHHALKAJ00058rA"]
+1130, 11869, 16, 39.1, 97.2, ["DEHHALKAJ0000ynQ", "DEHHALKAJ0000yOX", "DEHHALKA10006bd3"]
+1133, 11867, 15, 35.8, 42.6, ["DEHHALKAJ00012ce", "DEHHALKAJ0000yjA", "DEHHALKAJ00011fu"]
+1125, 11854, 14, 52.7, 129.0, ["DEHHALKA1FW000Kw", "DEHHALKA1FW000L9", "DEHHALKA1FW000MM"]
+
+==== E9 FAR proxy per 1km cell (>=30) ====
+CYPHER: MATCH (b:Building) WHERE b.center_x IS NOT NULL AND b.storeys_above_ground IS NOT NULL WITH toInteger(floor(b.center_x/1000.0)) AS gx, toInteger(floor(b.center_y/1000.0)) AS gy, b, (b.bbox_max_x-b.bbox_min_x)*(b.bbox_max_y-b.bbox_min_y) AS fp WITH gx, gy, count(b) AS buildings, sum(fp*b.storeys_above_ground) AS gfa WHERE buildings>=30 RETURN gx AS x_km, gy AS y_km, buildings, round(gfa) AS gfa_m2, round(gfa/1000000.0,3) AS far ORDER BY far DESC LIMIT 15;
+-- exec(incl shell): 2.207s --
+x_km, y_km, buildings, gfa_m2, far
+565, 5934, 454, 4602135.0, 4.602
+565, 5933, 472, 4258634.0, 4.259
+567, 5933, 296, 4104060.0, 4.104
+567, 5934, 596, 4078903.0, 4.079
+566, 5933, 253, 3704933.0, 3.705
+566, 5934, 501, 3670831.0, 3.671
+567, 5937, 844, 3055973.0, 3.056
+564, 5937, 1079, 2916242.0, 2.916
+568, 5936, 678, 2692245.0, 2.692
+563, 5935, 1297, 2669849.0, 2.67
+562, 5934, 937, 2635829.0, 2.636
+570, 5937, 494, 2598126.0, 2.598
+564, 5936, 664, 2489275.0, 2.489
+561, 5934, 1017, 2406468.0, 2.406
+563, 5937, 957, 2396740.0, 2.397
+
+==== E10 Ground elevation zones ====
+CYPHER: MATCH (b:Building) WHERE b.ground_z IS NOT NULL WITH b, CASE WHEN b.ground_z<0 THEN '1 below sea (<0m)' WHEN b.ground_z<5 THEN '2 low (0-5m)' WHEN b.ground_z<20 THEN '3 mid (5-20m)' WHEN b.ground_z<50 THEN '4 elevated (20-50m)' ELSE '5 high (>50m)' END AS zone RETURN zone, count(*) AS buildings, round(avg(b.measured_height),1) AS avg_building_h, round(min(b.ground_z),1) AS min_gz, round(max(b.ground_z),1) AS max_gz ORDER BY zone;
+-- exec(incl shell): 1.758s --
+zone, buildings, avg_building_h, min_gz, max_gz
+"1 below sea (<0m)", 603, 5.4, -5.0, 0.0
+"2 low (0-5m)", 69707, 7.0, 0.0, 5.0
+"3 mid (5-20m)", 136855, 8.6, 5.0, 20.0
+"4 elevated (20-50m)", 173599, 7.4, 20.0, 50.0
+"5 high (>50m)", 7503, 7.4, 50.0, 88.7
+

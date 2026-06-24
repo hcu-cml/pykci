@@ -1,0 +1,74 @@
+{
+  "dataset": "Railway Scene LoD3",
+  "axis": "CityGML thematic module",
+  "appearance_excluded": true,
+  "modules_present": 10,
+  "total_top_level_features": 52,
+  "landuse_present": false,
+  "by_module": {
+    "Bridge": {
+      "features": 4,
+      "distinctive_construct": "nested construction elements, installations",
+      "missing": 0
+    },
+    "Building": {
+      "features": 3,
+      "distinctive_construct": "LoD3 openings, boundary surfaces, installations",
+      "missing": 0
+    },
+    "CityFurniture": {
+      "features": 11,
+      "distinctive_construct": "lodN geometry",
+      "missing": 0
+    },
+    "CityObjectGroup": {
+      "features": 1,
+      "distinctive_construct": "XLink group membership",
+      "missing": 0
+    },
+    "GenericCityObject": {
+      "features": 2,
+      "distinctive_construct": "typed generic attributes",
+      "missing": 0
+    },
+    "Relief": {
+      "features": 1,
+      "distinctive_construct": "native TIN (TriangulatedSurface)",
+      "missing": 0
+    },
+    "Transportation": {
+      "features": 10,
+      "distinctive_construct": "surface-only LoD geometry (Railway)",
+      "missing": 0
+    },
+    "Tunnel": {
+      "features": 4,
+      "distinctive_construct": "nested installations, closure surfaces",
+      "missing": 0
+    },
+    "Vegetation": {
+      "features": 15,
+      "distinctive_construct": "solitary objects, lodN geometry",
+      "missing": 0
+    },
+    "WaterBody": {
+      "features": 1,
+      "distinctive_construct": "water boundary surfaces",
+      "missing": 0
+    }
+  },
+  "census_totals": {
+    "elements": 243254,
+    "attributes": 487,
+    "texts": 1194,
+    "coords": 937167,
+    "total": 1182102
+  },
+  "missing": {
+    "elements": 0,
+    "attributes": 0,
+    "texts": 0,
+    "coords": 0,
+    "total": 0
+  }
+}

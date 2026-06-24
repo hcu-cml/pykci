@@ -1,0 +1,134 @@
+############ 3DCityKG (embedded Neo4j) — run3 DB ############
+=== total nodes ===
+nodes
+89490140
+=== total relationships ===
+edges
+94023669
+=== nodes per label (all) ===
+label, n
+"__PARTITION_INDEX__0", 89490138
+"__ARRAY__", 14508031
+"org.citygml4j.model.gml.geometry.primitives.SurfaceProperty", 9455327
+"org.citygml4j.model.common.child.ChildList", 8807280
+"java.util.ArrayList", 5700751
+"org.citygml4j.model.gml.geometry.primitives.DirectPositionList", 4924215
+"org.citygml4j.model.gml.geometry.primitives.LinearRing", 4535018
+"org.citygml4j.model.citygml.building.BoundarySurfaceProperty", 4533530
+"org.citygml4j.model.gml.geometry.aggregates.MultiSurfaceProperty", 4533530
+"org.citygml4j.model.gml.geometry.aggregates.MultiSurface", 4533530
+"org.citygml4j.model.gml.geometry.primitives.Polygon", 4533530
+"org.citygml4j.model.gml.geometry.primitives.Exterior", 4533530
+"org.citygml4j.model.citygml.building.WallSurface", 3277311
+"org.citygml4j.model.citygml.generics.StringAttribute", 2705346
+"org.citygml4j.model.citygml.building.RoofSurface", 867952
+"org.citygml4j.model.gml.basicTypes.Code", 778199
+"org.citygml4j.model.gml.geometry.primitives.DirectPosition", 776536
+"org.citygml4j.model.gml.geometry.primitives.CurveProperty", 389197
+"org.citygml4j.model.gml.geometry.primitives.LineString", 389197
+"org.citygml4j.model.gml.feature.BoundingShape", 388268
+"org.citygml4j.model.gml.geometry.primitives.Envelope", 388268
+"org.citygml4j.model.citygml.building.Building", 388267
+"org.citygml4j.model.gml.measures.Length", 388267
+"org.citygml4j.model.gml.geometry.primitives.SolidProperty", 388267
+"org.citygml4j.model.gml.geometry.primitives.Solid", 388267
+"org.citygml4j.model.gml.geometry.complexes.CompositeSurface", 388267
+"org.citygml4j.model.citygml.building.GroundSurface", 388267
+"org.citygml4j.model.citygml.core.AddressProperty", 388267
+"org.citygml4j.model.citygml.core.Address", 388267
+"org.citygml4j.model.citygml.core.XalAddressProperty", 388267
+"org.citygml4j.model.xal.AddressDetails", 388267
+"org.citygml4j.model.xal.Country", 388267
+"org.citygml4j.model.xal.CountryName", 388267
+"org.citygml4j.model.xal.Locality", 388267
+"org.citygml4j.model.xal.LocalityName", 388267
+"org.citygml4j.model.xal.Thoroughfare", 388267
+"org.citygml4j.model.xal.ThoroughfareNumberOrRange", 388267
+"org.citygml4j.model.xal.ThoroughfareNumber", 388267
+"org.citygml4j.model.xal.ThoroughfareName", 388267
+"org.citygml4j.model.citygml.core.ExternalReference", 388267
+"org.citygml4j.model.citygml.core.ExternalObject", 388267
+"org.citygml4j.model.citygml.core.CityObjectMember", 388267
+"org.citygml4j.model.gml.geometry.aggregates.MultiCurveProperty", 388248
+"org.citygml4j.model.gml.geometry.aggregates.MultiCurve", 388248
+"org.citygml4j.model.gml.geometry.primitives.Interior", 1488
+"__ROOT__", 1
+"__ROOT_MAPPER__", 1
+"org.citygml4j.model.citygml.core.CityModel", 1
+=== relationships per type (all) ===
+rel, n
+"object", 25387918
+"ARRAY_MEMBER", 19804422
+"elementData", 14508031
+"value", 5700751
+"posList", 4924215
+"surfaceMember", 4921797
+"exterior", 4921797
+"lod2MultiSurface", 4533530
+"lowerCorner", 388268
+"upperCorner", 388268
+"envelope", 388268
+"boundedBy", 388268
+"function", 388267
+"roofType", 388267
+"measuredHeight", 388267
+"lod2Solid", 388267
+"boundedBySurface", 388267
+"countryName", 388267
+"localityName", 388267
+"thoroughfareNumber", 388267
+"numberOrRange", 388267
+"thoroughfareName", 388267
+"thoroughfare", 388267
+"locality", 388267
+"country", 388267
+"xalAddress", 388267
+"address", 388267
+"externalObject", 388267
+"externalReference", 388267
+"genericAttribute", 388267
+"curveMember", 388248
+"lod2TerrainIntersection", 388248
+"name", 1665
+"interior", 1166
+"MAPPER", 1
+"cityObjectMember", 1
+"COLLECTION_MEMBER", 1
+=== indexes ===
+name, type, entityType, labelsOrTypes, properties
+"index_12f8df7f", "RANGE", "NODE", ["org.citygml4j.model.citygml.building.GroundSurface"], ["id"]
+"index_152ea80b", "RANGE", "NODE", ["org.citygml4j.model.gml.geometry.primitives.LinearRing"], ["id"]
+"index_19cc3f1c", "RANGE", "NODE", ["org.citygml4j.model.gml.geometry.aggregates.MultiSurface"], ["id"]
+"index_1cfcb33f", "RANGE", "NODE", ["org.citygml4j.model.citygml.building.Building"], ["__UUID__"]
+"index_204e0cf7", "RANGE", "NODE", ["org.citygml4j.model.citygml.generics.StringAttribute"], ["__UUID__"]
+"index_29a58a8b", "RANGE", "NODE", ["org.citygml4j.model.gml.geometry.primitives.CurveProperty"], ["href"]
+"index_2f4d2028", "RANGE", "NODE", ["org.citygml4j.model.citygml.core.CityObjectMember"], ["href"]
+"index_32a01b46", "RANGE", "NODE", ["org.citygml4j.model.gml.geometry.primitives.SolidProperty"], ["href"]
+"index_343aff4e", "LOOKUP", "NODE", NULL, NULL
+"index_3b557a84", "RANGE", "NODE", ["org.citygml4j.model.gml.geometry.complexes.CompositeSurface"], ["id"]
+"index_47ef4890", "RANGE", "NODE", ["org.citygml4j.model.citygml.core.Address"], ["__UUID__"]
+"index_4c5eccf", "RANGE", "NODE", ["org.citygml4j.model.citygml.core.XalAddressProperty"], ["__UUID__"]
+"index_4f0456a4", "RANGE", "NODE", ["org.citygml4j.model.citygml.core.CityObjectMember"], ["__UUID__"]
+"index_68ccdbe3", "RANGE", "NODE", ["org.citygml4j.model.citygml.building.BoundarySurfaceProperty"], ["__UUID__"]
+"index_6b4d291c", "RANGE", "NODE", ["org.citygml4j.model.gml.geometry.aggregates.MultiCurve"], ["id"]
+"index_6bba7a66", "RANGE", "NODE", ["org.citygml4j.model.citygml.building.RoofSurface"], ["id"]
+"index_78e3c4fc", "RANGE", "NODE", ["org.citygml4j.model.citygml.building.BoundarySurfaceProperty"], ["href"]
+"index_93e9ada4", "RANGE", "NODE", ["org.citygml4j.model.gml.geometry.primitives.LineString"], ["id"]
+"index_94532381", "RANGE", "NODE", ["org.citygml4j.model.citygml.core.AddressProperty"], ["__UUID__"]
+"index_a1b8a9d0", "RANGE", "NODE", ["org.citygml4j.model.citygml.building.RoofSurface"], ["__UUID__"]
+"index_bc590b0e", "RANGE", "NODE", ["org.citygml4j.model.gml.geometry.aggregates.MultiCurveProperty"], ["href"]
+"index_bc601057", "RANGE", "NODE", ["org.citygml4j.model.citygml.building.WallSurface"], ["id"]
+"index_c0821215", "RANGE", "NODE", ["org.citygml4j.model.citygml.core.AddressProperty"], ["href"]
+"index_c4138a5e", "RANGE", "NODE", ["org.citygml4j.model.citygml.core.ExternalReference"], ["__UUID__"]
+"index_c57de41c", "RANGE", "NODE", ["org.citygml4j.model.citygml.core.ExternalObject"], ["__UUID__"]
+"index_d13b36c9", "RANGE", "NODE", ["org.citygml4j.model.citygml.core.Address"], ["id"]
+"index_d24c0ddf", "RANGE", "NODE", ["org.citygml4j.model.citygml.building.WallSurface"], ["__UUID__"]
+"index_d4a92496", "RANGE", "NODE", ["org.citygml4j.model.citygml.building.GroundSurface"], ["__UUID__"]
+"index_d80860e4", "RANGE", "NODE", ["org.citygml4j.model.gml.geometry.primitives.Polygon"], ["id"]
+"index_e2a85586", "RANGE", "NODE", ["org.citygml4j.model.citygml.core.CityModel"], ["__UUID__"]
+"index_e75f33b8", "RANGE", "NODE", ["org.citygml4j.model.gml.geometry.aggregates.MultiSurfaceProperty"], ["href"]
+"index_e978ebbd", "RANGE", "NODE", ["org.citygml4j.model.gml.geometry.primitives.SurfaceProperty"], ["href"]
+"index_f040cd9f", "RANGE", "NODE", ["org.citygml4j.model.citygml.building.Building"], ["id"]
+"index_f2b708c0", "RANGE", "NODE", ["org.citygml4j.model.gml.geometry.primitives.Solid"], ["id"]
+"index_f5fe1854", "RANGE", "NODE", ["org.citygml4j.model.citygml.core.CityModel"], ["id"]
+"index_f7700477", "LOOKUP", "RELATIONSHIP", NULL, NULL

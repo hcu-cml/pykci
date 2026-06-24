@@ -1,0 +1,15 @@
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir \
+    langchain \
+    langchain-community \
+    langchain-ollama \
+    langchain-neo4j \
+    neo4j
+
+COPY db-llm/query_ollama_full.py .
+COPY GRAPH.md .
+
+ENTRYPOINT ["python", "-u", "query_ollama_full.py"]

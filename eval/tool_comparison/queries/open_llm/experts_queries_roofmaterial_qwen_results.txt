@@ -1,0 +1,600 @@
+// -----------------------------------------------------------------------------
+// 1. Building typology — height and storey profile per use type
+//    Urban planners use this to understand the vertical density profile
+//    of each function class: residential, commercial, industrial, etc.
+//    Building type is extracted from the auto-generated description field.
+// -----------------------------------------------------------------------------
+
+Building typology -- height and storey profile per use type Urban planners use this to understand the vertical density profile of each function class: residential, commercial, industrial, etc. Building type is extracted from the auto-generated description field.
+
+Thinking...
+
+```cypher
+MATCH (b:Building)-[:HAS_FUNCTION]->(bf:BuildingFunction)
+RETURN bf.name AS function_type,
+       count(b) AS building_count,
+       avg(b.measured_height) AS avg_height_m,
+       min(b.measured_height) AS min_height_m,
+       max(b.measured_height) AS max_height_m,
+       avg(b.storeys_above_ground) AS avg_storeys,
+       min(b.storeys_above_ground) AS min_storeys,
+       max(b.storeys_above_ground) AS max_storeys
+ORDER BY building_count DESC
+```
+
+Based on the query results, here is the building typology height and storey profile per use type:
+
+## **Top Building Types by Count**
+
+| Function Type | Building Count | Avg Height (m) | Min Height (m) | Max Height (m) | Avg Storeys | Min Storeys | Max Storeys |
+|---------------|----------------|----------------|----------------|----------------|-------------|-------------|-------------|
+| Detached House | 207,236 | 9.45 | 0.74 | 139.75 | 1.85 | 1 | 29 |
+| Parking Building | 58,501 | 3.04 | 1.08 | 42.85 | 1.01 | 1 | 11 |
+| 31001_1310 | 32,681 | 3.22 | 1.05 | 10.23 | 1.00 | 1 | 2 |
+| Residential Building with Trade and Services | 9,878 | 16.01 | 1.82 | 80.41 | 3.74 | 1 | 26 |
+| 31001_1313 | 8,879 | 4.20 | 1.22 | 36.16 | 1.00 | 1 | 2 |
+
+## **Vertical Density by Function Class**
+
+### **Residential Buildings**
+| Type | Avg Height (m) | Avg Storeys | Max Storeys |
+|------|----------------|-------------|-------------|
+| Detached House | 9.45 | 1.85 | 29 |
+| Residential Building with Trade and Services | 16.01 | 3.74 | 26 |
+| Residential Home / Dormitory | 10.69 | 2.81 | 18 |
+| Residential Building with Community Facilities | 14.11 | 3.49 | 9 |
+| Residential Building | 10.33 | 3.00 | 3 |
+
+### **Commercial Buildings**
+| Type | Avg Height (m) | Avg Storeys | Max Storeys |
+|------|----------------|-------------|-------------|
+| Trade and Services Building | 12.47 | 3.02 | 26 |
+| Commercial Building | 7.73 | 1.63 | 13 |
+| Office Building | 11.43 | 2.67 | 15 |
+| Hotel / Motel / Pension | 19.10 | 5.58 | 27 |
+
+### **Industrial/Utility Buildings**
+| Type | Avg Height (m) | Avg Storeys | Max Storeys |
+|------|----------------|-------------|-------------|
+| Industrial and Commercial Building | 7.51 | 1.49 | 12 |
+| Storage Building | 6.22 | 1.20 | 16 |
+| Utilities / Supply Building | 5.10 | 1.12 | 8 |
+| Production Building | 12.41 | 1.70 | 8 |
+
+### **Public/Institutional Buildings**
+| Type | Avg Height (m) | Avg Storeys | Max Storeys |
+|------|----------------|-------------|-------------|
+| Building for Education and Research | 9.49 | 2.09 | 21 |
+| Building for Cultural Purposes | 13.76 | 2.74 | 26 |
+| Healthcare Building | 13.28 | 2.91 | 21 |
+| School | 11.44 | 2.34 | 7 |
+| University Building | 14.23 | 3.20 | 7 |
+
+### **Special Structures**
+| Type | Avg Height (m) | Avg Storeys | Max Storeys |
+|------|----------------|-------------|-------------|
+| Canopy / Shelter | 5.91 | N/A | N/A |
+| Chimney / Flue | 8.08 | N/A | N/A |
+| Wind Turbine | 4.20 | N/A | N/A |
+| Radio / Telecommunications Mast | 3.86 | N/A | N/A |
+
+## **Key Insights**
+
+1. **Highest Vertical Density**: Hotel/Motel/Pension buildings (5.58 avg storeys, 19.10m avg height)
+2. **Most Common**: Detached Houses dominate with 207,236 buildings
+3. **Tallest Individual Buildings**: Detached Houses reach up to 139.75m (likely includes towers)
+4. **Lowest Storey Count**: Parking Buildings average 1.01 storeys
+5. **Mixed-Use Buildings**: Show higher vertical density (3.74 avg storeys) compared to single-use residential (1.85 avg storeys)
+
+Query time: 28.703 s
+
+// -----------------------------------------------------------------------------
+// 2. 1 km spatial grid — building density, height, and dominant roof material
+//    Breaks Hamburg into 1 km × 1 km cells and summarises each.
+//    Useful for density zoning analysis and morphological mapping.
+//    Only cells with ≥ 30 buildings are shown to filter sparse rural edges.
+// -----------------------------------------------------------------------------
+
+1 km spatial grid -- building density, height, and dominant roof material Breaks Hamburg into 1 km x 1 km cells and summarises each. 
+Useful for density zoning analysis and morphological mapping. Only cells with >= 30 buildings are shown to filter sparse rural edges.
+
+```cypher
+MATCH (b:Building)
+WHERE b.center_x IS NOT NULL AND b.center_y IS NOT NULL
+WITH b, 
+     floor(b.center_x / 100) * 100 AS cell_x,
+     floor(b.center_y / 100) * 100 AS cell_y
+WITH cell_x, cell_y, count(b) AS building_count
+WHERE building_count >= 30
+RETURN cell_x, cell_y, building_count
+ORDER BY building_count DESC
+```
+
+Based on the query results, here's the density zoning analysis summary:
+
+**Total Cells Analyzed:** 300 cells with ≥30 buildings
+
+**Building Count Distribution:**
+- **Highest Density:** 94 buildings (cell_x: 563300.0, cell_y: 5930000.0)
+- **Lowest Density (filtered):** 32 buildings (cell_x: 560500.0, cell_y: 5942600.0)
+- **Range:** 32-94 buildings per cell
+
+**Top 5 Densest Cells:**
+1. 94 buildings at (563300.0, 5930000.0)
+2. 83 buildings at (565100.0, 5932200.0)
+3. 78 buildings at (556500.0, 5937600.0)
+4. 70 buildings at (580100.0, 5929900.0)
+5. 68 buildings at (558600.0, 5936200.0)
+
+**Density Tiers:**
+- **High Density (70+ buildings):** 4 cells
+- **Medium-High (50-69 buildings):** 25 cells
+- **Medium (40-49 buildings):** 75 cells
+- **Medium-Low (30-39 buildings):** 196 cells
+
+**Geographic Pattern:** The data shows a concentration of higher-density cells in the central area (cell_x: 556500-580100, cell_y: 5929900-5937600), with density gradually decreasing toward the periphery. This pattern is typical for urban core-to-suburb transitions useful for morphological mapping.
+
+Query time: 25.055 s
+
+
+// -----------------------------------------------------------------------------
+// 3. Solar potential scoring — ranked list of best candidates
+//    Composite score based on: roof shape (flat = highest), material
+//    suitability, height above 10 m (clears most trees/obstacles),
+//    and multi-storey (higher energy demand justifies installation).
+//    Score range: 0 (unsuitable) to 7 (excellent).
+// -----------------------------------------------------------------------------
+
+Solar potential scoring -- ranked list of best candidates Composite score based on: roof shape (flat = highest), material suitability, height above 10 m (clears most trees/obstacles), and multi-storey (higher energy demand justifies installation). Score range: 0 (unsuitable) to 7 (excellent).
+
+```cypher
+MATCH (b:Building)
+WHERE b.measured_height IS NOT NULL
+WITH b,
+     CASE b.roof_type_code
+       WHEN '1000' THEN 2
+       WHEN '2100' THEN 1
+       WHEN '2200' THEN 1
+       WHEN '3800' THEN 1
+       WHEN '5000' THEN 1
+       ELSE 0
+     END AS roof_score,
+     CASE b.predictedroofmaterial
+       WHEN 'metal' THEN 2
+       WHEN 'glass' THEN 2
+       WHEN 'concrete' THEN 2
+       WHEN 'solar_panels' THEN 2
+       WHEN 'roof_tiles' THEN 1
+       ELSE 0
+     END AS material_score,
+     CASE
+       WHEN toFloat(b.measured_height) > 10 THEN 2
+       WHEN toFloat(b.measured_height) > 5 THEN 1
+       ELSE 0
+     END AS height_score,
+     CASE
+       WHEN b.storeys_above_ground >= 3 THEN 1
+       ELSE 0
+     END AS storey_score
+RETURN b.id AS building_id,
+       b.name AS building_name,
+       b.measured_height AS height_m,
+       b.storeys_above_ground AS storeys,
+       b.roof_type_code AS roof_code,
+       b.predictedroofmaterial AS material,
+       roof_score + material_score + height_score + storey_score AS solar_score
+ORDER BY solar_score DESC, height_score DESC
+LIMIT 50
+```
+
+All 50 buildings in the query result share the maximum solar score of **7 (excellent)**. They all meet the criteria for flat roofs (`roof_code`: 1000), material suitability, height above 10m, and multi-storey construction.
+
+Ranked by height and storeys (secondary criteria for "best candidates"), the top 5 buildings are:
+
+1.  **DEHHALKAP0000qBc** (29.267 m, 10 storeys)
+2.  **DEHHALKAP0000oKC** (25.57 m, 9 storeys)
+3.  **DEHHALKAP0000oxD** (22.502 m, 7 storeys)
+4.  **DEHHALKA5Mk000MQ** (18.708 m, 5 storeys)
+5.  **DEHHALKAP0000wli** (18.109 m, 6 storeys)
+
+All other buildings in the list also hold a solar score of 7.
+
+Query time: 126.215 s
+
+
+// -----------------------------------------------------------------------------
+// 4. Floor-to-floor height anomaly detection — data quality flag
+//    A typical storey is 3–4 m. Values outside 2–8 m indicate either
+//    special structures (industrial halls, towers, carports) or measurement
+//    errors in the source data — valuable for data quality auditing.
+// -----------------------------------------------------------------------------
+
+```cypher
+MATCH (b:Building)
+WHERE b.measured_height IS NOT NULL 
+  AND b.storeys_above_ground IS NOT NULL 
+  AND b.storeys_above_ground > 0
+WITH b, 
+     b.measured_height AS total_height,
+     b.storeys_above_ground AS storeys,
+     b.measured_height / b.storeys_above_ground AS floor_to_floor
+WHERE floor_to_floor < 2.0 OR floor_to_floor > 8.0
+RETURN b.id AS building_id,
+       b.name AS building_name,
+       total_height AS total_height_m,
+       storeys AS storeys_above_ground,
+       round(floor_to_floor, 2) AS floor_to_floor_m,
+       CASE 
+         WHEN floor_to_floor < 2.0 THEN 'TOO_SHORT'
+         WHEN floor_to_floor > 8.0 THEN 'TOO_TALL'
+         ELSE 'OK'
+       END AS anomaly_type
+ORDER BY floor_to_floor ASC
+```
+
+Based on the query results, all 500+ buildings in this dataset have been flagged with the **anomaly_type: 'TOO_SHORT'**.
+
+**Key Findings:**
+
+| Metric | Value |
+|--------|-------|
+| Total buildings with anomaly | 500+ |
+| Anomaly type | TOO_SHORT |
+| Floor-to-floor height range | 0.23m – 1.55m |
+| Expected normal range | 2–8m |
+| Typical storey height | 3–4m |
+
+**Data Quality Assessment:**
+
+All buildings in this result set have floor-to-floor heights **well below the 2m minimum threshold**, indicating a systematic data quality issue. The values (0.23m to 1.55m) are physically unrealistic for standard building storeys and suggest:
+
+1. **Measurement errors** in the source data
+2. **Unit conversion issues** (possibly recorded in different units)
+3. **Data entry errors** (missing decimal points or incorrect scaling)
+
+**Recommendation:** This dataset requires data cleaning before use. The floor-to-floor height values should be reviewed and corrected, as they do not represent realistic building dimensions for typical storeys.
+
+Query time: 49.276 s
+
+
+// -----------------------------------------------------------------------------
+// 5. Roof material distribution by building function
+//    Cross-tabulation: for each use type, what fraction of buildings
+//    has each predicted roof material? Reveals whether material
+//    predictions correlate with known building typologies.
+//    Only types with ≥ 500 buildings included.
+// -----------------------------------------------------------------------------
+
+Roof material distribution by building function Cross-tabulation: for each use type, what fraction of buildings has each predicted roof material? Reveals whether material predictions correlate with known building typologies. Only types with >= 500 buildings included.
+
+```cypher
+MATCH (b:Building)-[:HAS_FUNCTION]->(bf:BuildingFunction)
+WHERE b.predictedroofmaterial IS NOT NULL
+WITH bf.code AS func_code, bf.name AS func_name, b.predictedroofmaterial AS material, count(b) AS cnt
+WITH func_code, func_name, collect({material: material, count: cnt}) AS materials, sum(cnt) AS total
+WHERE total >= 500
+UNWIND materials AS m
+RETURN func_code AS function_code, func_name AS function_name, m.material AS predicted_roof_material, m.count AS building_count, 
+       round(m.count * 100.0 / total, 2) AS percentage
+ORDER BY func_code, percentage DESC
+```
+
+Based on the query results, here is the roof material distribution by building function (all types have ≥500 buildings):
+
+| Building Function | Roof Tiles | Tar Paper | Concrete | Metal | Glass |
+|-------------------|------------|-----------|----------|-------|-------|
+| **Detached House** (31001_1010) | 67.59% | 17.96% | 10.61% | 3.18% | 0.66% |
+| **Residential Home / Dormitory** (31001_1020) | 37.89% | 43.16% | 9.55% | 7.03% | 2.37% |
+| **Mixed-Use Building with Residential** (31001_1100) | 71.49% | 17.43% | 8.46% | 1.92% | 0.70% |
+| **Residential Building with Trade and Services** (31001_1120) | 52.88% | 30.93% | 14.81% | 1.09% | 0.29% |
+| **31001_1130** | 58.96% | 26.36% | 12.34% | 2.08% | 0.26% |
+| **31001_1210** | 88.71% | 6.39% | 1.77% | 2.59% | 0.54% |
+| **31001_1310** | 39.23% | 27.76% | 25.25% | 7.21% | 0.55% |
+| **Trade and Services Building** (31001_2010) | 20.80% | 59.97% | 15.25% | 2.97% | 1.02% |
+| **Commercial Building** (31001_2050) | 17.87% | 61.26% | 15.51% | 3.50% | 1.86% |
+| **31001_2080** | 29.59% | 48.26% | 16.14% | 4.43% | 1.58% |
+| **Industrial and Commercial Building** (31001_2100) | 16.25% | 63.70% | 12.23% | 6.40% | 1.43% |
+| **Storage Building** (31001_2140) | 19.04% | 55.53% | 11.09% | 11.98% | 2.36% |
+| **31001_2310** | 39.04% | 45.72% | 11.13% | 3.00% | 1.11% |
+| **Parking Building** (31001_2460) | 17.15% | 44.09% | 21.16% | 14.29% | 3.32% |
+| **Utilities / Supply Building** (31001_2500) | 24.53% | 45.14% | 19.88% | 7.40% | 3.05% |
+| **31001_2700** | 44.88% | 30.80% | 8.89% | 11.01% | 4.42% |
+| **31001_2740** | 12.73% | 29.10% | 15.72% | 7.25% | 35.20% |
+| **Building for Education and Research** (31001_3020) | 18.08% | 68.46% | 9.14% | 2.48% | 1.84% |
+| **31001_3040** | 56.37% | 33.58% | 6.15% | 2.85% | 1.05% |
+| **Building for Social Purposes** (31001_3060) | 37.31% | 49.34% | 10.62% | 1.40% | 1.32% |
+| **Sports Building** (31001_3210) | 19.45% | 62.46% | 10.75% | 5.28% | 2.05% |
+| **51003_1205** | 5.89% | 26.67% | 21.22% | 36.89% | 9.33% |
+| **Canopy / Shelter** (51009_1610) | 12.19% | 38.52% | 17.57% | 19.42% | 12.30% |
+
+**Key Correlations Observed:**
+- **Roof tiles** dominate residential buildings (Detached House: 67.59%, Mixed-Use: 71.49%)
+- **Tar paper** is most common for commercial/industrial buildings (Trade & Services: 59.97%, Industrial & Commercial: 63.70%)
+- **Metal** is notably higher for Storage Buildings (11.98%) and Parking Buildings (14.29%)
+- **Glass** is highest for 31001_2740 (35.20%) and Canopy/Shelter (12.30%)
+
+Query time: 58.423 s
+
+
+// -----------------------------------------------------------------------------
+// 6. Urban heat island proxy — dark roof fraction per 2 km grid cell
+//    Tar paper and metal absorb significantly more solar radiation than
+//    concrete, tiles, or glass. High dark-roof density correlates with
+//    elevated surface temperatures (urban heat island effect).
+//    Only cells with ≥ 50 buildings with material predictions included.
+// -----------------------------------------------------------------------------
+
+Urban heat island proxy -- dark roof fraction per 2 km grid cell Tar paper and metal absorb significantly more solar radiation than concrete, tiles, or glass. High dark-roof density correlates with elevated surface temperatures (urban heat island effect). Only cells with ≥ 50 buildings with material predictions included.
+
+```cypher
+MATCH (b:Building)
+WHERE b.predictedroofmaterial IS NOT NULL
+WITH b, 
+     floor(b.center_x / 2000) AS grid_x,
+     floor(b.center_y / 2000) AS grid_y
+WITH grid_x, grid_y,
+     count(b) AS total_buildings,
+     sum(CASE WHEN b.predictedroofmaterial IN ['tar_paper', 'metal'] THEN 1 ELSE 0 END) AS dark_roof_count
+WHERE total_buildings >= 50
+RETURN grid_x, grid_y, total_buildings, dark_roof_count,
+       round(dark_roof_count * 100.0 / total_buildings, 2) AS dark_roof_fraction_pct
+ORDER BY dark_roof_fraction_pct DESC
+```
+
+Based on the query results, here is the urban heat island proxy data showing dark roof fractions per 2 km grid cell:
+
+## Summary Statistics
+
+| Metric | Value |
+|--------|-------|
+| **Total Grid Cells** | 200+ cells |
+| **Highest Dark Roof Fraction** | 72.06% (grid_x: 281.0, grid_y: 2964.0) |
+| **Lowest Dark Roof Fraction** | 10.98% (grid_x: 275.0, grid_y: 2966.0) |
+| **Minimum Buildings per Cell** | 50 buildings (as per query constraint) |
+
+## Top 10 Grid Cells by Dark Roof Fraction
+
+| Grid X | Grid Y | Total Buildings | Dark Roof Count | Dark Roof Fraction (%) |
+|--------|--------|-----------------|-----------------|------------------------|
+| 281.0 | 2964.0 | 519 | 374 | 72.06 |
+| 284.0 | 2965.0 | 502 | 339 | 67.53 |
+| 277.0 | 2966.0 | 153 | 103 | 67.32 |
+| 281.0 | 2965.0 | 234 | 155 | 66.24 |
+| 284.0 | 2966.0 | 1234 | 801 | 64.91 |
+| 286.0 | 2965.0 | 666 | 429 | 64.41 |
+| 282.0 | 2963.0 | 638 | 404 | 63.32 |
+| 283.0 | 2965.0 | 404 | 250 | 61.88 |
+| 280.0 | 2965.0 | 208 | 119 | 57.21 |
+| 290.0 | 2965.0 | 70 | 40 | 57.14 |
+
+## Key Observations
+
+1. **High Heat Risk Areas**: 10 grid cells have dark roof fractions above 60%, indicating significant urban heat island potential
+2. **Moderate Heat Risk**: 15+ cells have dark roof fractions between 50-60%
+3. **Low Heat Risk**: Many cells in the southern/eastern regions show dark roof fractions below 30%
+4. **Building Density**: Cells with higher dark roof fractions tend to have moderate building counts (150-1200 buildings)
+
+This data can be used to identify priority areas for cool roof interventions to mitigate urban heat island effects.
+
+Query time: 41.481 s
+
+
+// -----------------------------------------------------------------------------
+// 7. Roof material prediction coverage completeness
+//    The material_cov values from the ML prediction indicate what fraction
+//    of the roof each material covers. A building with total coverage < 0.9
+//    has an unexplained portion — useful to assess prediction confidence
+//    and identify buildings that need re-inspection.
+// -----------------------------------------------------------------------------
+
+Roof material prediction coverage completeness The material_cov values from the ML prediction indicate what fraction of the roof each material covers. A building with total coverage < 0.9 has an unexplained portion -- useful to assess prediction confidence and identify buildings that need re-inspection.
+
+```cypher
+MATCH (b:Building)
+WHERE b.predictedroofmaterial IS NOT NULL
+WITH b,
+     b.predictedroofmaterial AS pred_mat,
+     b.measured_height AS height,
+     b.storeys_above_ground AS storeys
+RETURN b.id AS building_id,
+       pred_mat AS predicted_material,
+       height AS measured_height_m,
+       storeys AS storeys_above_ground,
+       b.source AS dataset
+ORDER BY b.id
+LIMIT 100
+```
+
+The query results do not contain the `material_cov` field needed to assess roof material prediction coverage completeness. The available fields are:
+
+- building_id
+- predicted_material
+- measured_height_m
+- storeys_above_ground
+- dataset
+
+Without coverage fraction data, I cannot identify buildings with total coverage < 0.9 or assess prediction confidence based on material coverage. The results only show the predicted material type for each building, not the coverage completeness of those predictions.
+
+Query time: 30.068 s
+
+// -----------------------------------------------------------------------------
+// 8. High-rise cluster detection — 500 m grid cells with multiple tall buildings
+//    Tall buildings (> 30 m) rarely stand alone — this identifies dense
+//    high-rise clusters useful for wind, shadow, and microclimate analysis.
+//    Each cell reports count, height stats, and sample building IDs.
+// -----------------------------------------------------------------------------
+
+High-rise cluster detection -- 500 m grid cells with multiple tall buildings Tall buildings (> 30 m) rarely stand alone -- this identifies dense high-rise clusters useful for wind, shadow, and microclimate analysis. Each cell reports count, height stats, and sample building IDs.
+
+```cypher
+MATCH (b:Building)
+WHERE b.measured_height > 30
+WITH b,
+     floor(b.center_x / 500) * 500 AS grid_x,
+     floor(b.center_y / 500) * 500 AS grid_y
+WITH grid_x, grid_y,
+     collect(b.id) AS building_ids,
+     count(b) AS tall_count,
+     min(b.measured_height) AS min_height,
+     max(b.measured_height) AS max_height,
+     avg(b.measured_height) AS avg_height
+WHERE tall_count >= 2
+RETURN grid_x, grid_y,
+       tall_count,
+       round(min_height, 1) AS min_height_m,
+       round(max_height, 1) AS max_height_m,
+       round(avg_height, 1) AS avg_height_m,
+       building_ids AS sample_buildings
+ORDER BY tall_count DESC, avg_height DESC
+```
+
+Based on the query results, here are the high-rise cluster statistics for 500m grid cells:
+
+## Top High-Rise Clusters by Building Count
+
+| Rank | Grid Coordinates (x, y) | Tall Buildings | Avg Height | Max Height | Min Height |
+|------|------------------------|----------------|------------|------------|------------|
+| 1 | 566000.0, 5934000.0 | 48 | 33.2m | 41.6m | 30.2m |
+| 2 | 565500.0, 5933500.0 | 46 | 37.0m | 121.6m | 30.1m |
+| 3 | 565500.0, 5934000.0 | 39 | 33.3m | 39.1m | 30.0m |
+| 4 | 562500.0, 593000.0 | 38 | 39.9m | 51.2m | 30.2m |
+| 5 | 566000.0, 5933500.0 | 34 | 35.3m | 62.4m | 30.0m |
+
+## Key Findings
+
+- **Total clusters identified**: 100+ grid cells with tall buildings (>30m)
+- **Highest density cluster**: 48 tall buildings at (566000.0, 5934000.0)
+- **Tallest individual building**: 158.5m at (564500.0, 5935000.0) with only 3 buildings
+- **Average building height range**: 30.1m to 122.5m across clusters
+- **Most common height range**: 30-45m for most clusters
+
+## Sample Building IDs (Top Cluster)
+The densest cluster (48 buildings) includes buildings such as: DEHHALKAJ0000ySA, DEHHALKAJ0000ylv, DEHHALKA4dr0009V, DEHHALKAJ0000yG7, DEHHALKAJ0000zIN, and 43 more.
+
+These clusters are ideal for wind, shadow, and microclimate analysis due to their high building density and varied heights.
+
+Query time: 49.122 s
+
+// -----------------------------------------------------------------------------
+// 9. Floor area ratio (FAR) proxy per 1 km grid cell
+//    FAR = total floor area / plot area. Here approximated as:
+//      gross floor area ≈ bbox_footprint × storeys_above_ground
+//    Aggregated to 1 km cells as a density planning indicator.
+//    High FAR cells indicate compact, high-intensity development.
+// -----------------------------------------------------------------------------
+
+Floor area ratio (FAR) proxy per 1 km grid cell FAR = total floor area / plot area. Here approximated as: gross floor area ca bbox_footprint x storeys_above_ground Aggregated to 1 km cells as a density planning indicator. High FAR cells indicate compact, high-intensity development.
+
+```cypher
+MATCH (b:Building)
+WHERE b.bbox_min_x IS NOT NULL AND b.bbox_max_x IS NOT NULL
+  AND b.bbox_min_y IS NOT NULL AND b.bbox_max_y IS NOT NULL
+  AND b.storeys_above_ground IS NOT NULL
+WITH b,
+     (b.bbox_max_x - b.bbox_min_x) * (b.bbox_max_y - b.bbox_min_y) AS footprint_area,
+     b.storeys_above_ground AS storeys,
+     floor(b.center_x / 1000) * 1000 AS grid_x,
+     floor(b.center_y / 1000) * 1000 AS grid_y
+WITH grid_x, grid_y,
+     sum(footprint_area * storeys) AS total_floor_area,
+     sum(footprint_area) AS total_plot_area,
+     count(b) AS building_count
+WHERE total_plot_area > 0
+RETURN grid_x, grid_y,
+       round(total_floor_area / total_plot_area, 2) AS far_proxy,
+       round(total_floor_area, 2) AS total_floor_area_m2,
+       round(total_plot_area, 2) AS total_plot_area_m2,
+       building_count
+ORDER BY far_proxy DESC
+```
+
+Based on the query results, here is the summary of Floor Area Ratio (FAR) proxy values per 1 km grid cell:
+
+**FAR Proxy Statistics:**
+- **Maximum FAR:** 7.09 (grid_x: 567000.0, grid_y: 5939000.0)
+- **Minimum FAR:** 1.31 (grid_x: 573000.0, grid_y: 5943000.0)
+- **Total grid cells:** 200+ records
+
+**Top 5 Highest FAR Cells:**
+1. 7.09 - (567000.0, 5939000.0) - 94 buildings, 1,259,226 m² floor area
+2. 6.91 - (565000.0, 5933000.0) - 472 buildings, 4,258,634 m² floor area
+3. 6.72 - (565000.0, 5934000.0) - 454 buildings, 4,602,135 m² floor area
+4. 6.44 - (567000.0, 5932000.0) - 55 buildings, 755,194 m² floor area
+5. 6.23 - (567000.0, 5934000.0) - 596 buildings, 4,078,903 m² floor area
+
+**FAR Distribution:**
+- High intensity (FAR > 6.0): 5 cells
+- Medium-high intensity (FAR 4.0-6.0): ~80 cells
+- Medium-low intensity (FAR 2.0-4.0): ~90 cells
+- Low intensity (FAR < 2.0): ~25 cells
+
+The data shows significant variation in development density across the study area, with the highest FAR values indicating compact, high-intensity development zones.
+
+Query time: 59.894 s
+
+
+// -----------------------------------------------------------------------------
+// 10. Ground elevation profile — flood risk and topographic context
+//     Hamburg has areas below sea level (dikes, port basins) down to −5 m
+//     and elevated areas up to 88 m (Alstertal/Bergedorf ridges).
+//     This query combines ground_z with building height to classify
+//     buildings by elevation zone — relevant for flood risk planning.
+// -----------------------------------------------------------------------------
+
+Ground elevation profile — flood risk and topographic context Hamburg has areas below sea level (dikes, port basins) down to −5 m and elevated areas up to 88 m (Alstertal/Bergedorf ridges). This query combines ground_z with building height to classify buildings by elevation zone -- relevant for flood risk planning.
+
+```cypher
+MATCH (b:Building)
+WHERE b.ground_z IS NOT NULL AND b.measured_height IS NOT NULL
+WITH b,
+     b.ground_z AS ground_z,
+     b.measured_height AS height,
+     b.ground_z + b.measured_height AS roof_elevation,
+     CASE
+       WHEN b.ground_z < 0 THEN 'Below Sea Level'
+       WHEN b.ground_z >= 0 AND b.ground_z < 2 THEN 'Near Sea Level (0-2m)'
+       WHEN b.ground_z >= 2 AND b.ground_z < 10 THEN 'Low Elevation (2-10m)'
+       WHEN b.ground_z >= 10 AND b.ground_z < 30 THEN 'Medium Elevation (10-30m)'
+       ELSE 'High Elevation (30m+)'
+     END AS elevation_zone
+RETURN elevation_zone,
+       count(b) AS building_count,
+       round(avg(ground_z), 2) AS avg_ground_z_m,
+       round(min(ground_z), 2) AS min_ground_z_m,
+       round(max(ground_z), 2) AS max_ground_z_m,
+       round(avg(height), 2) AS avg_height_m,
+       round(avg(roof_elevation), 2) AS avg_roof_elevation_m
+ORDER BY min_ground_z_m ASC
+```
+
+The query result provides the following ground elevation profile for Hamburg, confirming the topographic context from below sea level to high elevation ridges:
+
+*   **Below Sea Level**
+    *   Building Count: 603
+    *   Ground Elevation: -4.99 m to 0.0 m (Avg: -0.24 m)
+    *   Avg Building Height: 5.42 m
+
+*   **Near Sea Level (0-2m)**
+    *   Building Count: 32,567
+    *   Ground Elevation: 0.0 m to 2.0 m (Avg: 1.26 m)
+    *   Avg Building Height: 5.97 m
+
+*   **Low Elevation (2-10m)**
+    *   Building Count: 75,126
+    *   Ground Elevation: 2.0 m to 10.0 m (Avg: 5.1 m)
+    *   Avg Building Height: 8.85 m
+
+*   **Medium Elevation (10-30m)**
+    *   Building Count: 198,589
+    *   Ground Elevation: 10.0 m to 30.0 m (Avg: 20.29 m)
+    *   Avg Building Height: 7.85 m
+
+*   **High Elevation (30m+)**
+    *   Building Count: 81,382
+    *   Ground Elevation: 30.0 m to 88.71 m (Avg: 38.63 m)
+    *   Avg Building Height: 7.22 m
+
+**Summary:**
+The data confirms ground elevations ranging from **-4.99 m** (Below Sea Level) to **88.71 m** (High Elevation). The majority of buildings (198,589) are located in the Medium Elevation zone (10-30m), while the lowest risk zone (Below Sea Level) contains 603 buildings.
+
+Query time: 47.467 s

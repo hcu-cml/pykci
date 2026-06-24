@@ -1,0 +1,389 @@
+==== C1 Hamburg at a glance ====
+CYPHER: MATCH (b:`org.citygml4j.model.citygml.building.Building`)
+CYPHER: OPTIONAL MATCH (b)-[:measuredHeight]->(mh)
+CYPHER: RETURN count(b) AS buildings, round(avg(toFloat(mh.value)),1) AS avg_h,
+CYPHER:        round(avg(toInteger(b.storeysAboveGround)),1) AS avg_storeys;
+-- exec(incl shell): 5.292s --
+buildings, avg_h, avg_storeys
+388267, 7.7, 1.7
+
+==== C2 Most common roof material (+pct) ====
+CYPHER: MATCH (b:`org.citygml4j.model.citygml.building.Building`)-[:genericAttribute]->()-[*1..3]->(sa:`org.citygml4j.model.citygml.generics.StringAttribute`)
+CYPHER: WHERE sa.name='PredictedRoofMaterial'
+CYPHER: WITH sa.value AS m, count(*) AS n WITH collect({m:m,n:n}) AS rows, sum(n) AS tot
+CYPHER: UNWIND rows AS r RETURN r.m AS material, r.n AS n, round(100.0*r.n/tot,1) AS pct ORDER BY n DESC;
+-- exec(incl shell): 3.970s --
+material, n, pct
+"roof_tiles", 108659, 55.8
+"tar_paper", 51435, 26.4
+"concrete", 22923, 11.8
+"metal", 8550, 4.4
+"glass", 3232, 1.7
+
+==== C3 20 tallest buildings ====
+CYPHER: MATCH (b:`org.citygml4j.model.citygml.building.Building`)-[:measuredHeight]->(mh)
+CYPHER: WITH b, toFloat(mh.value) AS height ORDER BY height DESC LIMIT 20
+CYPHER: OPTIONAL MATCH (b)-[:genericAttribute]->()-[*1..3]->(sa:`org.citygml4j.model.citygml.generics.StringAttribute`)
+CYPHER: WHERE sa.name='PredictedRoofMaterial'
+CYPHER: RETURN b.id AS id, height, sa.value AS material;
+-- exec(incl shell): 2.340s --
+id, height, material
+"DEHHALKAJ0000yvD", 158.47, "tar_paper"
+"DEHHALKAJ0004qT4", 158.256, "tar_paper"
+"DEHHALKAP0007WG0", 139.754, "roof_tiles"
+"DEHHALKA1FW000LN", 128.966, "tar_paper"
+"DEHHALKAJ0000ovW", 121.641, "tar_paper"
+"DEHHALKAn0006JXQ", 111.334, NULL
+"DEHHALKA9dh0006P", 109.401, NULL
+"DEHHALKAJ0000yIP", 107.929, "tar_paper"
+"DEHHALKA1FW000K6", 99.507, "tar_paper"
+"DEHHALKA10006bd3", 97.196, "tar_paper"
+"DEHHALKAJ0000pTk", 96.328, "tar_paper"
+"DEHHALKAP0007cPo", 94.555, "concrete"
+"DEHHALKAV0000fCD", 93.834, "tar_paper"
+"DEHHALKA10007wzP", 88.963, "concrete"
+"DEHHALKAJ000104O", 88.438, "concrete"
+"DEHHALKA6Ec0008g", 87.124, NULL
+"DEHHALKAJ0000pO5", 83.843, "roof_tiles"
+"DEHHALKAJ0000zOL", 81.731, "concrete"
+"DEHHALKAJ0000p74", 80.985, "roof_tiles"
+"DEHHALKAP0007cG6", 80.406, "concrete"
+
+==== C4 Roof shapes popularity ====
+CYPHER: MATCH (b:`org.citygml4j.model.citygml.building.Building`)-[:roofType]->(c)
+CYPHER: WITH c.value AS code, count(*) AS n
+CYPHER: RETURN code, CASE code WHEN '1000' THEN 'Flat' WHEN '2100' THEN 'Mono-Pitch' WHEN '2200' THEN 'Offset Mono-Pitch'
+CYPHER:   WHEN '3100' THEN 'Gable' WHEN '3200' THEN 'Hip' WHEN '3300' THEN 'Half-Hip' WHEN '3400' THEN 'Mansard'
+CYPHER:   WHEN '3500' THEN 'Tent/Pyramid' WHEN '4000' THEN 'Tower' WHEN '5000' THEN 'Mixed' ELSE 'Other' END AS shape, n
+CYPHER: ORDER BY n DESC;
+-- exec(incl shell): 2.215s --
+code, shape, n
+"1000", "Flat", 169964
+"3100", "Gable", 162368
+"3200", "Hip", 29990
+"2100", "Mono-Pitch", 21202
+"3500", "Tent/Pyramid", 4054
+"4000", "Tower", 596
+"9999", "Other", 93
+
+==== C5 Solar: flat roofs >5m (count) ====
+CYPHER: MATCH (b:`org.citygml4j.model.citygml.building.Building`)-[:roofType]->(c) WHERE c.value='1000'
+CYPHER: MATCH (b)-[:measuredHeight]->(mh) WHERE toFloat(mh.value)>5
+CYPHER: RETURN count(DISTINCT b) AS flat_over_5m;
+-- exec(incl shell): 2.317s --
+flat_over_5m
+70162
+
+==== C6 Buildings per storey count ====
+CYPHER: MATCH (b:`org.citygml4j.model.citygml.building.Building`)
+CYPHER: RETURN toInteger(b.storeysAboveGround) AS storeys, count(*) AS n ORDER BY storeys;
+-- exec(incl shell): 1.667s --
+storeys, n
+1, 244389
+2, 75353
+3, 24071
+4, 16698
+5, 9056
+6, 3158
+7, 1208
+8, 695
+9, 470
+10, 274
+11, 62
+12, 58
+13, 70
+14, 51
+15, 32
+16, 39
+17, 15
+18, 13
+19, 6
+20, 4
+21, 6
+22, 7
+23, 2
+24, 2
+26, 3
+
+==== C7 Glass roofs (count) ====
+CYPHER: MATCH (b:`org.citygml4j.model.citygml.building.Building`)-[:genericAttribute]->()-[*1..3]->(sa:`org.citygml4j.model.citygml.generics.StringAttribute`)
+CYPHER: WHERE sa.name='PredictedRoofMaterial' AND sa.value='glass'
+CYPHER: RETURN count(DISTINCT b) AS glass_roofs;
+-- exec(incl shell): 3.810s --
+glass_roofs
+3232
+
+==== C8 High-rises > 50 m ====
+CYPHER: MATCH (b:`org.citygml4j.model.citygml.building.Building`)-[:measuredHeight]->(mh)
+CYPHER: WHERE toFloat(mh.value)>50 RETURN count(b) AS over_50m;
+-- exec(incl shell): 2.174s --
+over_50m
+149
+
+==== C9 Mixed roof materials (FEASIBILITY) ====
+CYPHER: MATCH (b:`org.citygml4j.model.citygml.building.Building`)-[:genericAttribute]->()-[*1..3]->(sa:`org.citygml4j.model.citygml.generics.StringAttribute`)
+CYPHER: WHERE sa.name='PredictedRoofMaterial'
+CYPHER: WITH b, count(sa) AS c RETURN max(c) AS max_materials_per_building, count(b) AS buildings_with_material;
+-- exec(incl shell): 3.703s --
+max_materials_per_building, buildings_with_material
+1, 194799
+
+==== C10 HafenCity bbox (envelope centre) ====
+CYPHER: MATCH (b:`org.citygml4j.model.citygml.building.Building`)-[:boundedBy]->()-[:envelope]->(env)
+CYPHER: MATCH (env)-[:lowerCorner]->()-[:value]->()-[:elementData]->(lo)
+CYPHER: MATCH (env)-[:upperCorner]->()-[:value]->()-[:elementData]->(hi)
+CYPHER: WITH b, (toFloat(lo.`ARRAY_MEMBER[0]`)+toFloat(hi.`ARRAY_MEMBER[0]`))/2 AS cx,
+CYPHER:         (toFloat(lo.`ARRAY_MEMBER[1]`)+toFloat(hi.`ARRAY_MEMBER[1]`))/2 AS cy
+CYPHER: WHERE cx>=565000 AND cx<=567000 AND cy>=5933000 AND cy<=5934000
+CYPHER: RETURN count(b) AS hafencity_buildings;
+-- exec(incl shell): 3.156s --
+hafencity_buildings
+783
+
+==== E1 Typology by function code ====
+CYPHER: MATCH (b:`org.citygml4j.model.citygml.building.Building`)-[:function]->()-[*1..2]->(c:`org.citygml4j.model.gml.basicTypes.Code`)
+CYPHER: OPTIONAL MATCH (b)-[:measuredHeight]->(mh)
+CYPHER: WITH c.value AS fn, toFloat(mh.value) AS h, toInteger(b.storeysAboveGround) AS st
+CYPHER: RETURN fn, count(*) AS n, round(avg(h),1) AS avg_h, round(avg(st),1) AS avg_storeys ORDER BY n DESC LIMIT 15;
+-- exec(incl shell): 2.983s --
+fn, n, avg_h, avg_storeys
+"31001_1010", 207236, 9.5, 1.9
+"31001_2460", 58501, 3.0, 1.0
+"31001_1310", 32681, 3.2, 1.0
+"31001_1120", 9878, 16.0, 3.7
+"31001_1313", 8879, 4.2, 1.0
+"51009_1610", 8027, 5.9, NULL
+"31001_2010", 7568, 12.5, 3.0
+"31001_1100", 6867, 9.1, 1.8
+"31001_2140", 6253, 6.2, 1.2
+"31001_2100", 5279, 7.5, 1.5
+"31001_2700", 3276, 5.0, 1.1
+"31001_2463", 3020, 4.5, 1.0
+"31001_2500", 2860, 5.1, 1.1
+"31001_2740", 2821, 4.3, 1.0
+"31001_3020", 2591, 9.5, 2.1
+
+==== E2 1km grid: density/height/dominant material (>=30) ====
+CYPHER: MATCH (b:`org.citygml4j.model.citygml.building.Building`)-[:boundedBy]->()-[:envelope]->(env)
+CYPHER: MATCH (env)-[:lowerCorner]->()-[:value]->()-[:elementData]->(lo)
+CYPHER: MATCH (env)-[:upperCorner]->()-[:value]->()-[:elementData]->(hi)
+CYPHER: OPTIONAL MATCH (b)-[:measuredHeight]->(mh)
+CYPHER: OPTIONAL MATCH (b)-[:genericAttribute]->()-[*1..3]->(sa:`org.citygml4j.model.citygml.generics.StringAttribute`)
+CYPHER: WHERE sa.name='PredictedRoofMaterial'
+CYPHER: WITH toInteger(floor(((toFloat(lo.`ARRAY_MEMBER[0]`)+toFloat(hi.`ARRAY_MEMBER[0]`))/2)/1000.0)) AS gx,
+CYPHER:      toInteger(floor(((toFloat(lo.`ARRAY_MEMBER[1]`)+toFloat(hi.`ARRAY_MEMBER[1]`))/2)/1000.0)) AS gy,
+CYPHER:      b, toFloat(mh.value) AS h, sa.value AS mat
+CYPHER: WITH gx, gy, count(b) AS buildings, round(avg(h),1) AS avg_h, [m IN collect(mat) WHERE m IS NOT NULL] AS mats
+CYPHER: WHERE buildings>=30
+CYPHER: WITH gx, gy, buildings, avg_h, apoc.coll.frequencies(mats) AS freq
+CYPHER: RETURN gx AS x_km, gy AS y_km, buildings, avg_h,
+CYPHER:        CASE WHEN size(freq)=0 THEN 'n/a' ELSE apoc.coll.sortMaps(freq,'count')[0].item END AS dominant_material
+CYPHER: ORDER BY buildings DESC LIMIT 15;
+-- exec(incl shell): 5.713s --
+x_km, y_km, buildings, avg_h, dominant_material
+570, 5946, 1836, 6.9, "roof_tiles"
+578, 5926, 1747, 6.8, "roof_tiles"
+573, 5944, 1671, 6.8, "roof_tiles"
+563, 5942, 1654, 7.0, "roof_tiles"
+563, 5943, 1573, 7.4, "roof_tiles"
+573, 5942, 1552, 7.1, "roof_tiles"
+567, 5927, 1543, 5.7, "roof_tiles"
+558, 5935, 1543, 8.8, "roof_tiles"
+563, 5924, 1531, 9.9, "roof_tiles"
+566, 5921, 1524, 7.3, "roof_tiles"
+559, 5942, 1516, 7.1, "roof_tiles"
+565, 5920, 1510, 7.2, "roof_tiles"
+573, 5943, 1496, 6.8, "roof_tiles"
+570, 5947, 1495, 6.3, "roof_tiles"
+564, 5923, 1482, 10.0, "roof_tiles"
+
+==== E3 Solar potential score 0-7 (ranked) ====
+CYPHER: MATCH (b:`org.citygml4j.model.citygml.building.Building`)
+CYPHER: OPTIONAL MATCH (b)-[:roofType]->(c)
+CYPHER: OPTIONAL MATCH (b)-[:measuredHeight]->(mh)
+CYPHER: OPTIONAL MATCH (b)-[:genericAttribute]->()-[*1..3]->(sa:`org.citygml4j.model.citygml.generics.StringAttribute`)
+CYPHER: WHERE sa.name='PredictedRoofMaterial'
+CYPHER: WITH b, c.value AS roof, toFloat(mh.value) AS h, toInteger(b.storeysAboveGround) AS st, sa.value AS mat
+CYPHER: WITH b, roof, h, mat,
+CYPHER:   (CASE roof WHEN '1000' THEN 3 WHEN '2100' THEN 1 ELSE 0 END) +
+CYPHER:   (CASE mat WHEN 'concrete' THEN 2 WHEN 'tar_paper' THEN 2 WHEN 'metal' THEN 2 WHEN 'roof_tiles' THEN 1 ELSE 0 END) +
+CYPHER:   (CASE WHEN h>10 THEN 1 ELSE 0 END) + (CASE WHEN st>1 THEN 1 ELSE 0 END) AS score
+CYPHER: RETURN b.id AS id, score, roof, mat AS material, h ORDER BY score DESC, h DESC LIMIT 15;
+-- exec(incl shell): 5.332s --
+id, score, roof, material, h
+"DEHHALKA1FW000LN", 7, "1000", "tar_paper", 128.966
+"DEHHALKAJ0000yIP", 7, "1000", "tar_paper", 107.929
+"DEHHALKA10006bd3", 7, "1000", "tar_paper", 97.196
+"DEHHALKAP0007cPo", 7, "1000", "concrete", 94.555
+"DEHHALKAV0000fCD", 7, "1000", "tar_paper", 93.834
+"DEHHALKA10007wzP", 7, "1000", "concrete", 88.963
+"DEHHALKAJ000104O", 7, "1000", "concrete", 88.438
+"DEHHALKAJ0000zOL", 7, "1000", "concrete", 81.731
+"DEHHALKAP0007cG6", 7, "1000", "concrete", 80.406
+"DEHHALKAJ0000pPz", 7, "1000", "tar_paper", 78.407
+"DEHHALKAJ0000owJ", 7, "1000", "metal", 73.928
+"DEHHALKAP000188S", 7, "1000", "tar_paper", 73.321
+"DEHHALKA4IB000Cv", 7, "1000", "concrete", 72.94
+"DEHHALKAP0000v7r", 7, "1000", "concrete", 72.627
+"DEHHALKAJ0000pRb", 7, "1000", "concrete", 72.28
+
+==== E4 Floor-to-floor anomaly (<2 or >8 m) count ====
+CYPHER: MATCH (b:`org.citygml4j.model.citygml.building.Building`)-[:measuredHeight]->(mh)
+CYPHER: WITH b, toFloat(mh.value) AS h, toInteger(b.storeysAboveGround) AS st
+CYPHER: WHERE st>0 AND h IS NOT NULL
+CYPHER: WITH b, h/st AS ffh WHERE ffh<2 OR ffh>8
+CYPHER: RETURN count(b) AS anomalies;
+-- exec(incl shell): 2.387s --
+anomalies
+68545
+
+==== E5 Roof material x function code (>=500) ====
+CYPHER: MATCH (b:`org.citygml4j.model.citygml.building.Building`)-[:function]->()-[*1..2]->(c:`org.citygml4j.model.gml.basicTypes.Code`)
+CYPHER: MATCH (b)-[:genericAttribute]->()-[*1..3]->(sa:`org.citygml4j.model.citygml.generics.StringAttribute`)
+CYPHER: WHERE sa.name='PredictedRoofMaterial'
+CYPHER: WITH c.value AS fn, sa.value AS mat
+CYPHER: WITH fn, count(*) AS type_total, collect(mat) AS mats WHERE type_total>=500
+CYPHER: UNWIND ['roof_tiles','tar_paper','concrete','metal','glass'] AS m
+CYPHER: RETURN fn, type_total, m AS material, round(100.0*size([x IN mats WHERE x=m])/type_total,1) AS pct
+CYPHER: ORDER BY fn, pct DESC;
+-- exec(incl shell): 4.593s --
+fn, type_total, material, pct
+"31001_1010", 129738, "roof_tiles", 67.6
+"31001_1010", 129738, "tar_paper", 18.0
+"31001_1010", 129738, "concrete", 10.6
+"31001_1010", 129738, "metal", 3.2
+"31001_1010", 129738, "glass", 0.7
+"31001_1020", 1309, "tar_paper", 43.2
+"31001_1020", 1309, "roof_tiles", 37.9
+"31001_1020", 1309, "concrete", 9.5
+"31001_1020", 1309, "metal", 7.0
+"31001_1020", 1309, "glass", 2.4
+"31001_1100", 5721, "roof_tiles", 71.5
+"31001_1100", 5721, "tar_paper", 17.4
+"31001_1100", 5721, "concrete", 8.5
+"31001_1100", 5721, "metal", 1.9
+"31001_1100", 5721, "glass", 0.7
+"31001_1120", 9451, "roof_tiles", 52.9
+"31001_1120", 9451, "tar_paper", 30.9
+"31001_1120", 9451, "concrete", 14.8
+"31001_1120", 9451, "metal", 1.1
+"31001_1120", 9451, "glass", 0.3
+"31001_1130", 770, "roof_tiles", 59.0
+"31001_1130", 770, "tar_paper", 26.4
+"31001_1130", 770, "concrete", 12.3
+"31001_1130", 770, "metal", 2.1
+"31001_1130", 770, "glass", 0.3
+
+==== E6 Heat-island: dark-roof pct per 2km cell (>=50) ====
+CYPHER: MATCH (b:`org.citygml4j.model.citygml.building.Building`)-[:genericAttribute]->()-[*1..3]->(sa:`org.citygml4j.model.citygml.generics.StringAttribute`)
+CYPHER: WHERE sa.name='PredictedRoofMaterial'
+CYPHER: MATCH (b)-[:boundedBy]->()-[:envelope]->(env)
+CYPHER: MATCH (env)-[:lowerCorner]->()-[:value]->()-[:elementData]->(lo)
+CYPHER: MATCH (env)-[:upperCorner]->()-[:value]->()-[:elementData]->(hi)
+CYPHER: WITH toInteger(floor(((toFloat(lo.`ARRAY_MEMBER[0]`)+toFloat(hi.`ARRAY_MEMBER[0]`))/2)/2000.0)) AS gx,
+CYPHER:      toInteger(floor(((toFloat(lo.`ARRAY_MEMBER[1]`)+toFloat(hi.`ARRAY_MEMBER[1]`))/2)/2000.0)) AS gy,
+CYPHER:      sa.value AS mat
+CYPHER: WITH gx, gy, count(*) AS withmat, sum(CASE WHEN mat IN ['tar_paper','metal'] THEN 1 ELSE 0 END) AS dark
+CYPHER: WHERE withmat>=50
+CYPHER: RETURN gx AS x_2km, gy AS y_2km, withmat, dark, round(100.0*dark/withmat,1) AS dark_pct ORDER BY dark_pct DESC LIMIT 15;
+-- exec(incl shell): 5.895s --
+x_2km, y_2km, withmat, dark, dark_pct
+281, 2964, 519, 374, 72.1
+284, 2965, 502, 339, 67.5
+277, 2966, 153, 103, 67.3
+281, 2965, 234, 155, 66.2
+284, 2966, 1234, 801, 64.9
+286, 2965, 666, 429, 64.4
+282, 2963, 638, 404, 63.3
+283, 2965, 404, 250, 61.9
+280, 2965, 208, 119, 57.2
+290, 2965, 70, 40, 57.1
+283, 2966, 642, 364, 56.7
+285, 2965, 517, 289, 55.9
+282, 2965, 710, 383, 53.9
+280, 2962, 434, 230, 53.0
+282, 2966, 1090, 567, 52.0
+
+==== E7 Material coverage completeness (FEASIBILITY) ====
+CYPHER: MATCH (b:`org.citygml4j.model.citygml.building.Building`)-[:genericAttribute]->()-[*1..3]->(sa:`org.citygml4j.model.citygml.generics.StringAttribute`)
+CYPHER: WITH DISTINCT sa.name AS attr_name RETURN collect(attr_name) AS all_generic_attribute_names;
+-- exec(incl shell): 3.833s --
+all_generic_attribute_names
+["Grundrissaktualitaet", "Gemeindeschluessel", "DatenquelleBodenhoehe", "DatenquelleGeschossanzahl", "DatenquelleLage", "Geometrietyp2DReferenz", "DatenquelleDachhoehe", "PredictedRoofMaterial"]
+
+==== E8 High-rise clusters: 500m cells, >30m, >=2 ====
+CYPHER: MATCH (b:`org.citygml4j.model.citygml.building.Building`)-[:measuredHeight]->(mh) WHERE toFloat(mh.value)>30
+CYPHER: MATCH (b)-[:boundedBy]->()-[:envelope]->(env)
+CYPHER: MATCH (env)-[:lowerCorner]->()-[:value]->()-[:elementData]->(lo)
+CYPHER: MATCH (env)-[:upperCorner]->()-[:value]->()-[:elementData]->(hi)
+CYPHER: WITH toInteger(floor(((toFloat(lo.`ARRAY_MEMBER[0]`)+toFloat(hi.`ARRAY_MEMBER[0]`))/2)/500.0)) AS gx,
+CYPHER:      toInteger(floor(((toFloat(lo.`ARRAY_MEMBER[1]`)+toFloat(hi.`ARRAY_MEMBER[1]`))/2)/500.0)) AS gy,
+CYPHER:      toFloat(mh.value) AS h, b
+CYPHER: WITH gx, gy, count(*) AS tall, round(avg(h),1) AS avg_h, round(max(h),1) AS max_h, collect(b.id)[0..3] AS sample
+CYPHER: WHERE tall>=2
+CYPHER: RETURN gx AS x_500m, gy AS y_500m, tall, avg_h, max_h, sample ORDER BY tall DESC LIMIT 15;
+-- exec(incl shell): 3.256s --
+x_500m, y_500m, tall, avg_h, max_h, sample
+1132, 11868, 48, 33.2, 41.6, ["DEHHALKAJ0000ySA", "DEHHALKAJ0000ylv", "DEHHALKA4dr0009V"]
+1131, 11867, 46, 37.0, 121.6, ["DEHHALKA1PN0007t", "DEHHALKA1PN00089", "DEHHALKAJ0000p9H"]
+1131, 11868, 39, 33.3, 39.1, ["DEHHALKAJ0000yCC", "DEHHALKAJ0000yq0", "DEHHALKAJ0000q0B"]
+1125, 11860, 38, 39.9, 51.2, ["DEHHALKA900013fz", "DEHHALKAJ0000uNT", "DEHHALKA40000Euo"]
+1132, 11867, 34, 35.3, 62.4, ["DEHHALKAJ00011Pa", "DEHHALKAJ0000uHz", "DEHHALKAJ00011px"]
+1130, 11868, 29, 36.7, 52.2, ["DEHHALKAJ0000pts", "DEHHALKAJ0000ofr", "DEHHALKA4bO00068"]
+1131, 11866, 26, 35.2, 83.8, ["DEHHALKAJ0000oyG", "DEHHALKAJ0000pEV", "DEHHALKAJ0000pZj"]
+1130, 11867, 26, 33.9, 45.3, ["DEHHALKAJ0000osb", "DEHHALKAJ0000odG", "DEHHALKAJ0000p3I"]
+1131, 11869, 23, 36.3, 51.4, ["DEHHALKAJ0000y3l", "DEHHALKAJ0000z3t", "DEHHALKA3XF000Gb"]
+1130, 11866, 23, 37.4, 78.4, ["DEHHALKAJ0000pA8", "DEHHALKAJ0000od4", "DEHHALKA6UY0000J"]
+1132, 11866, 22, 37.5, 56.1, ["DEHHALKA10006Nmg", "DEHHALKAJ00011H8", "DEHHALKAJ00011zS"]
+1134, 11867, 19, 35.3, 49.6, ["DEHHALKAJ00059AU", "DEHHALKA3Ak0001Y", "DEHHALKAJ00058rA"]
+1130, 11869, 16, 39.1, 97.2, ["DEHHALKAJ0000ynQ", "DEHHALKAJ0000yOX", "DEHHALKA10006bd3"]
+1133, 11867, 15, 35.8, 42.6, ["DEHHALKAJ00012ce", "DEHHALKAJ0000yjA", "DEHHALKA9qA000Bh"]
+1125, 11854, 14, 52.7, 129.0, ["DEHHALKA1FW000Kw", "DEHHALKA1FW000L9", "DEHHALKA1FW000MM"]
+
+==== E9 FAR proxy per 1km cell (>=30) ====
+CYPHER: MATCH (b:`org.citygml4j.model.citygml.building.Building`)-[:boundedBy]->()-[:envelope]->(env)
+CYPHER: MATCH (env)-[:lowerCorner]->()-[:value]->()-[:elementData]->(lo)
+CYPHER: MATCH (env)-[:upperCorner]->()-[:value]->()-[:elementData]->(hi)
+CYPHER: WITH b, toFloat(lo.`ARRAY_MEMBER[0]`) AS minx, toFloat(lo.`ARRAY_MEMBER[1]`) AS miny,
+CYPHER:         toFloat(hi.`ARRAY_MEMBER[0]`) AS maxx, toFloat(hi.`ARRAY_MEMBER[1]`) AS maxy,
+CYPHER:         toInteger(b.storeysAboveGround) AS st
+CYPHER: WITH toInteger(floor(((minx+maxx)/2)/1000.0)) AS gx, toInteger(floor(((miny+maxy)/2)/1000.0)) AS gy,
+CYPHER:      (maxx-minx)*(maxy-miny)*st AS gfa
+CYPHER: WITH gx, gy, count(*) AS buildings, sum(gfa) AS gfa_sum WHERE buildings>=30
+CYPHER: RETURN gx AS x_km, gy AS y_km, buildings, round(gfa_sum) AS gfa_m2, round(gfa_sum/1000000.0,3) AS far
+CYPHER: ORDER BY far DESC LIMIT 15;
+-- exec(incl shell): 3.341s --
+x_km, y_km, buildings, gfa_m2, far
+565, 5934, 484, 4602135.0, 4.602
+565, 5933, 497, 4258634.0, 4.259
+567, 5933, 348, 4104060.0, 4.104
+567, 5934, 644, 4078903.0, 4.079
+566, 5933, 286, 3704933.0, 3.705
+566, 5934, 547, 3670831.0, 3.671
+567, 5937, 860, 3055973.0, 3.056
+564, 5937, 1103, 2916242.0, 2.916
+568, 5936, 721, 2692245.0, 2.692
+563, 5935, 1326, 2669849.0, 2.67
+562, 5934, 956, 2635829.0, 2.636
+570, 5937, 504, 2598126.0, 2.598
+564, 5936, 683, 2489275.0, 2.489
+561, 5934, 1058, 2406468.0, 2.406
+563, 5937, 975, 2396740.0, 2.397
+
+==== E10 Ground elevation zones (lowerCorner z) ====
+CYPHER: MATCH (b:`org.citygml4j.model.citygml.building.Building`)-[:boundedBy]->()-[:envelope]->(env)
+CYPHER: MATCH (env)-[:lowerCorner]->()-[:value]->()-[:elementData]->(lo)
+CYPHER: OPTIONAL MATCH (b)-[:measuredHeight]->(mh)
+CYPHER: WITH toFloat(lo.`ARRAY_MEMBER[2]`) AS gz, toFloat(mh.value) AS h
+CYPHER: WITH CASE WHEN gz<0 THEN '1 below sea (<0m)' WHEN gz<5 THEN '2 low (0-5m)' WHEN gz<20 THEN '3 mid (5-20m)'
+CYPHER:           WHEN gz<50 THEN '4 elevated (20-50m)' ELSE '5 high (>50m)' END AS zone, gz, h
+CYPHER: RETURN zone, count(*) AS buildings, round(avg(h),1) AS avg_building_h, round(min(gz),1) AS min_gz, round(max(gz),1) AS max_gz
+CYPHER: ORDER BY zone;
+-- exec(incl shell): 3.076s --
+zone, buildings, avg_building_h, min_gz, max_gz
+"1 below sea (<0m)", 603, 5.4, -5.0, 0.0
+"2 low (0-5m)", 69707, 7.0, 0.0, 5.0
+"3 mid (5-20m)", 136855, 8.6, 5.0, 20.0
+"4 elevated (20-50m)", 173599, 7.4, 20.0, 50.0
+"5 high (>50m)", 7503, 7.4, 50.0, 88.7
+

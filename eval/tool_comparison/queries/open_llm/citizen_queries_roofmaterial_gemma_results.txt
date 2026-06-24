@@ -1,0 +1,1244 @@
+// -----------------------------------------------------------------------------
+// 1. Hamburg at a glance
+//    How many buildings are in the dataset, how tall are they on average,
+//    and how many storeys does a typical Hamburg building have?
+// -----------------------------------------------------------------------------
+
+Hamburg at a glance How many buildings are in the dataset, how tall are they on average, and how many storeys does a typical Hamburg building have?
+ 
+ ```cypher
+MATCH (b:Building)
+WITH b, 
+     b.ground_z AS ground, 
+     coalesce(b.measured_height, 0.0) AS height, 
+     (b.ground_z + coalesce(b.measured_height, 0.0)) AS roof_z
+WITH b, ground, height, roof_z,
+     CASE 
+       WHEN ground < 0 THEN 'Below Sea Level (Critical)'
+       WHEN ground < 5 THEN 'Low Elevation (High Risk)'
+       WHEN ground < 20 THEN 'Mid Elevation (Moderate Risk)'
+       ELSE 'High Elevation (Low Risk)'
+     END AS elevation_zone
+RETURN b.id AS building_id, 
+       ground AS ground_elevation, 
+       height AS building_height, 
+       roof_z AS roof_peak_elevation, 
+       elevation_zone
+ORDER BY ground ASC
+```
+
+All buildings in the provided result are classified within the **Below Sea Level (Critical)** elevation zone. The ground elevations range from a minimum of **-4.989 m** (Building ID: DEHHALKAJ0000vNh) to a maximum of **-0.05 m** (e.g., Building IDs: DEHHALKAP0000pQA, DEHHALKAJ00059dM, and DEHHALKAJ00017CG). This topographic context indicates a critical flood risk for these structures.
+
+Query time: 58.412 s
+
+>> Hamburg at a glance How many buildings are in the dataset, how tall are they on average, and how many storeys does a typical Hamburg building have?
+Thinking...
+
+```cypher
+MATCH (b:Building)
+RETURN count(b) AS total_buildings, avg(b.measured_height) AS avg_height, avg(b.storeys_above_ground) AS avg_storeys
+```
+
+There are 388,267 buildings in the dataset, with an average height of approximately 7.75 and an average of 1.66 storeys.
+
+Query time: 19.732 s
+
+
+// -----------------------------------------------------------------------------
+// 2. What is Hamburg's most common roof material?
+//    Shows the distribution of predicted roof materials across all buildings,
+//    with percentage share.
+// -----------------------------------------------------------------------------
+
+What is Hamburg's most common roof material? Shows the distribution of predicted roof materials across all buildings, with percentage share.
+
+```cypher
+MATCH (b:Building) 
+WITH count(b) AS total 
+MATCH (b:Building) 
+WITH total, b.predictedroofmaterial AS material, count(b) AS count 
+RETURN coalesce(material, 'Unknown') AS material, count, round(100.0 * count / total, 2) AS percentage 
+ORDER BY count DESC
+```
+
+The most common roof material is Unknown (49.83%). The distribution of predicted roof materials is as follows:
+- Unknown: 49.83%
+- roof_tiles: 27.99%
+- tar_paper: 13.25%
+- concrete: 5.9%
+- metal: 2.2%
+- glass: 0.83%
+
+Query time: 36.440 s
+
+
+// -----------------------------------------------------------------------------
+// 3. What are the 20 tallest buildings in Hamburg?
+//    Good to spot landmarks, towers, and high-rises.
+// -----------------------------------------------------------------------------
+
+What are the 20 tallest buildings in Hamburg? Good to spot landmarks, towers, and high-rises.
+
+```cypher
+MATCH (b:Building)
+RETURN b.name, b.measured_height
+ORDER BY b.measured_height DESC
+LIMIT 20
+```
+
+The 20 tallest buildings in Hamburg are:
+
+1. DEHHALKAJ0000yvD: 158.47
+2. DEHHALKAJ0004qT4: 158.256
+3. DEHHALKAP0007WG0: 139.754
+4. DEHHALKA1FW000LN: 128.966
+5. DEHHALKAJ0000ovW: 121.641
+6. DEHHALKAn0006JXQ: 111.334
+7. DEHHALKA9dh0006P: 109.401
+8. DEHHALKAJ0000yIP: 107.929
+9. DEHHALKA1FW000K6: 99.507
+10. DEHHALKA10006bd3: 97.196
+11. DEHHALKAJ0000pTk: 96.328
+12. DEHHALKAP0007cPo: 94.555
+13. DEHHALKAV0000fCD: 93.834
+14. DEHHALKA10007wzP: 88.963
+15. DEHHALKAJ000104O: 88.438
+16. DEHHALKA6Ec0008g: 87.124
+17. DEHHALKAJ0000pO5: 83.843
+18. DEHHALKAJ0000zOL: 81.731
+19. DEHHALKAJ0000p74: 80.985
+20. DEHHALKAP0007cG6: 80.406
+
+Query time: 24.672 s
+
+
+// -----------------------------------------------------------------------------
+// 4. Which roof shapes are most popular in Hamburg?
+//    Flat, Gable, Hip, Mono-Pitch — shows the architectural character
+//    of different neighbourhoods.
+// -----------------------------------------------------------------------------
+
+Which roof shapes are most popular in Hamburg? Flat, Gable, Hip, Mono-Pitch — shows the architectural character of different neighbourhoods.
+```cypher
+MATCH (b:Building)-[:HAS_ROOF_TYPE]->(rt:RoofType)
+RETURN rt.name AS roof_shape, count(b) AS building_count
+ORDER BY building_count DESC
+```
+
+The most popular roof shapes in Hamburg are Flat Roof (169,964 buildings) and Gable Roof (162,368 buildings), followed by Hip Roof (29,990 buildings) and Mono-Pitch Roof (21,202 buildings).
+
+Query time: 21.533 s
+
+
+// -----------------------------------------------------------------------------
+// 5. Solar panel potential — flat-roofed buildings taller than 5 m
+//    Flat roofs on larger buildings are the easiest surfaces for solar
+//    installations. This query finds them and ranks by roof area proxy (height).
+// -----------------------------------------------------------------------------
+
+Solar panel potential -- flat-roofed buildings taller than 5 m Flat roofs on larger buildings are the easiest surfaces for solar installations. This query finds them and ranks by roof area proxy (height).
+
+```cypher
+MATCH (b:Building)-[:HAS_ROOF_TYPE]->(rt:RoofType {code: '1000'})
+WHERE b.measured_height > 5
+RETURN b.id AS building_id, b.measured_height AS height, rt.name AS roof_type
+ORDER BY b.measured_height DESC
+```
+
+The following flat-roofed buildings taller than 5m are ranked by height (as a proxy for solar panel potential):
+
+*   **DEHHALKAJ0000yvD**: 158.47 m
+*   **DEHHALKAJ0004qT4**: 158.256 m
+*   **DEHHALKA1FW000LN**: 128.966 m
+*   **DEHHALKAn0006JXQ**: 111.334 m
+*   **DEHHALKA9dh0006P**: 109.401 m
+*   **DEHHALKAJ0000yIP**: 107.929 m
+*   **DEHHALKA1FW000K6**: 99.507 m
+*   **DEHHALKA10006bd3**: 97.196 m
+*   **DEHHALKAP0007cPo**: 94.555 m
+*   **DEHHALKAV0000fCD**: 93.834 m
+*   **DEHHALKA10007wzP**: 88.963 m
+*   **DEHHALKAJ000104O**: 88.438 m
+*   **DEHHALKAJ0000zOL**: 81.731 m
+*   **DEHHALKAJ0000p74**: 80.985 m
+*   **DEHHALKAP0007cG6**: 80.406 m
+*   **DEHHALKA1FW000Kw**: 80.192 m
+*   **DEHHALKA6Eq00045**: 79.648 m
+*   **DEHHALKAJ0000sAQ**: 79.496 m
+*   **DEHHALKAJ0000pPz**: 78.407 m
+*   **DEHHALKA10007wzE**: 78.196 m
+*   **DEHHALKA1FW000Jq**: 74.1 m
+*   **DEHHALKA1FW000Jm**: 74.059 m
+*   **DEHHALKAJ0000owJ**: 73.928 m
+*   **DEHHALKAP000188S**: 73.321 m
+*   **DEHHALKA4IB000Cv**: 72.94 m
+*   **DEHHALKAP0000v7r**: 72.627 m
+*   **DEHHALKAJ0000pRb**: 72.28 m
+*   **DEHHALKAJ00016Iv**: 71.135 m
+*   **DEHHALKA60000Dso**: 71.042 m
+*   **DEHHALKAJ0000ou5**: 70.953 m
+*   **DEHHALKAJ0000zhB**: 70.497 m
+*   **DEHHALKAJ0000zkQ**: 70.332 m
+*   **DEHHALKAP0000vB1**: 69.235 m
+*   **DEHHALKAP0007b6f**: 67.836 m
+*   **DEHHALKAJ0000sLU**: 67.498 m
+*   **DEHHALKAz0000KbD**: 67.381 m
+*   **DEHHALKAJ0000rll**: 67.258 m
+*   **DEHHALKAJ0000rqu**: 67.186 m
+*   **DEHHALKAJ0000ogp**: 66.729 m
+*   **DEHHALKAJ0000sMJ**: 65.933 m
+*   **DEHHALKAJ0000ox1**: 65.642 m
+*   **DEHHALKAJ0000sMb**: 65.418 m
+*   **DEHHALKAJ0000tIg**: 65.342 m
+*   **DEHHALKA8aQ0002X**: 65.011 m
+*   **DEHHALKAJ0000tFV**: 64.602 m
+*   **DEHHALKA10000yEw**: 64.549 m
+*   **DEHHALKAJ0000saF**: 64.443 m
+*   **DEHHALKAJ0000t81**: 64.277 m
+*   **DEHHALKAJ0000rrM**: 64.256 m
+*   **DEHHALKAJ0000zYN**: 64.066 m
+*   **DEHHALKAJ0000p4i**: 63.84 m
+*   **DEHHALKAJ0000rQr**: 63.672 m
+*   **DEHHALKAP00015ID**: 63.596 m
+*   **DEHHALKAJ0000yd6**: 63.383 m
+*   **DEHHALKAP0007bRs**: 63.251 m
+*   **DEHHALKAJ0000oze**: 62.081 m
+*   **DEHHALKAP0000vlX**: 61.839 m
+*   **DEHHALKAJ0000zVO**: 61.824 m
+*   **DEHHALKAP0000vYu**: 61.527 m
+*   **DEHHALKA70001t22**: 60.485 m
+*   **DEHHALKA9CA000Aj**: 60.029 m
+*   **DEHHALKAJ0000vBw**: 59.676 m
+*   **DEHHALKAP0007cnx**: 59.581 m
+*   **DEHHALKAV0000OhO**: 59.013 m
+*   **DEHHALKAV00015iX**: 58.997 m
+*   **DEHHALKAP00017wz**: 58.78 m
+*   **DEHHALKAz00014Cv**: 58.632 m
+*   **DEHHALKA9u300096**: 58.627 m
+*   **DEHHALKA100011WK**: 58.497 m
+*   **DEHHALKA10005FOJ**: 58.097 m
+*   **DEHHALKAV0000nE9**: 57.843 m
+*   **DEHHALKAV0000OLw**: 57.738 m
+*   **DEHHALKA10005FNw**: 57.653 m
+*   **DEHHALKA10005FNv**: 57.601 m
+*   **DEHHALKA10005FNy**: 57.581 m
+*   **DEHHALKA4aK000Hz**: 56.164 m
+*   **DEHHALKA2FI00005**: 56.132 m
+*   **DEHHALKAJ0000p44**: 55.95 m
+*   **DEHHALKA700026rv**: 55.941 m
+*   **DEHHALKAV0000T2P**: 55.274 m
+*   **DEHHALKA1FW000Ju**: 55.207 m
+*   **DEHHALKAP0001HMD**: 55.157 m
+*   **DEHHALKAJ0000tBI**: 55.12 m
+*   **DEHHALKA5dG0003Q**: 55.043 m
+*   **DEHHALKA1FW000IT**: 54.996 m
+*   **DEHHALKA5Ma0005C**: 54.98 m
+*   **DEHHALKA10006Nma**: 54.763 m
+*   **DEHHALKA70001zu1**: 54.525 m
+*   **DEHHALKA3EG000Ee**: 54.518 m
+*   **DEHHALKAz0000m2c**: 54.023 m
+*   **DEHHALKA10007htD**: 53.91 m
+*   **DEHHALKA9s0000LT**: 53.904 m
+*   **DEHHALKAP0007b5X**: 53.887 m
+*   **DEHHALKA10003Sci**: 53.853 m
+*   **DEHHALKAP0007VcM**: 53.84 m
+*   **DEHHALKAJ00012RX**: 53.735 m
+*   **DEHHALKAJ00059G9**: 53.649 m
+*   **DEHHALKAJ00010WN**: 53.647 m
+*   **DEHHALKAP0007dYX**: 53.455 m
+*   **DEHHALKAJ00010PJ**: 53.14 m
+*   **DEHHALKA1FW000IX**: 53.018 m
+*   **DEHHALKAJ0000seB**: 52.834 m
+*   **DEHHALKAJ0000zP2**: 52.704 m
+*   **DEHHALKAJ0000v34**: 52.571 m
+*   **DEHHALKAV0000zd0**: 52.535 m
+*   **DEHHALKA70001uLp**: 52.436 m
+*   **DEHHALKAJ0000z3H**: 52.16 m
+*   **DEHHALKAP00010JU**: 52.088 m
+*   **DEHHALKAP00010iv**: 51.921 m
+*   **DEHHALKAP00014eo**: 51.626 m
+*   **DEHHALKA90000UBF**: 51.375 m
+*   **DEHHALKAJ0000zKa**: 51.345 m
+*   **DEHHALKA900013gY**: 51.207 m
+*   **DEHHALKAJ0000qu5**: 51.182 m
+*   **DEHHALKAJ0000r9y**: 51.011 m
+*   **DEHHALKAjN0000HE**: 50.913 m
+*   **DEHHALKAJ0000yMI**: 50.69 m
+*   **DEHHALKA3XF000Gb**: 50.508 m
+*   **DEHHALKAJ0000qm6**: 50.502 m
+*   **DEHHALKAJ0000uVo**: 50.47 m
+*   **DEHHALKAP00015zY**: 50.258 m
+*   **DEHHALKAP0001KUQ**: 50.22 m
+*   **DEHHALKA39f000BM**: 50.175 m
+*   **DEHHALKAJ0000yi8**: 50.085 m
+*   **DEHHALKA880000J8**: 49.694 m
+*   **DEHHALKAJ00012Gy**: 49.607 m
+*   **DEHHALKAP00019CH**: 49.604 m
+*   **DEHHALKA9Gq0007e**: 49.571 m
+*   **DEHHALKAP000AvKQ**: 49.397 m
+*   **DEHHALKAz0000MxY**: 49.091 m
+*   **DEHHALKA10003TSo**: 49.08 m
+*   **DEHHALKAJ0000yx7**: 49.001 m
+*   **DEHHALKAP0007d4L**: 48.922 m
+*   **DEHHALKAJ00059ZE**: 48.723 m
+*   **DEHHALKAP00077v3**: 48.666 m
+*   **DEHHALKAP0007UJi**: 48.362 m
+*   **DEHHALKAJ0000uFk**: 48.3 m
+*   **DEHHALKAz0000TTK**: 48.195 m
+*   **DEHHALKAP000Av1M**: 48.044 m
+*   **DEHHALKA6EX0004r**: 47.905 m
+*   **DEHHALKA700023m7**: 47.836 m
+*   **DEHHALKAJ0000sON**: 47.433 m
+*   **DEHHALKAJ0000qm2**: 47.433 m
+*   **DEHHALKA3Ak0001Y**: 47.313 m
+*   **DEHHALKAJ000165G**: 47.281 m
+*   **DEHHALKA6Eh0000i**: 47.196 m
+*   **DEHHALKAP0001Fjw**: 47.165 m
+*   **DEHHALKA70002BAG**: 47.116 m
+*   **DEHHALKAP0001Eft**: 47.04 m
+*   **DEHHALKAJ00011Fb**: 46.836 m
+*   **DEHHALKAJ0000p08**: 46.835 m
+*   **DEHHALKA40000Eum**: 46.748 m
+*   **DEHHALKAJ0000p4k**: 46.72 m
+*   **DEHHALKAJ000155A**: 46.707 m
+*   **DEHHALKAP0001GKE**: 46.706 m
+*   **DEHHALKAP0007cVO**: 46.584 m
+*   **DEHHALKAP00010KB**: 46.566 m
+*   **DEHHALKAJ0000syh**: 46.544 m
+*   **DEHHALKAP0001KUz**: 46.538 m
+*   **DEHHALKA2i2000Da**: 46.475 m
+*   **DEHHALKAP0000zsC**: 46.3 m
+*   **DEHHALKAP0007d27**: 46.288 m
+*   **DEHHALKA70002AF0**: 46.287 m
+*   **DEHHALKAP00015AM**: 46.263 m
+*   **DEHHALKAn0000j7c**: 46.143 m
+*   **DEHHALKAV0000vr3**: 46.084 m
+*   **DEHHALKA70002X6f**: 46.025 m
+*   **DEHHALKAV0000qKM**: 45.927 m
+*   **DEHHALKAP00078RL**: 45.907 m
+*   **DEHHALKAJ00014In**: 45.852 m
+*   **DEHHALKAJ00016Wr**: 45.589 m
+*   **DEHHALKAJ0000ssX**: 45.572 m
+*   **DEHHALKAn0000u0r**: 45.547 m
+*   **DEHHALKAJ0001AK4**: 45.498 m
+*   **DEHHALKAz0000NyN**: 45.393 m
+*   **DEHHALKAV0000XFT**: 45.322 m
+*   **DEHHALKAJ0000pCN**: 45.305 m
+*   **DEHHALKAz0000mII**: 45.132 m
+*   **DEHHALKAP0007bU5**: 45.083 m
+*   **DEHHALKAP0007dI4**: 45.073 m
+*   **DEHHALKAz0000aZm**: 45.065 m
+*   **DEHHALKA70002Gdf**: 45.01 m
+*   **DEHHALKA70002MMP**: 44.973 m
+*   **DEHHALKAJ0001AT7**: 44.969 m
+*   **DEHHALKA70002JZ6**: 44.955 m
+*   **DEHHALKA70002KyM**: 44.928 m
+*   **DEHHALKAJ0000ybf**: 44.92 m
+*   **DEHHALKAz0000K85**: 44.91 m
+*   **DEHHALKAJ0001B4Z**: 44.897 m
+*   **DEHHALKAJ000145U**: 44.875 m
+*   **DEHHALKAJ0001AKN**: 44.868 m
+*   **DEHHALKAz0000KvH**: 44.861 m
+*   **DEHHALKA6Eh0000k**: 44.858 m
+*   **DEHHALKA70001x6k**: 44.72 m
+*   **DEHHALKA70002L4G**: 44.66 m
+*   **DEHHALKAP0005fgA**: 44.599 m
+*   **DEHHALKAz0000t2n**: 44.566 m
+*   **DEHHALKA6FX0007t**: 44.528 m
+*   **DEHHALKAJ0000zex**: 44.322 m
+*   **DEHHALKA10006W8v**: 44.232 m
+*   **DEHHALKA1FW000LB**: 44.125 m
+*   **DEHHALKAP00017BC**: 44.059 m
+*   **DEHHALKAP0007d94**: 44.055 m
+*   **DEHHALKA6Kz000Ca**: 44.054 m
+*   **DEHHALKAJ0000yv3**: 44.052 m
+*   **DEHHALKAJ0000uZb**: 43.992 m
+*   **DEHHALKAP0007cT5**: 43.909 m
+*   **DEHHALKAJ0001198**: 43.865 m
+*   **DEHHALKAJ00013S5**: 43.799 m
+*   **DEHHALKAJ00016Vm**: 43.766 m
+*   **DEHHALKA10006Nmg**: 43.709 m
+*   **DEHHALKAP0007dI8**: 43.68 m
+*   **DEHHALKA1FW000L9**: 43.571 m
+*   **DEHHALKAJ0000ofr**: 43.534 m
+*   **DEHHALKAJ0000oe7**: 43.488 m
+*   **DEHHALKA1FW000L7**: 43.471 m
+*   **DEHHALKAP00079Ni**: 43.438 m
+*   **DEHHALKAJ0000ypO**: 43.403 m
+*   **DEHHALKA70002ZBo**: 43.329 m
+*   **DEHHALKAz0000HmU**: 43.247 m
+*   **DEHHALKAJ0000wn1**: 43.226 m
+*   **DEHHALKA9gi000Do**: 42.977 m
+*   **DEHHALKAz00013yH**: 42.852 m
+*   **DEHHALKAJ0000yrl**: 42.843 m
+*   **DEHHALKAz0000HWp**: 42.824 m
+*   **DEHHALKAV0000YKu**: 42.814 m
+*   **DEHHALKAP0007WAF**: 42.773 m
+*   **DEHHALKAV0000Xe7**: 42.748 m
+*   **DEHHALKAD0000D5W**: 42.744 m
+*   **DEHHALKAV0000XuX**: 42.669 m
+*   **DEHHALKAJ0000uNT**: 42.657 m
+*   **DEHHALKAP0007bql**: 42.632 m
+*   **DEHHALKA9G2000NL**: 42.611 m
+*   **DEHHALKA70002LDZ**: 42.574 m
+*   **DEHHALKAV0000XVu**: 42.559 m
+*   **DEHHALKAJ00011f7**: 42.529 m
+*   **DEHHALKAz0000OxR**: 42.524 m
+*   **DEHHALKAJ0000wPQ**: 42.415 m
+*   **DEHHALKA90000oAo**: 42.368 m
+*   **DEHHALKA90000oAl**: 42.345 m
+*   **DEHHALKA90000oAN**: 42.327 m
+*   **DEHHALKAJ00016Hl**: 42.314 m
+*   **DEHHALKAP0007cfn**: 42.28 m
+*   **DEHHALKA900013gR**: 42.25 m
+*   **DEHHALKAV0000QK6**: 42.248 m
+*   **DEHHALKA900013gT**: 42.241 m
+*   **DEHHALKA90000oAR**: 42.21 m
+*   **DEHHALKA90000oAV**: 42.208 m
+*   **DEHHALKA7x00001v**: 42.184 m
+*   **DEHHALKA90000oAd**: 42.181 m
+*   **DEHHALKA900013gP**: 42.174 m
+*   **DEHHALKA700025t2**: 42.152 m
+*   **DEHHALKA90000oAZ**: 42.135 m
+*   **DEHHALKA900013gX**: 42.083 m
+*   **DEHHALKAJ00011gR**: 41.999 m
+*   **DEHHALKAV0000Srx**: 41.957 m
+*   **DEHHALKAJ0000tGG**: 41.934 m
+*   **DEHHALKAJ00016oo**: 41.899 m
+*   **DEHHALKAz0000K2h**: 41.887 m
+*   **DEHHALKA70001x3S**: 41.822 m
+*   **DEHHALKA700024Dg**: 41.814 m
+*   **DEHHALKAz0000rT1**: 41.773 m
+*   **DEHHALKAP0001CRy**: 41.713 m
+*   **DEHHALKAP0001J83**: 41.707 m
+*   **DEHHALKA700021C8**: 41.678 m
+*   **DEHHALKAJ0000sJ1**: 41.617 m
+*   **DEHHALKAJ0000yzK**: 41.601 m
+*   **DEHHALKA700028e8**: 41.573 m
+*   **DEHHALKA70002MaM**: 41.569 m
+*   **DEHHALKA3TV000Fx**: 41.55 m
+*   **DEHHALKAJ000100r**: 41.495 m
+*   **DEHHALKAJ0000yiK**: 41.17 m
+*   **DEHHALKAJ0000y7x**: 41.158 m
+*   **DEHHALKA2F2000NF**: 41.094 m
+*   **DEHHALKA7000AhvA**: 41.056 m
+*   **DEHHALKAP00016gx**: 41.008 m
+*   **DEHHALKAJ000104W**: 41.005 m
+*   **DEHHALKAP000153l**: 40.971 m
+*   **DEHHALKAn0000y8j**: 40.968 m
+*   **DEHHALKAJ00014I3**: 40.954 m
+*   **DEHHALKAJ0000zVg**: 40.947 m
+*   **DEHHALKA2on0009w**: 40.929 m
+*   **DEHHALKA2A1000Rp**: 40.867 m
+*   **DEHHALKAJ0000pZx**: 40.863 m
+*   **DEHHALKAV0000ZD1**: 40.843 m
+*   **DEHHALKAP0001Exd**: 40.801 m
+*   **DEHHALKAJ0000pe6**: 40.798 m
+*   **DEHHALKAP0007dEC**: 40.79 m
+*   **DEHHALKAJ0000qGJ**: 40.789 m
+*   **DEHHALKAP0000vAX**: 40.731 m
+*   **DEHHALKAP00016Bt**: 40.701 m
+*   **DEHHALKAJ0000zJK**: 40.699 m
+*   **DEHHALKAV00014q0**: 40.694 m
+*   **DEHHALKAJ0000pbt**: 40.687 m
+*   **DEHHALKAJ0000pBu**: 40.659 m
+*   **DEHHALKAJ0000qKt**: 40.582 m
+*   **DEHHALKAJ0000qAG**: 40.575 m
+*   **DEHHALKAJ0000pmO**: 40.573 m
+*   **DEHHALKAn0000zKJ**: 40.545 m
+*   **DEHHALKAJ0000zRX**: 40.524 m
+*   **DEHHALKAP00012wv**: 40.455 m
+*   **DEHHALKA7000AhJi**: 40.451 m
+*   **DEHHALKA6hX000OJ**: 40.419 m
+*   **DEHHALKA2X4000HM**: 40.397 m
+*   **DEHHALKAJ0000qOQ**: 40.343 m
+*   **DEHHALKAJ0000pkj**: 40.312 m
+*   **DEHHALKAJ00012QW**: 40.28 m
+*   **DEHHALKAJ0000qGF**: 40.23 m
+*   **DEHHALKAP0005f5k**: 40.196 m
+*   **DEHHALKAV0000lsD**: 40.193 m
+*   **DEHHALKAJ00019Fj**: 40.187 m
+*   **DEHHALKA100011WG**: 40.177 m
+*   **DEHHALKAP000782t**: 40.172 m
+*   **DEHHALKAn0000ukN**: 40.164 m
+*   **DEHHALKAd200003c**: 40.164 m
+*   **DEHHALKA70002AHl**: 40.157 m
+*   **DEHHALKAJ0000yD0**: 40.155 m
+*   **DEHHALKAn0000u1S**: 40.116 m
+*   **DEHHALKAJ0000yQI**: 40.102 m
+*   **DEHHALKA9iO0007Y**: 40.021 m
+*   **DEHHALKAn0000y0K**: 39.997 m
+*   **DEHHALKAV0000OJM**: 39.964 m
+*   **DEHHALKA2Xi0001x**: 39.96 m
+*   **DEHHALKAP0007cAy**: 39.907 m
+*   **DEHHALKAP0007VGV**: 39.812 m
+*   **DEHHALKA700028eS**: 39.8 m
+*   **DEHHALKA900013fm**: 39.799 m
+*   **DEHHALKAP0001FXo**: 39.771 m
+*   **DEHHALKAJ0000of0**: 39.771 m
+*   **DEHHALKA900013fj**: 39.764 m
+*   **DEHHALKAV0000qwG**: 39.754 m
+*   **DEHHALKAz0000PD1**: 39.72 m
+*   **DEHHALKAJ0000xOJ**: 39.68 m
+*   **DEHHALKAJ00012Dx**: 39.671 m
+*   **DEHHALKAJ0000wlJ**: 39.655 m
+*   **DEHHALKAJ0000wgN**: 39.649 m
+*   **DEHHALKAP0000zsJ**: 39.646 m
+*   **DEHHALKAJ0000xJj**: 39.629 m
+*   **DEHHALKA7000244S**: 39.626 m
+*   **DEHHALKAJ00014EO**: 39.609 m
+*   **DEHHALKAJ00015Sj**: 39.573 m
+*   **DEHHALKAJ00014gC**: 39.57 m
+*   **DEHHALKAV0000Zcm**: 39.553 m
+*   **DEHHALKAP0000wTe**: 39.528 m
+*   **DEHHALKA40000Euo**: 39.517 m
+*   **DEHHALKAV00011NG**: 39.516 m
+*   **DEHHALKAD0000CaU**: 39.473 m
+*   **DEHHALKAz0000QNF**: 39.457 m
+*   **DEHHALKAz0000Nc2**: 39.455 m
+*   **DEHHALKAJ0000yzS**: 39.446 m
+*   **DEHHALKAJ0000pl6**: 39.417 m
+*   **DEHHALKAz0000YDk**: 39.384 m
+*   **DEHHALKAJ00016GQ**: 39.306 m
+*   **DEHHALKA8WN0005d**: 39.278 m
+*   **DEHHALKAJ0000zc5**: 39.276 m
+*   **DEHHALKAz000153B**: 39.232 m
+*   **DEHHALKAJ0000zUk**: 39.152 m
+*   **DEHHALKAP0007Z0E**: 39.122 m
+*   **DEHHALKAP0007ana**: 39.105 m
+*   **DEHHALKAJ0000yE4**: 39.092 m
+*   **DEHHALKAJ0000wiV**: 39.024 m
+*   **DEHHALKAP0007Yqr**: 38.968 m
+*   **DEHHALKAP00010vo**: 38.941 m
+*   **DEHHALKAz0000ldo**: 38.846 m
+*   **DEHHALKA10001kZn**: 38.82 m
+*   **DEHHALKAP00013Gu**: 38.816 m
+*   **DEHHALKAV0000TUX**: 38.788 m
+*   **DEHHALKA47U0000L**: 38.733 m
+*   **DEHHALKAJ00015a8**: 38.681 m
+*   **DEHHALKA9qA000Bg**: 38.681 m
+*   **DEHHALKAz0000btT**: 38.667 m
+*   **DEHHALKAn00000Hz**: 38.647 m
+*   **DEHHALKAJ0001563**: 38.627 m
+*   **DEHHALKAJ00011tb**: 38.623 m
+*   **DEHHALKAJ0000pGL**: 38.622 m
+*   **DEHHALKAP0000va3**: 38.622 m
+*   **DEHHALKAn00012oh**: 38.617 m
+*   **DEHHALKAn0000wHD**: 38.451 m
+*   **DEHHALKAJ00011Ss**: 38.44 m
+*   **DEHHALKA9qA000C4**: 38.41 m
+*   **DEHHALKAJ00013bc**: 38.408 m
+*   **DEHHALKA9qA000Bh**: 38.333 m
+*   **DEHHALKAP0007bQO**: 38.319 m
+*   **DEHHALKAJ0000tiT**: 38.219 m
+*   **DEHHALKA10003qv7**: 38.178 m
+*   **DEHHALKAJ000135g**: 38.161 m
+*   **DEHHALKAJ0000y0p**: 38.147 m
+*   **DEHHALKAJ0000yGf**: 38.095 m
+*   **DEHHALKA900013gN**: 38.081 m
+*   **DEHHALKAP0000vBy**: 38.067 m
+*   **DEHHALKA70002WCy**: 38.018 m
+*   **DEHHALKAn0000scX**: 37.987 m
+*   **DEHHALKA900013g8**: 37.986 m
+*   **DEHHALKAJ00015j0**: 37.984 m
+*   **DEHHALKAP0007bIz**: 37.968 m
+*   **DEHHALKAP0007Upf**: 37.927 m
+*   **DEHHALKAP00015Ot**: 37.873 m
+*   **DEHHALKAJ00013Oq**: 37.832 m
+*   **DEHHALKAJ0000od4**: 37.812 m
+*   **DEHHALKAJ00059d9**: 37.809 m
+*   **DEHHALKAn0000iph**: 37.802 m
+*   **DEHHALKA70002B1H**: 37.768 m
+*   **DEHHALKAJ0000ovg**: 37.763 m
+*   **DEHHALKAJ0000sMt**: 37.763 m
+*   **DEHHALKAJ00011sV**: 37.749 m
+*   **DEHHALKA9qA000Bb**: 37.731 m
+*   **DEHHALKA70002abO**: 37.703 m
+*   **DEHHALKAJ0001359**: 37.672 m
+*   **DEHHALKAJ0000yX7**: 37.656 m
+*   **DEHHALKA900013gD**: 37.611 m
+*   **DEHHALKAJ00014IW**: 37.609 m
+*   **DEHHALKAJ00013Ac**: 37.594 m
+*   **DEHHALKA900013gL**: 37.533 m
+*   **DEHHALKAP0001Ex5**: 37.526 m
+*   **DEHHALKAz0000OpL**: 37.525 m
+*   **DEHHALKA900013fz**: 37.496 m
+*   **DEHHALKA8aG000Gk**: 37.48 m
+*   **DEHHALKAP0001EmD**: 37.467 m
+*   **DEHHALKAP0007csE**: 37.46 m
+*   **DEHHALKAn0000v6S**: 37.45 m
+*   **DEHHALKAP0007UAz**: 37.438 m
+*   **DEHHALKAV0000YAC**: 37.436 m
+*   **DEHHALKAV0000Pek**: 37.422 m
+*   **DEHHALKAJ0000sMT**: 37.413 m
+*   **DEHHALKAP0007cag**: 37.405 m
+*   **DEHHALKAJ0000qFO**: 37.361 m
+*   **DEHHALKA4Ou0009e**: 37.322 m
+*   **DEHHALKAJ0000o4c**: 37.298 m
+*   **DEHHALKAJ00016CU**: 37.284 m
+*   **DEHHALKAJ0000pgt**: 37.284 m
+*   **DEHHALKAP0000yPJ**: 37.247 m
+*   **DEHHALKAJ0000vnu**: 37.181 m
+*   **DEHHALKA70002aWM**: 37.175 m
+*   **DEHHALKAP0001CMw**: 37.151 m
+*   **DEHHALKAP0005ff9**: 37.146 m
+*   **DEHHALKAV0000n7H**: 37.13 m
+*   **DEHHALKAJ0000yvZ**: 37.127 m
+*   **DEHHALKAP0001IIx**: 37.088 m
+*   **DEHHALKAV0000lEg**: 37.044 m
+*   **DEHHALKAJ00012RJ**: 36.998 m
+*   **DEHHALKAJ00013NH**: 36.976 m
+*   **DEHHALKAJ00011ld**: 36.917 m
+*   **DEHHALKAJ0000oe5**: 36.876 m
+*   **DEHHALKAJ00058rL**: 36.786 m
+*   **DEHHALKA70002AzA**: 36.775 m
+*   **DEHHALKA8pV0000Y**: 36.764 m
+*   **DEHHALKAJ0000ovY**: 36.742 m
+*   **DEHHALKAP0000xaJ**: 36.714 m
+*   **DEHHALKA700026Rc**: 36.713 m
+*   **DEHHALKAJ0000reW**: 36.652 m
+*   **DEHHALKAJ0000yyO**: 36.635 m
+*   **DEHHALKA700026Qy**: 36.632 m
+*   **DEHHALKAJ0000qiU**: 36.623 m
+*   **DEHHALKAP0001Eog**: 36.579 m
+*   **DEHHALKAJ0000pKg**: 36.576 m
+*   **DEHHALKAV0000Zet**: 36.554 m
+*   **DEHHALKAJ0000rNz**: 36.498 m
+*   **DEHHALKAP0001FFh**: 36.464 m
+*   **DEHHALKAJ0000rek**: 36.452 m
+*   **DEHHALKAV0000k1Y**: 36.425 m
+*   **DEHHALKAJ0000r1A**: 36.415 m
+*   **DEHHALKAJ0000pWW**: 36.395 m
+*   **DEHHALKAP0001Glq**: 36.382 m
+*   **DEHHALKAJ00012tw**: 36.325 m
+*   **DEHHALKAJ0000orK**: 36.312 m
+*   **DEHHALKAJ0000yXP**: 36.298 m
+*   **DEHHALKA6oz000Nb**: 36.283 m
+*   **DEHHALKA70002aHp**: 36.261 m
+*   **DEHHALKAJ0001017**: 36.25 m
+*   **DEHHALKA3JI000CC**: 36.249 m
+*   **DEHHALKAJ000103I**: 36.24 m
+*   **DEHHALKAV0000QXj**: 36.23 m
+*   **DEHHALKAP0007WXW**: 36.211 m
+*   **DEHHALKAP0001HFY**: 36.15 m
+*   **DEHHALKAP00079RQ**: 36.141 m
+*   **DEHHALKAV0000Sxm**: 36.134 m
+*   **DEHHALKAJ0000pcv**: 36.037 m
+*   **DEHHALKAJ00059Vx**: 36.035 m
+*   **DEHHALKAz0000wFM**: 36.02 m
+*   **DEHHALKAJ0000urg**: 35.991 m
+*   **DEHHALKA6UY0000J**: 35.957 m
+*   **DEHHALKAV0000a3E**: 35.897 m
+*   **DEHHALKA9c80008b**: 35.862 m
+*   **DEHHALKAz0000K6L**: 35.841 m
+*   **DEHHALKAJ00012Q9**: 35.84 m
+*   **DEHHALKAJ00013sC**: 35.838 m
+*   **DEHHALKAJ00012HM**: 35.753 m
+*   **DEHHALKA8lJ0005v**: 35.75 m
+*   **DEHHALKAP00010Qd**: 35.733 m
+*   **DEHHALKA3mB000Fj**: 35.73 m
+*   **DEHHALKAJ0000zYD**: 35.726 m
+*   **DEHHALKAJ00013SH**: 35.71 m
+*   **DEHHALKAP0007d0f**: 35.695 m
+*   **DEHHALKAJ0000pOA**: 35.658 m
+*   **DEHHALKA1000408m**: 35.589 m
+*   **DEHHALKAJ0000z49**: 35.585 m
+*   **DEHHALKA1FW000JT**: 35.546 m
+*   **DEHHALKAP0007Ops**: 35.542 m
+*   **DEHHALKAJ0000rGW**: 35.541 m
+*   **DEHHALKAJ0000qA6**: 35.535 m
+
+Query time: 259.296 s
+
+
+// -----------------------------------------------------------------------------
+// 6. How many buildings are there per storey count?
+//    Shows whether Hamburg is a city of single-family houses or
+//    dense apartment blocks.
+// -----------------------------------------------------------------------------
+
+How many buildings are there per storey count? Shows whether Hamburg is a city of single-family houses or dense apartment blocks.
+
+```cypher
+MATCH (b:Building)
+RETURN b.storeys_above_ground AS storeys, count(b) AS count
+ORDER BY storeys ASC
+```
+
+There are 244,389 buildings with 1 storey, 75,353 with 2 storeys, 24,071 with 3 storeys, 16,698 with 4 storeys, 9,056 with 5 storeys, 3,158 with 6 storeys, 1,208 with 7 storeys, 695 with 8 storeys, 470 with 9 storeys, 274 with 10 storeys, 62 with 11 storeys, 58 with 12 storeys, 70 with 13 storeys, 51 with 14 storeys, 32 with 15 storeys, 39 with 16 storeys, 15 with 17 storeys, 13 with 18 storeys, 6 with 19 storeys, 4 with 20 storeys, 6 with 21 storeys, 7 with 22 storeys, 2 with 23 storeys, 2 with 24 storeys, 3 with 26 storeys, 1 with 27 storeys, 1 with 29 storeys, and 12,523 with no storey count specified.
+
+Based on this data, Hamburg is primarily a city of single-family houses (or low-rise buildings), as the vast majority of buildings have only one storey.
+
+Query time: 25.435 s
+
+
+// -----------------------------------------------------------------------------
+// 7. Which buildings have glass roofs?
+//    Glass roofs typically indicate modern commercial buildings,
+//    train stations, shopping centres, or public spaces.
+// -----------------------------------------------------------------------------
+
+Which buildings have glass roofs? Glass roofs typically indicate modern commercial buildings, train stations, shopping centres, or public spaces.
+
+```cypher
+MATCH (b:Building)
+WHERE b.predictedroofmaterial = 'glass'
+RETURN b.id, b.name, b.predictedroofmaterial
+```
+
+The buildings with glass roofs are:
+
+* DEHHALKA7zU0007J
+* DEHHALKAP0000oRg
+* DEHHALKAP0000p42
+* DEHHALKAP0000qtK
+* DEHHALKAP0001Jh4
+* DEHHALKAP0005erb
+* DEHHALKAP0000pb0
+* DEHHALKAP0000qP7
+* DEHHALKAP0000qBY
+* DEHHALKAP0000qUt
+* DEHHALKA3Hu000CA
+* DEHHALKAP0000pHM
+* DEHHALKAP0000vl5
+* DEHHALKA8Cz000EC
+* DEHHALKAP0000pJz
+* DEHHALKAl10000Pz
+* DEHHALKAP0000zN1
+* DEHHALKAz0005256
+* DEHHALKAz0000jDU
+* DEHHALKAz0000i4S
+* DEHHALKA8LE0006y
+* DEHHALKAz0000KL2
+* DEHHALKAz0000fu8
+* DEHHALKAz0000Wop
+* DEHHALKAz000115f
+* DEHHALKAP0000rK0
+* DEHHALKAP0000wZk
+* DEHHALKAP0005fDr
+* DEHHALKAP0005ewX
+* DEHHALKAz00051wp
+* DEHHALKAOH0000KJ
+* DEHHALKAz0000zsu
+* DEHHALKAz0000bff
+* DEHHALKAz0000UDx
+* DEHHALKAz0000lHE
+* DEHHALKA1qu000BC
+* DEHHALKAP0000si2
+* DEHHALKAP0000uDU
+* DEHHALKAP0000pVd
+* DEHHALKA10005bu9
+* DEHHALKAP0000pbR
+* DEHHALKAP0000tiP
+* DEHHALKAP0000r3E
+* DEHHALKAP0000rqq
+* DEHHALKAP0000xRp
+* DEHHALKAP0000xSo
+* DEHHALKAP0000xPD
+* DEHHALKA1J00006R
+* DEHHALKAP0000x6J
+* DEHHALKA3nB000Bh
+* DEHHALKA6B2000LC
+* DEHHALKA5L70009w
+* DEHHALKA642000Uh
+* DEHHALKA50p0001w
+* DEHHALKAz0000LJf
+* DEHHALKAz0000yr5
+* DEHHALKAz0000LTH
+* DEHHALKAz0000Lm1
+* DEHHALKAz000524E
+* DEHHALKAz0000MiS
+* DEHHALKAz00051dv
+* DEHHALKAP0000t7Y
+* DEHHALKAP0005fF7
+* DEHHALKAP0000vAL
+* DEHHALKAP0000uGv
+* DEHHALKAP0001JY2
+* DEHHALKAP0005fAa
+* DEHHALKAP0000wns
+* DEHHALKAP0000wn3
+* DEHHALKAP0000zVE
+* DEHHALKAZc00003C
+* DEHHALKAP0000xKM
+* DEHHALKAP0000xCS
+* DEHHALKAP0000x5k
+* DEHHALKAP0000y6U
+* DEHHALKAP0001Jxz
+* DEHHALKAP0000xtk
+* DEHHALKA8tS000MW
+* DEHHALKA49v0003n
+* DEHHALKA3CI000It
+* DEHHALKA5uk000C7
+* DEHHALKA3vV000DR
+* DEHHALKAz0000O6e
+* DEHHALKAz0000z6P
+* DEHHALKAz0000pBf
+* DEHHALKAz0000bcQ
+* DEHHALKA6C6000CF
+* DEHHALKAz0000tUK
+* DEHHALKAP0005f9k
+* DEHHALKAP0000xfi
+* DEHHALKAP0000ylc
+* DEHHALKAP00011aE
+* DEHHALKAP00018YJ
+* DEHHALKAP00018kJ
+* DEHHALKAS0000004
+* DEHHALKA6aV000Gw
+* DEHHALKAP0000yE0
+* DEHHALKAP0000zJV
+* DEHHALKAP00010pV
+* DEHHALKAP0000zSQ
+* DEHHALKA8HO000ON
+* DEHHALKA8HO000O7
+* DEHHALKA8HO000OB
+* DEHHALKA8HO000OJ
+* DEHHALKA8HO000OF
+* DEHHALKAP00011dl
+* DEHHALKAz0000a9C
+* DEHHALKAz0000MA5
+* DEHHALKAz0000K8c
+* DEHHALKAz0000jpJ
+* DEHHALKA4910009U
+* DEHHALKAP0000qiK
+* DEHHALKAP0000qig
+* DEHHALKAJ000585z
+* DEHHALKAP00011lw
+* DEHHALKAP0000yUx
+* DEHHALKAP0005eos
+* DEHHALKAP00010HG
+* DEHHALKAP00011Z3
+* DEHHALKAP0000zoY
+* DEHHALKA6lP000BT
+* DEHHALKAP0005fJU
+* DEHHALKAP0000zjC
+* DEHHALKAP00010tC
+* DEHHALKAP00012fj
+* DEHHALKAP00010Tb
+* DEHHALKAz0000kIX
+* DEHHALKAz0000Las
+* DEHHALKAz0000Ji3
+* DEHHALKAz0000WOi
+* DEHHALKAz0000fre
+* DEHHALKAz00011h1
+* DEHHALKAz0000wHR
+* DEHHALKAz00012MH
+* DEHHALKAz00013G1
+* DEHHALKAz0000wOW
+* DEHHALKAz00016k7
+* DEHHALKAz00013zR
+* DEHHALKAz000523G
+* DEHHALKA4Z8000Ou
+* DEHHALKAz00015nt
+* DEHHALKAz0000OuW
+* DEHHALKAz000525q
+* DEHHALKAz0000cVV
+* DEHHALKAz00013cX
+* DEHHALKAz0000w3w
+* DEHHALKAJ0000t3j
+* DEHHALKAJ0000tgk
+* DEHHALKAJ0000t9i
+* DEHHALKAJ0000uso
+* DEHHALKAJ0000uiU
+* DEHHALKAJ0000uQM
+* DEHHALKAJ0000nVW
+* DEHHALKAP0000q5X
+* DEHHALKAP00012AA
+* DEHHALKA500004OS
+* DEHHALKAP00011kA
+* DEHHALKAP00011qb
+* DEHHALKAP0000q0L
+* DEHHALKAP00012VE
+* DEHHALKAP00012gr
+* DEHHALKAP00011li
+* DEHHALKAP00013ro
+* DEHHALKAP00013md
+* DEHHALKAjN0000Wg
+* DEHHALKAP0001KDL
+* DEHHALKAP00012z8
+* DEHHALKAP000154L
+* DEHHALKAP00016Lo
+* DEHHALKAP00016JI
+* DEHHALKA3IH000NH
+* DEHHALKA3IH000NG
+* DEHHALKAP00014ps
+* DEHHALKAP00014cJ
+* DEHHALKAP00014gp
+* DEHHALKAP00014kC
+* DEHHALKA8JH000EK
+* DEHHALKAP0001K5p
+* DEHHALKA10003Ukq
+* DEHHALKAP0005fBf
+* DEHHALKAP0005f97
+* DEHHALKAP0005fFB
+* DEHHALKAP00015Or
+* DEHHALKAP00017jL
+* DEHHALKAP00018T7
+* DEHHALKAP0000zGx
+* DEHHALKAP00010fP
+* DEHHALKAP00010ms
+* DEHHALKAP000111q
+* DEHHALKAP0001KVt
+* DEHHALKAP000117x
+* DEHHALKAP00010sP
+* DEHHALKAP00011Pp
+* DEHHALKAP00013ok
+* DEHHALKAz0004zzP
+* DEHHALKAz0000Ou1
+* DEHHALKAz0000JL7
+* DEHHALKAz0000hYx
+* DEHHALKAz0000k4l
+* DEHHALKAz00011yQ
+* DEHHALKAz0000Ovf
+* DEHHALKAz0000XSr
+* DEHHALKAz0000l69
+* DEHHALKAz0000r4K
+* DEHHALKAz00017MQ
+* DEHHALKAz0000mln
+* DEHHALKAz00017Cj
+* DEHHALKAz0000Has
+* DEHHALKAz0000GJv
+* DEHHALKADC0000GL
+* DEHHALKAz0000WMc
+* DEHHALKAA0h000HG
+* DEHHALKAJ0000u4Y
+* DEHHALKAJ0000ug2
+* DEHHALKAJ0000o3g
+* DEHHALKAJ0000tt4
+* DEHHALKAJ0000ulX
+* DEHHALKAP0000pQA
+* DEHHALKAP00013fv
+* DEHHALKAP00012vR
+* DEHHALKAP0001JvM
+* DEHHALKAP0001KXa
+* DEHHALKA90000SkZ
+* DEHHALKA90000eva
+* DEHHALKAP00016yo
+* DEHHALKAP00017Li
+* DEHHALKAP00013LD
+* DEHHALKAP00014IH
+* DEHHALKAP00013DK
+* DEHHALKAP00014P0
+* DEHHALKA6WY000De
+* DEHHALKAP00014LO
+* DEHHALKAP00015DT
+* DEHHALKAP00014Oi
+* DEHHALKAP00014xw
+* DEHHALKAP000159f
+* DEHHALKAP00016MM
+* DEHHALKAP0005fB2
+* DEHHALKAP00014He
+* DEHHALKAP0005fJc
+* DEHHALKAP00018B3
+* DEHHALKAP00018A7
+* DEHHALKA3Is0004D
+* DEHHALKAP00011GS
+* DEHHALKAP00012A4
+* DEHHALKAP00012W8
+* DEHHALKAP00013en
+* DEHHALKAP00013BW
+* DEHHALKA3Bp000CF
+* DEHHALKA3Is0000S
+* DEHHALKAMJ0000DY
+* DEHHALKAP00012EX
+* DEHHALKA3Is0000T
+* DEHHALKAP00013Ir
+* DEHHALKAP00013Qi
+* DEHHALKAP00013JC
+* DEHHALKAP00013sz
+* DEHHALKAP00014TC
+* DEHHALKAP00014UJ
+* DEHHALKAP00014aF
+* DEHHALKAP00014IB
+* DEHHALKAP00014Go
+* DEHHALKAP00014JV
+* DEHHALKAP00016AQ
+* DEHHALKAP00019xA
+* DEHHALKAP00016Ez
+* DEHHALKAP0001KRe
+* DEHHALKAP00015eK
+* DEHHALKAP00014Tm
+* DEHHALKAP0001KaB
+* DEHHALKAP00015pX
+* DEHHALKAP00014Wg
+* DEHHALKAP00015BL
+* DEHHALKAP00015b9
+* DEHHALKAP0001IuV
+* DEHHALKAV0000TEd
+* DEHHALKAV0000TI2
+* DEHHALKA4tY000Fc
+* DEHHALKAz0000ebJ
+* DEHHALKAz0000pJO
+* DEHHALKAz0000rlJ
+* DEHHALKAz0000zVp
+* DEHHALKA820000EJ
+* DEHHALKAz0000y31
+* DEHHALKAz0000syF
+* DEHHALKAJ0000tOd
+* DEHHALKAJ0000tbG
+* DEHHALKAJ0000uL6
+* DEHHALKAJ0000uhJ
+* DEHHALKAJ0000uXU
+* DEHHALKAJ0004r0v
+* DEHHALKAJ0004r0M
+* DEHHALKAJ0004qw5
+* DEHHALKAJ0004r7G
+* DEHHALKAJ0000udH
+* DEHHALKAJ0004r9E
+* DEHHALKA5L70002R
+* DEHHALKAP0000rH8
+* DEHHALKAP0000qZM
+* DEHHALKAP00016VX
+* DEHHALKAP00017rB
+* DEHHALKAP0000yhy
+* DEHHALKAP0000zWf
+* DEHHALKAP0000zKP
+* DEHHALKAP0000zxT
+* DEHHALKAP00017ZY
+* DEHHALKAP0001Kb0
+* DEHHALKA4jk0003y
+* DEHHALKA800007Jv
+* DEHHALKA10007eXL
+* DEHHALKA10007eXK
+* DEHHALKA800007Jw
+* DEHHALKAP0005fI3
+* DEHHALKAP0005fFu
+* DEHHALKAP0005f87
+* DEHHALKA6b7000Ef
+* DEHHALKAP0001Ayx
+* DEHHALKAP0001AHC
+* DEHHALKAP0005f8a
+* DEHHALKA5ak0008a
+* DEHHALKAP0001CKs
+* DEHHALKAP00019GF
+* DEHHALKA84q0006R
+* DEHHALKAP0005fYX
+* DEHHALKAP00019kc
+* DEHHALKAP00019az
+* DEHHALKAP0001A52
+* DEHHALKAP0005fY1
+* DEHHALKAP0001AkR
+* DEHHALKAP0001AWf
+* DEHHALKA6V9000Pi
+* DEHHALKA90000K5Q
+* DEHHALKAV0000WEk
+* DEHHALKAV0000VJK
+* DEHHALKAV0000VoW
+* DEHHALKAV0000z0N
+* DEHHALKAV00015i5
+* DEHHALKAV0000w7v
+* DEHHALKAV0000wXA
+* DEHHALKAV0000vq8
+* DEHHALKAV0000zyw
+* DEHHALKAV0000zPV
+* DEHHALKA8ui0002E
+* DEHHALKA10004kZK
+* DEHHALKAV0000gpK
+* DEHHALKA3Ru000Sz
+* DEHHALKAV0000X59
+* DEHHALKAV0000X6g
+* DEHHALKAV0000X8p
+* DEHHALKAV0000VyB
+* DEHHALKAV0000cOd
+* DEHHALKAz0000N1J
+* DEHHALKAz0000KPF
+* DEHHALKA1RL0003b
+* DEHHALKAz0000L0T
+* DEHHALKAz0000vDH
+* DEHHALKAz0000hUO
+* DEHHALKAz0000tLs
+* DEHHALKAz0000vVd
+* DEHHALKAz00017Ad
+* DEHHALKA57o00006
+* DEHHALKAz00051h3
+* DEHHALKAz0005214
+* DEHHALKAz0000Map
+* DEHHALKAJ00058XX
+* DEHHALKA80000ASd
+* DEHHALKAP0000stH
+* DEHHALKAP0000t8v
+* DEHHALKA3WI000NP
+* DEHHALKAP00018W1
+* DEHHALKAP0001AE6
+* DEHHALKAP0005fAG
+* DEHHALKAP0001Avs
+* DEHHALKAr40000W3
+* DEHHALKAP0005ff9
+* DEHHALKAV000588g
+* DEHHALKAV0000ZSM
+* DEHHALKAV0000YZH
+* DEHHALKAV0000ZMW
+* DEHHALKAV0000vE7
+* DEHHALKAV0000ZQt
+* DEHHALKA5zE0000M
+* DEHHALKAV00058XI
+* DEHHALKAV0000VOL
+* DEHHALKAV0000WEq
+* DEHHALKAV0000jZM
+* DEHHALKAV00011s9
+* DEHHALKAV0000ye8
+* DEHHALKA8PS000AD
+* DEHHALKAV0000XM4
+* DEHHALKAV0000Wwh
+* DEHHALKAV0000Xrv
+* DEHHALKAV0000XI3
+* DEHHALKAV0000X0G
+* DEHHALKAV0000XZE
+* DEHHALKAV0000Xhl
+* DEHHALKAV0000XeZ
+* DEHHALKATl00009n
+* DEHHALKAV0000cTe
+* DEHHALKAV0000wEO
+* DEHHALKAV0005881
+* DEHHALKAV0000dkK
+* DEHHALKAV0000eJW
+* DEHHALKAV0000cLd
+* DEHHALKAV0000j6h
+* DEHHALKAV0000cMf
+* DEHHALKA24k000Ck
+* DEHHALKAV0000bt0
+* DEHHALKA3vi000HT
+* DEHHALKA3vi000Hi
+* DEHHALKAz0000vVq
+* DEHHALKAz0000krQ
+* DEHHALKAz00051s2
+* DEHHALKAz0000l5n
+* DEHHALKAJ00058oy
+* DEHHALKAAd00001l
+* DEHHALKAAd00001j
+* DEHHALKAJ0000uYJ
+* DEHHALKAP0000sch
+* DEHHALKAP0000tNz
+* DEHHALKAP0000taB
+* DEHHALKAP0000tAS
+* DEHHALKAP00019Jg
+* DEHHALKA10005qk9
+* DEHHALKAP0001Dk6
+* DEHHALKAP0001F2q
+* DEHHALKA73Y00006
+* DEHHALKAP0001Ev9
+* DEHHALKAP0001GCt
+* DEHHALKAP0005fEK
+* DEHHALKAP0005enF
+* DEHHALKAP0001Gyd
+* DEHHALKAP0005fIV
+* DEHHALKAP0001KNf
+* DEHHALKAP0005f5J
+* DEHHALKAP0005fXT
+* DEHHALKA37v000Hn
+* DEHHALKAV0000SqC
+* DEHHALKA8ZJ00003
+* DEHHALKAP0005fo4
+* DEHHALKA10007nhY
+* DEHHALKAV00058Cp
+* DEHHALKAV000588A
+* DEHHALKAP0001C8v
+* DEHHALKAV0000Ydc
+* DEHHALKAV0000Zbp
+* DEHHALKAV0000i5M
+* DEHHALKAV0000x20
+* DEHHALKAV00011Ke
+* DEHHALKAV000587M
+* DEHHALKAV00058FI
+* DEHHALKAV0000afw
+* DEHHALKAV0000ayE
+* DEHHALKAV0000aNU
+* DEHHALKAV0000aTk
+* DEHHALKAV0000oLp
+* DEHHALKAV0000Ynw
+* DEHHALKAV0000Yry
+* DEHHALKAV0000YPR
+* DEHHALKAV0005890
+* DEHHALKA7cb000Af
+* DEHHALKA7cb000Ae
+* DEHHALKA7eC000J0
+* DEHHALKA7eC000Iv
+* DEHHALKAV00011fD
+* DEHHALKA3Th000Rh
+* DEHHALKAV00012Bk
+* DEHHALKAV0000dsd
+* DEHHALKAV000585j
+* DEHHALKAV0000dkD
+* DEHHALKAV0000nfT
+* DEHHALKAV00011lF
+* DEHHALKAV00010p4
+* DEHHALKAV00012Fz
+* DEHHALKA10006DQv
+* DEHHALKAV0000dy7
+* DEHHALKAV0000eIJ
+* DEHHALKAV0000eZe
+* DEHHALKAV00058B2
+* DEHHALKAz0000vW0
+* DEHHALKA258000KC
+* DEHHALKAz0000kWJ
+* DEHHALKA6jW000AD
+* DEHHALKA2i8000FU
+* DEHHALKAz0000LWm
+* DEHHALKAz00012hC
+* DEHHALKAz0000xOa
+* DEHHALKAz0000MMF
+* DEHHALKA32e000G7
+* DEHHALKAz0000lWv
+* DEHHALKAz00051nh
+* DEHHALKAz00051lf
+* DEHHALKA8Ko0004u
+* DEHHALKA6Ks000LA
+* DEHHALKA9uY000C0
+* DEHHALKAP0005eoS
+* DEHHALKAP0000tUE
+* DEHHALKAP0000u5F
+* DEHHALKAP0000tor
+* DEHHALKAP0000uZE
+
+Query time: 147.987 s
+
+
+// -----------------------------------------------------------------------------
+// 8. Hamburg high-rises — buildings taller than 50 meters.
+//    How many skyscrapers and tower blocks does Hamburg have?
+// -----------------------------------------------------------------------------
+    
+Hamburg high-rises -- buildings taller than 50 meters. How many skyscrapers and tower blocks does Hamburg have?
+
+```cypher
+MATCH (b:Building)
+WHERE b.measured_height > 50
+RETURN count(b) AS skyscraper_count
+```
+
+Hamburg has 149 skyscrapers and tower blocks.
+
+Query time: 7.605 s
+
+
+// -----------------------------------------------------------------------------
+// 9. Buildings with mixed roof materials
+//    Some buildings have more than one material on the roof — interesting for
+//    understanding complex roof landscapes or renovation history.
+// -----------------------------------------------------------------------------
+
+Buildings with mixed roof materials Some buildings have more than one material on the roof — interesting for understanding complex roof landscapes or renovation history.
+
+```cypher
+MATCH (b:Building)
+WHERE b.measured_height > 50
+RETURN count(b) AS skyscraper_count
+```
+
+Hamburg has 149 skyscrapers and tower blocks.
+
+Query time: 17.292 s
+
+
+// -----------------------------------------------------------------------------
+// 10. Buildings in HafenCity — Hamburg's modern harbour district
+//     Filters by bounding box in ETRS89 UTM32 coordinates (meters).
+//     Shows roof materials and height — great for exploring a specific
+//     neighbourhood's architectural character.
+// -----------------------------------------------------------------------------
+
+Buildings in HafenCity -- Hamburg's modern harbour district Filters by bounding box in ETRS89 UTM32 coordinates (meters). Shows roof materials and height -- great for exploring a specific neighbourhood's architectural character.
+
+
+[error] {neo4j_code: Neo.ClientError.Procedure.ProcedureCallFailed} {message: Failed to invoke procedure `spatial.bbox`: Caused by: java.lang.NullPointerException: Cannot read field "x" because "p1" is null} {gql_status: 52N37} {gql_status_description: error: procedure exception - procedure execution error. Execution of the procedure spatial.bbox() failed.}
+
+DOES NOT WORK!!!

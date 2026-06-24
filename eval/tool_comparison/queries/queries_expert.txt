@@ -1,0 +1,109 @@
+// =============================================================================
+// queries_expert.txt
+// 10 expert Cypher queries for the Hamburg CityGML 2.0 LOD2 Neo4j graph
+// Target audience: urban planners, GIS analysts, building scientists.
+// Run in Neo4j Browser at http://localhost:7474
+//
+// Notes on data coverage:
+//   - 388,267 buildings total
+//   - 194,799 buildings (~50%) have roof material predictions
+//   - Coordinates: ETRS89 UTM32 (metres), ground_z in DHHN2016 heights
+//   - Footprint area = bbox proxy (bounding box, not true polygon area)
+// =============================================================================
+
+
+// -----------------------------------------------------------------------------
+// 1. Building typology — height and storey profile per use type
+//    Urban planners use this to understand the vertical density profile
+//    of each function class: residential, commercial, industrial, etc.
+//    Building type is extracted from the auto-generated description field.
+// -----------------------------------------------------------------------------
+
+
+
+// -----------------------------------------------------------------------------
+// 2. 1 km spatial grid — building density, height, and dominant roof material
+//    Breaks Hamburg into 1 km × 1 km cells and summarises each.
+//    Useful for density zoning analysis and morphological mapping.
+//    Only cells with ≥ 30 buildings are shown to filter sparse rural edges.
+// -----------------------------------------------------------------------------
+
+
+
+// -----------------------------------------------------------------------------
+// 3. Solar potential scoring — ranked list of best candidates
+//    Composite score based on: roof shape (flat = highest), material
+//    suitability, height above 10 m (clears most trees/obstacles),
+//    and multi-storey (higher energy demand justifies installation).
+//    Score range: 0 (unsuitable) to 7 (excellent).
+// -----------------------------------------------------------------------------
+
+
+
+// -----------------------------------------------------------------------------
+// 4. Floor-to-floor height anomaly detection — data quality flag
+//    A typical storey is 3–4 m. Values outside 2–8 m indicate either
+//    special structures (industrial halls, towers, carports) or measurement
+//    errors in the source data — valuable for data quality auditing.
+// -----------------------------------------------------------------------------
+
+
+
+// -----------------------------------------------------------------------------
+// 5. Roof material distribution by building function
+//    Cross-tabulation: for each use type, what fraction of buildings
+//    has each predicted roof material? Reveals whether material
+//    predictions correlate with known building typologies.
+//    Only types with ≥ 500 buildings included.
+// -----------------------------------------------------------------------------
+
+
+
+// -----------------------------------------------------------------------------
+// 6. Urban heat island proxy — dark roof fraction per 2 km grid cell
+//    Tar paper and metal absorb significantly more solar radiation than
+//    concrete, tiles, or glass. High dark-roof density correlates with
+//    elevated surface temperatures (urban heat island effect).
+//    Only cells with ≥ 50 buildings with material predictions included.
+// -----------------------------------------------------------------------------
+
+
+
+// -----------------------------------------------------------------------------
+// 7. Roof material prediction coverage completeness
+//    The material_cov values from the ML prediction indicate what fraction
+//    of the roof each material covers. A building with total coverage < 0.9
+//    has an unexplained portion — useful to assess prediction confidence
+//    and identify buildings that need re-inspection.
+// -----------------------------------------------------------------------------
+
+
+
+// -----------------------------------------------------------------------------
+// 8. High-rise cluster detection — 500 m grid cells with multiple tall buildings
+//    Tall buildings (> 30 m) rarely stand alone — this identifies dense
+//    high-rise clusters useful for wind, shadow, and microclimate analysis.
+//    Each cell reports count, height stats, and sample building IDs.
+// -----------------------------------------------------------------------------
+
+
+
+// -----------------------------------------------------------------------------
+// 9. Floor area ratio (FAR) proxy per 1 km grid cell
+//    FAR = total floor area / plot area. Here approximated as:
+//      gross floor area ≈ bbox_footprint × storeys_above_ground
+//    Aggregated to 1 km cells as a density planning indicator.
+//    High FAR cells indicate compact, high-intensity development.
+// -----------------------------------------------------------------------------
+
+
+
+// -----------------------------------------------------------------------------
+// 10. Ground elevation profile — flood risk and topographic context
+//     Hamburg has areas below sea level (dikes, port basins) down to −5 m
+//     and elevated areas up to 88 m (Alstertal/Bergedorf ridges).
+//     This query combines ground_z with building height to classify
+//     buildings by elevation zone — relevant for flood risk planning.
+// -----------------------------------------------------------------------------
+
+

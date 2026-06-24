@@ -1,0 +1,1705 @@
+// -----------------------------------------------------------------------------
+// 1. Building typology — height and storey profile per use type
+//    Urban planners use this to understand the vertical density profile
+//    of each function class: residential, commercial, industrial, etc.
+//    Building type is extracted from the auto-generated description field.
+// -----------------------------------------------------------------------------
+
+Building typology -- height and storey profile per use type Urban planners use this to understand the vertical density profile of each function class: residential, commercial, industrial, etc. Building type is extracted from the auto-generated description field.
+
+```cypher
+MATCH (b:Building)-[:HAS_FUNCTION]->(f:BuildingFunction)
+RETURN f.name AS use_type,
+       count(b) AS building_count,
+       round(avg(b.measured_height), 2) AS avg_height,
+       max(b.measured_height) AS max_height,
+       round(avg(b.storeys_above_ground), 2) AS avg_storeys,
+       max(b.storeys_above_ground) AS max_storeys
+ORDER BY avg_height DESC
+```
+
+The building typology height and storey profile per use type is as follows:
+
+**Residential**
+*   **Detached House:** The most common type with 207,236 buildings; average height is 9.45m (max 139.754m) with an average of 1.85 storeys.
+*   **Residential Building with Trade and Services:** 9,878 buildings; average height is 16.01m (max 80.406m) with an average of 3.74 storeys.
+*   **Mixed-Use Building with Residential:** 6,867 buildings; average height is 9.1m (max 72.627m) with an average of 1.77 storeys.
+*   **Residential Home / Dormitory:** 1,417 buildings; average height is 10.69m (max 57.222m) with an average of 2.81 storeys.
+
+**Commercial & Office**
+*   **Trade and Services Building:** 7,568 buildings; average height is 12.47m (max 97.196m) with an average of 3.02 storeys.
+*   **Commercial Building:** 1,704 buildings; average height is 7.73m (max 43.909m) with an average of 1.63 storeys.
+*   **Office Building:** 394 buildings; average height is 11.43m (max 65.011m) with an average of 2.67 storeys.
+*   **Hotel / Motel / Pension:** 39 buildings; average height is 19.1m (max 107.929m) with an average of 5.58 storeys.
+
+**Industrial & Storage**
+*   **Storage Building:** 6,253 buildings; average height is 6.22m (max 79.496m) with an average of 1.2 storeys.
+*   **Industrial and Commercial Building:** 5,279 buildings; average height is 7.51m (max 63.672m) with an average of 1.49 storeys.
+*   **Freight / Forwarding Building:** 485 buildings; average height is 9.88m (max 29.442m) with an average of 1.87 storeys.
+
+**Public, Institutional & Healthcare**
+*   **Building for Education and Research:** 2,591 buildings; average height is 9.49m (max 93.834m) with an average of 2.09 storeys.
+*   **Healthcare Building:** 500 buildings; average height is 13.28m (max 73.321m) with an average of 2.91 storeys.
+*   **Administrative Building:** 220 buildings; average height is 17.76m (max 63.251m) with an average of 3.83 storeys.
+*   **Building for Cultural Purposes:** 289 buildings; average height is 13.76m (max 96.328m) with an average of 2.74 storeys.
+
+**Infrastructure & Others**
+*   **Parking Building:** 58,501 buildings; average height is 3.04m (max 42.852m) with an average of 1.01 storeys.
+*   **Canopy / Shelter:** 8,027 buildings; average height is 5.91m (max 59.729m).
+*   **Telecommunications Building:** 10 buildings; average height is 21.41m, featuring one of the highest maximum heights at 158.47m.
+*   **Utilities / Supply Building:** 2,860 buildings; average height is 5.1m (max 128.966m) with an average of 1.12 storeys.
+
+Query time: 98.402 s
+
+
+// -----------------------------------------------------------------------------
+// 2. 1 km spatial grid — building density, height, and dominant roof material
+//    Breaks Hamburg into 1 km × 1 km cells and summarises each.
+//    Useful for density zoning analysis and morphological mapping.
+//    Only cells with ≥ 30 buildings are shown to filter sparse rural edges.
+// -----------------------------------------------------------------------------
+
+1 km spatial grid -- building density, height, and dominant roof material Breaks Hamburg into 1 km x 1 km cells and summarises each. 
+Useful for density zoning analysis and morphological mapping. Only cells with >= 30 buildings are shown to filter sparse rural edges.
+
+```cypher
+MATCH (b:Building)
+WITH floor(b.center_x / 1000) AS gx, floor(b.center_y / 1000) AS gy, b
+WITH gx, gy, count(b) AS density, avg(b.measured_height) AS avg_height, collect(b.predictedroofmaterial) AS mats
+WHERE density >= 30
+UNWIND mats AS m
+WITH gx, gy, density, avg_height, m WHERE m IS NOT NULL
+WITH gx, gy, density, avg_height, m, count(*) AS freq
+ORDER BY freq DESC
+WITH gx, gy, density, avg_height, collect(m)[0] AS dominant_material
+RETURN gx, gy, density, avg_height, dominant_material
+ORDER BY density DESC
+```
+
+The provided data summarizes building density, average height, and dominant roof materials for 1 km x 1 km spatial grid cells in Hamburg (filtering for cells with at least 30 buildings).
+
+**Key Findings:**
+*   **Building Density:** Density varies significantly across the grid, ranging from a high of **1,836 buildings** (at gx: 570.0, gy: 5946.0) to a low of **200 buildings** (at gx: 572.0, gy: 5929.0).
+*   **Dominant Roof Materials:** 
+    *   **Roof Tiles:** The vast majority of the cells are dominated by roof tiles.
+    *   **Tar Paper:** A significant number of cells are dominated by tar paper.
+    *   **Metal:** Only one cell in this dataset is dominated by metal (gx: 563.0, gy: 5929.0).
+*   **Average Building Height:** Heights vary widely. While many cells average between 5m and 10m, some cells exhibit much higher average heights, such as the cell at gx: 565.0, gy: 5933.0 with an average height of **25.34 meters**.
+
+Query time: 101.229 s
+
+
+
+// -----------------------------------------------------------------------------
+// 3. Solar potential scoring — ranked list of best candidates
+//    Composite score based on: roof shape (flat = highest), material
+//    suitability, height above 10 m (clears most trees/obstacles),
+//    and multi-storey (higher energy demand justifies installation).
+//    Score range: 0 (unsuitable) to 7 (excellent).
+// -----------------------------------------------------------------------------
+
+Solar potential scoring -- ranked list of best candidates Composite score based on: roof shape (flat = highest), material suitability, height above 10 m (clears most trees/obstacles), and multi-storey (higher energy demand justifies installation). Score range: 0 (unsuitable) to 7 (excellent).
+
+```cypher
+MATCH (b:Building)
+OPTIONAL MATCH (b)-[:HAS_ROOF_TYPE]->(rt:RoofType)
+WITH b,
+     (CASE WHEN rt.code = '1000' THEN 2 ELSE 0 END) AS roof_score,
+     (CASE WHEN b.predictedroofmaterial IN ['concrete', 'metal', 'roof_tiles'] THEN 1 ELSE 0 END) AS mat_score,
+     (CASE WHEN b.measured_height > 10 THEN 2 ELSE 0 END) AS height_score,
+     (CASE WHEN b.storeys_above_ground > 1 THEN 2 ELSE 0 END) AS storey_score
+WITH b, (roof_score + mat_score + height_score + storey_score) AS total_score
+RETURN b.id AS building_id, b.name AS name, total_score AS solar_potential_score
+ORDER BY solar_potential_score DESC, b.measured_height DESC
+```
+
+The following buildings are the best candidates for solar installation, all achieving the maximum solar potential score of 7:
+
+* DEHHALKAP0007cPo
+* DEHHALKA10007wzP
+* DEHHALKAJ000104O
+* DEHHALKAJ0000zOL
+* DEHHALKAJ0000p74
+* DEHHALKAP0007cG6
+* DEHHALKAJ0000owJ
+* DEHHALKA4IB000Cv
+* DEHHALKAP0000v7r
+* DEHHALKAJ0000pRb
+* DEHHALKAJ00016Iv
+* DEHHALKA60000Dso
+* DEHHALKAJ0000zhB
+* DEHHALKAz0000KbD
+* DEHHALKAJ0000oze
+* DEHHALKAJ0000zVO
+* DEHHALKAJ0000tBI
+* DEHHALKA5dG0003Q
+* DEHHALKA5Ma0005C
+* DEHHALKA10006Nma
+* DEHHALKA10007htD
+* DEHHALKA10003Sci
+* DEHHALKAV0000zd0
+* DEHHALKA3XF000Gb
+* DEHHALKAJ0000yi8
+* DEHHALKA9Gq0007e
+* DEHHALKA10003TSo
+* DEHHALKAJ0000yx7
+* DEHHALKAJ000165G
+* DEHHALKAP0001Fjw
+* DEHHALKAJ00011Fb
+* DEHHALKAP0007cVO
+* DEHHALKAJ0000pCN
+* DEHHALKAz0000mII
+* DEHHALKAP0007bU5
+* DEHHALKA70002Gdf
+* DEHHALKAJ0000ybf
+* DEHHALKAz0000t2n
+* DEHHALKA10006W8v
+* DEHHALKA6Kz000Ca
+* DEHHALKAJ0000uZb
+* DEHHALKAJ0001198
+* DEHHALKAJ00013S5
+* DEHHALKAP0007dI8
+* DEHHALKAJ0000oe7
+* DEHHALKA9gi000Do
+* DEHHALKAP0007WAF
+* DEHHALKAD0000D5W
+* DEHHALKAV0000QK6
+* DEHHALKA700025t2
+* DEHHALKAJ0000tGG
+* DEHHALKAJ0000yzK
+* DEHHALKAJ000104W
+* DEHHALKAJ0000pZx
+* DEHHALKAV0000ZD1
+* DEHHALKAP0001Exd
+* DEHHALKAJ0000pe6
+* DEHHALKAP0000vAX
+* DEHHALKAJ0000pbt
+* DEHHALKAJ0000pmO
+* DEHHALKA2X4000HM
+* DEHHALKAJ00012QW
+* DEHHALKAJ00019Fj
+* DEHHALKAd200003c
+* DEHHALKAn0000y0K
+* DEHHALKAV0000OJM
+* DEHHALKA2Xi0001x
+* DEHHALKAP0001FXo
+* DEHHALKAV0000qwG
+* DEHHALKAJ0000xJj
+* DEHHALKAJ00014EO
+* DEHHALKAD0000CaU
+* DEHHALKAJ0000pl6
+* DEHHALKA8WN0005d
+* DEHHALKAJ0000zUk
+* DEHHALKAP0007Z0E
+* DEHHALKAJ0000yE4
+* DEHHALKA10001kZn
+* DEHHALKAJ00015a8
+* DEHHALKAJ00011Ss
+* DEHHALKAJ0000tiT
+* DEHHALKA10003qv7
+* DEHHALKAJ0000yGf
+* DEHHALKAP0000vBy
+* DEHHALKA70002WCy
+* DEHHALKAJ00013Oq
+* DEHHALKAn0000iph
+* DEHHALKAJ0000ovg
+* DEHHALKAJ0001359
+* DEHHALKAJ0000yX7
+* DEHHALKA8aG000Gk
+* DEHHALKAn0000v6S
+* DEHHALKAV0000YAC
+* DEHHALKAJ00011ld
+* DEHHALKAJ0000ovY
+* DEHHALKAJ0000yyO
+* DEHHALKAJ0000pKg
+* DEHHALKAJ0000pWW
+* DEHHALKAJ0001017
+* DEHHALKAJ000103I
+* DEHHALKAP00079RQ
+* DEHHALKAJ0000urg
+* DEHHALKA6UY0000J
+* DEHHALKAV0000a3E
+* DEHHALKAJ00012HM
+* DEHHALKA8lJ0005v
+* DEHHALKA3mB000Fj
+* DEHHALKAJ0000pOA
+* DEHHALKA1PN0007t
+* DEHHALKAJ0000pKT
+* DEHHALKAJ0000zXq
+* DEHHALKAJ0000prP
+* DEHHALKAJ0000z47
+* DEHHALKAJ0000p3y
+* DEHHALKA4bO00061
+* DEHHALKA9rJ000B7
+* DEHHALKAJ0000yBG
+* DEHHALKAJ0000zIj
+* DEHHALKAJ0000q5V
+* DEHHALKAJ0000yqm
+* DEHHALKAP0007WMS
+* DEHHALKAP0000vbH
+* DEHHALKAP0007bDb
+* DEHHALKA8xl0008G
+* DEHHALKA70001yuV
+* DEHHALKA1PN00089
+* DEHHALKAJ0000pBa
+* DEHHALKA9H4000Iw
+* DEHHALKAJ0000orb
+* DEHHALKAP00010yW
+* DEHHALKA10007vQX
+* DEHHALKA9u30008Q
+* DEHHALKA8aG000Gz
+* DEHHALKAJ00012Wt
+* DEHHALKA70002UMM
+* DEHHALKAJ0000pDP
+* DEHHALKAP0001CgF
+* DEHHALKAJ00011MY
+* DEHHALKAJ0000y3l
+* DEHHALKAV0000Pfo
+* DEHHALKAJ0000z7t
+* DEHHALKAJ0000pkF
+* DEHHALKA1w0000Cx
+* DEHHALKAJ00012wz
+* DEHHALKA7000CSSo
+* DEHHALKAP0000vX5
+* DEHHALKAJ0000pts
+* DEHHALKAJ0000z2L
+* DEHHALKAJ0000z9X
+* DEHHALKAP00079Ln
+* DEHHALKAP0007AMj
+* DEHHALKA3Bm00095
+* DEHHALKAV0000TDw
+* DEHHALKAJ0000yd2
+* DEHHALKA100012HC
+* DEHHALKAJ0000q0B
+* DEHHALKAdd0000WF
+* DEHHALKAJ0000pEv
+* DEHHALKAJ00013Dw
+* DEHHALKAJ00011fu
+* DEHHALKAJ0000pL4
+* DEHHALKAJ0000ozk
+* DEHHALKA4IB000Ce
+* DEHHALKAJ0000oy8
+* DEHHALKAJ000122h
+* DEHHALKAJ00012cW
+* DEHHALKAJ0000zBz
+* DEHHALKA4Zu0004f
+* DEHHALKA8uE000AL
+* DEHHALKAJ0000pkL
+* DEHHALKA2bo000DD
+* DEHHALKAJ00011t2
+* DEHHALKAJ0000yx1
+* DEHHALKA5Qd0000r
+* DEHHALKAz0000aAg
+* DEHHALKAJ00011ER
+* DEHHALKA8xl0008A
+* DEHHALKAJ0000zEy
+* DEHHALKA8xl00085
+* DEHHALKA8za0002C
+* DEHHALKA8aG000H8
+* DEHHALKAV0000i9s
+* DEHHALKAJ0000opO
+* DEHHALKAJ0000pPX
+* DEHHALKAJ0000pKH
+* DEHHALKAP0007Yjq
+* DEHHALKAV0000QPP
+* DEHHALKA6In000aM
+* DEHHALKAJ0000ytB
+* DEHHALKAJ0000zXJ
+* DEHHALKAJ0000zaf
+* DEHHALKA100002LW
+* DEHHALKAJ0000zOF
+* DEHHALKA90000ybr
+* DEHHALKA70001uND
+* DEHHALKAP0007SJG
+* DEHHALKAJn00006d
+* DEHHALKAJ0000p25
+* DEHHALKAJ00015YE
+* DEHHALKAJ0000p9j
+* DEHHALKA33g0002x
+* DEHHALKAJ0000pPM
+* DEHHALKAJ00014YX
+* DEHHALKAJ0000pZJ
+* DEHHALKA800008Tr
+* DEHHALKAJ00014Uv
+* DEHHALKA27C000I8
+* DEHHALKAIi0000Ko
+* DEHHALKAJ00011Pa
+* DEHHALKAP0007AMv
+* DEHHALKAJ000147R
+* DEHHALKAJ00013w2
+* DEHHALKAJ00011Gj
+* DEHHALKA70001wUj
+* DEHHALKAJ00013iR
+* DEHHALKAJ0000pKL
+* DEHHALKA4dr0009V
+* DEHHALKA4PL000K3
+* DEHHALKAJ0000q8C
+* DEHHALKAJ0000z5k
+* DEHHALKAJ0001BH0
+* DEHHALKA2op0000t
+* DEHHALKAJ0000oDb
+* DEHHALKA15000121
+* DEHHALKAz0000iM6
+* DEHHALKA8rR0008o
+* DEHHALKAJ0000yKw
+* DEHHALKAJ0000pRZ
+* DEHHALKAJ0000q7b
+* DEHHALKAJ0000z1z
+* DEHHALKAJ0000zxO
+* DEHHALKAJ000120x
+* DEHHALKAJ0000pIZ
+* DEHHALKAJ00014yw
+* DEHHALKAJ00011zS
+* DEHHALKAJ00014Mb
+* DEHHALKAJ0000q1F
+* DEHHALKAJ0000pA8
+* DEHHALKA8rf000LL
+* DEHHALKA10001omc
+* DEHHALKAJ0000pW2
+* DEHHALKAJ0000zWa
+* DEHHALKAJ0000yEK
+* DEHHALKAJ00012Uj
+* DEHHALKAP0007dXg
+* DEHHALKAJ0000p9V
+* DEHHALKA8rf000LO
+* DEHHALKA10007tqf
+* DEHHALKAV0000OP2
+* DEHHALKAV0000TOh
+* DEHHALKAJ0000uST
+* DEHHALKAJ0000pt8
+* DEHHALKAP0007dAh
+* DEHHALKA100011xI
+* DEHHALKA8rf000Lk
+* DEHHALKAJ0000pPQ
+* DEHHALKAJ0000p3I
+* DEHHALKAJ0001BFD
+* DEHHALKAJ0000oyf
+* DEHHALKA8rf000Lh
+* DEHHALKA4j0000VC
+* DEHHALKA34S000Lv
+* DEHHALKA70002KlM
+* DEHHALKAP0007dZ0
+* DEHHALKAJ0000yp6
+* DEHHALKAV0000QIz
+* DEHHALKA60000Dt5
+* DEHHALKAJ0000pMw
+* DEHHALKAJ0000yfu
+* DEHHALKAJ0000p4a
+* DEHHALKAz0000FNg
+* DEHHALKAn0000xan
+* DEHHALKAP00016Qo
+* DEHHALKAn00012zE
+* DEHHALKAJ0000zKc
+* DEHHALKA8xl00080
+* DEHHALKAV00015pa
+* DEHHALKAJ0000zK1
+* DEHHALKA4RH000J7
+* DEHHALKA6Ga0005b
+* DEHHALKA9r2000FD
+* DEHHALKAJ00011Kr
+* DEHHALKA4aK000Ho
+* DEHHALKAJ0000ynI
+* DEHHALKAJ0000uzO
+* DEHHALKAJ0000zPI
+* DEHHALKAJ0000p29
+* DEHHALKAJ0000zFX
+* DEHHALKAP0007UWb
+* DEHHALKAP0000qBc
+* DEHHALKA10005NhM
+* DEHHALKA2bo000D1
+* DEHHALKAJ0000pXE
+* DEHHALKAP0007PgJ
+* DEHHALKAJ0000osI
+* DEHHALKAJ000138L
+* DEHHALKAJ00011IE
+* DEHHALKAJ0000z7h
+* DEHHALKA8rf000LR
+* DEHHALKA9HD0007o
+* DEHHALKAJ000104A
+* DEHHALKA1RK0007x
+* DEHHALKAP0007XID
+* DEHHALKA9Kc000Fj
+* DEHHALKAJ0000p8o
+* DEHHALKAP0000u75
+* DEHHALKA70001pS2
+* DEHHALKAV0000PkN
+* DEHHALKA52W000Qy
+* DEHHALKA60t0007L
+* DEHHALKAz0000WIO
+* DEHHALKAn0000xWc
+* DEHHALKAJ00011e6
+* DEHHALKAn0000xyD
+* DEHHALKAJ00014Ni
+* DEHHALKAJ0000uLn
+* DEHHALKAP0007dRR
+* DEHHALKA70002BIC
+* DEHHALKAz0000jh4
+* DEHHALKA13y000X0
+* DEHHALKA6EA000D4
+* DEHHALKAV0000m7o
+* DEHHALKAJ000152K
+* DEHHALKAJ0000v9t
+* DEHHALKAP0007bVc
+* DEHHALKA700025m6
+* DEHHALKAJ0000vpQ
+* DEHHALKA52W000Qi
+* DEHHALKAP0007cwY
+* DEHHALKAJ00016Dz
+* DEHHALKARa0000Fv
+* DEHHALKA8rf000LI
+* DEHHALKAV0000X9o
+* DEHHALKA93H0004S
+* DEHHALKAz0000L7P
+* DEHHALKAJ0000z15
+* DEHHALKAP0001FPS
+* DEHHALKA8xl0008h
+* DEHHALKAz0000Hjv
+* DEHHALKAJ0000ol3
+* DEHHALKAJ0000yp0
+* DEHHALKAJ0000otf
+* DEHHALKAJ000119l
+* DEHHALKAJ0000ypY
+* DEHHALKAJ00013u7
+* DEHHALKAJ0000pLa
+* DEHHALKAV0000TY7
+* DEHHALKAP0007UEt
+* DEHHALKAJ0000ymU
+* DEHHALKAJ0000p1i
+* DEHHALKAJ00011dp
+* DEHHALKA8p2000GH
+* DEHHALKA70002BD2
+* DEHHALKAV0000Zi9
+* DEHHALKAJ0000zQF
+* DEHHALKAJ0000yxq
+* DEHHALKAJ0000q3O
+* DEHHALKA8Gy0006c
+* DEHHALKAJ00013GR
+* DEHHALKA70002Aza
+* DEHHALKA6000017k
+* DEHHALKA700024XP
+* DEHHALKA1ob000an
+* DEHHALKA700025qk
+* DEHHALKAJ000138V
+* DEHHALKAP0007dHT
+* DEHHALKAJ0000z8c
+* DEHHALKAV0000ndq
+* DEHHALKAJ0000ozJ
+* DEHHALKAJ00014L7
+* DEHHALKA7RE000Cd
+* DEHHALKA70001yWi
+* DEHHALKA700025vQ
+* DEHHALKAJ0000yQW
+* DEHHALKAP0007cIx
+* DEHHALKA700024jq
+* DEHHALKAJ0000yIF
+* DEHHALKA10003TSK
+* DEHHALKA7000246X
+* DEHHALKA70001nY9
+* DEHHALKAJ0000yiG
+* DEHHALKA6yl0000y
+* DEHHALKAJ0000zZG
+* DEHHALKAP0001EhM
+* DEHHALKAV0000ZQf
+* DEHHALKAJ0000p19
+* DEHHALKAV0000a7F
+* DEHHALKA8gI000Io
+* DEHHALKAV0000zrw
+* DEHHALKAJ000100z
+* DEHHALKAJ00012z5
+* DEHHALKA70001vXu
+* DEHHALKAJ0000wL4
+* DEHHALKAP0007XMc
+* DEHHALKA70002LsF
+* DEHHALKA70002Asv
+* DEHHALKAP00012LB
+* DEHHALKAJ0000z25
+* DEHHALKAJ0000z0T
+* DEHHALKAP0001F0m
+* DEHHALKA6AV000Ar
+* DEHHALKAJ0000y4Q
+* DEHHALKAz0000GfD
+* DEHHALKATY0000CP
+* DEHHALKAJ0000pnR
+* DEHHALKAz0000RT3
+* DEHHALKAJ0000ojv
+* DEHHALKA7000230a
+* DEHHALKAP0000v6a
+* DEHHALKA70002Wnu
+* DEHHALKAJ0000yaS
+* DEHHALKAJ0000zuV
+* DEHHALKAV0000OIL
+* DEHHALKA700023Im
+* DEHHALKAJ0000yN6
+* DEHHALKAJ0001215
+* DEHHALKA70002BMg
+* DEHHALKA8dg0006V
+* DEHHALKAP0007cdG
+* DEHHALKAV0000UIm
+* DEHHALKAP0007Wii
+* DEHHALKAV0000ZA8
+* DEHHALKAP0007cTs
+* DEHHALKAJ00013Ph
+* DEHHALKAJ0000zGw
+* DEHHALKAJ000137l
+* DEHHALKAz0000fob
+* DEHHALKAJ0000p6C
+* DEHHALKAJ000137r
+* DEHHALKAJ0000ylp
+* DEHHALKA70001sqr
+* DEHHALKAP0000v5g
+* DEHHALKAJ0000n8J
+* DEHHALKAV0000p4W
+* DEHHALKA700023RV
+* DEHHALKA9P10009q
+* DEHHALKA70002C7q
+* DEHHALKA4O600018
+* DEHHALKA5b6000RB
+* DEHHALKAP0007c0S
+* DEHHALKAJ0007A4k
+* DEHHALKAJ0000zyc
+* DEHHALKAV00014BN
+* DEHHALKAP0000vsA
+* DEHHALKAJ0000q8r
+* DEHHALKA5Is0004L
+* DEHHALKA70001vLy
+* DEHHALKA6yl0000R
+* DEHHALKAP0007Tsv
+* DEHHALKA5Is0004F
+* DEHHALKAJ0000oDC
+* DEHHALKAJ00010Ro
+* DEHHALKA1mG000Ei
+* DEHHALKAP0007XXh
+* DEHHALKAP0007UyV
+* DEHHALKAJ0000pou
+* DEHHALKAJ000122z
+* DEHHALKAP0001AoT
+* DEHHALKAz0000w1C
+* DEHHALKAJ0000zyo
+* DEHHALKAP0007R69
+* DEHHALKA8xl0007v
+* DEHHALKAJ0000qR3
+* DEHHALKAV0000xk1
+* DEHHALKAn0000mKn
+* DEHHALKAV0000Yeo
+* DEHHALKAP0000w9Q
+* DEHHALKAV00013i3
+* DEHHALKA7yU000Ie
+* DEHHALKA700022D1
+* DEHHALKAP0000wLS
+* DEHHALKA530000IW
+* DEHHALKAJ00011Js
+* DEHHALKAP0007OqH
+* DEHHALKAJ0000q0T
+* DEHHALKAJ0000zwE
+* DEHHALKAJ0000pC2
+* DEHHALKA5Is0004A
+* DEHHALKAP0007OCO
+* DEHHALKA10007tqq
+* DEHHALKAV0000zRo
+* DEHHALKAJ0000otI
+* DEHHALKAJ0000yS2
+* DEHHALKApn0000sy
+* DEHHALKAJ0000zCs
+* DEHHALKA1hI0002i
+* DEHHALKA3cM000O0
+* DEHHALKAca0000DP
+* DEHHALKAJ0000zhL
+* DEHHALKAP0007OA6
+* DEHHALKA6r1000CU
+* DEHHALKAP0007OAV
+* DEHHALKAP0007UxS
+* DEHHALKA7000240Q
+* DEHHALKA700025k3
+* DEHHALKA7000236V
+* DEHHALKAJ0000zNk
+* DEHHALKAJ0000zrj
+* DEHHALKAP0001BGU
+* DEHHALKAJ0000yb6
+
+Query time: 170.312 s
+
+
+// -----------------------------------------------------------------------------
+// 4. Floor-to-floor height anomaly detection — data quality flag
+//    A typical storey is 3–4 m. Values outside 2–8 m indicate either
+//    special structures (industrial halls, towers, carports) or measurement
+//    errors in the source data — valuable for data quality auditing.
+// -----------------------------------------------------------------------------
+
+Floor-to-floor height anomaly detection — data quality flag A typical storey is 3–4 m. Values outside 2–8 m indicate either special structures errors in the source data — valuable for data quality auditing. (industrial halls, towers, carports) or measurement
+
+```cypher
+MATCH (b:Building)
+WHERE b.measured_height IS NOT NULL 
+  AND b.storeys_above_ground IS NOT NULL 
+  AND b.storeys_above_ground > 0
+WITH b, (b.measured_height / b.storeys_above_ground) AS avg_storey_height
+WHERE avg_storey_height < 2 OR avg_storey_height > 8
+RETURN b.id, 
+       b.name, 
+       b.measured_height, 
+       b.storeys_above_ground, 
+       avg_storey_height
+ORDER BY avg_storey_height DESC
+```
+
+All buildings in the provided result set are flagged as anomalies, as every entry has an `avg_storey_height` significantly exceeding the 8 m threshold (ranging from 20.047 m to 121.641 m).
+
+Query time: 342.967 s
+
+
+// -----------------------------------------------------------------------------
+// 5. Roof material distribution by building function
+//    Cross-tabulation: for each use type, what fraction of buildings
+//    has each predicted roof material? Reveals whether material
+//    predictions correlate with known building typologies.
+//    Only types with ≥ 500 buildings included.
+// -----------------------------------------------------------------------------
+
+Roof material distribution by building function Cross-tabulation: for each use type, what fraction of buildings has each predicted roof material? Reveals whether material predictions correlate with known building typologies. Only types with >= 500 buildings included.
+```cypher
+MATCH (b:Building)-[:HAS_FUNCTION]->(f:BuildingFunction)
+WITH f.name AS function_name, b.predictedroofmaterial AS material, count(b) AS material_count
+WITH function_name, sum(material_count) AS total_count, collect({material: material, count: material_count}) AS dist
+WHERE total_count >= 500
+UNWIND dist AS item
+RETURN function_name, item.material AS material, round(toFloat(item.count) / total_count * 100, 2) AS percentage
+ORDER BY function_name, percentage DESC
+```
+
+The roof material distribution by building function is as follows:
+
+**Accommodation Building**
+* tar_paper: 46.07%
+* roof_tiles: 30.16%
+* concrete: 13.71%
+* None: 9.14%
+* metal: 0.55%
+* glass: 0.37%
+
+**Building for Education and Research**
+* tar_paper: 65.92%
+* roof_tiles: 17.41%
+* concrete: 8.8%
+* None: 3.71%
+* metal: 2.39%
+* glass: 1.78%
+
+**Building for Social Purposes**
+* tar_paper: 43.8%
+* roof_tiles: 33.13%
+* None: 11.22%
+* concrete: 9.43%
+* metal: 1.25%
+* glass: 1.17%
+
+**Canopy / Shelter**
+* None: 45.61%
+* tar_paper: 20.95%
+* metal: 10.56%
+* concrete: 9.56%
+* glass: 6.69%
+* roof_tiles: 6.63%
+
+**Commercial Building**
+* tar_paper: 50.29%
+* None: 17.9%
+* roof_tiles: 14.67%
+* concrete: 12.73%
+* metal: 2.88%
+* glass: 1.53%
+
+**Detached House**
+* roof_tiles: 42.31%
+* None: 37.4%
+* tar_paper: 11.25%
+* concrete: 6.64%
+* metal: 1.99%
+* glass: 0.41%
+
+**Garage**
+* None: 87.91%
+* tar_paper: 5.07%
+* concrete: 2.85%
+* roof_tiles: 2.15%
+* metal: 1.66%
+* glass: 0.36%
+
+**Healthcare Building**
+* tar_paper: 52.8%
+* roof_tiles: 25.8%
+* concrete: 11.8%
+* None: 7.6%
+* metal: 1.2%
+* glass: 0.8%
+
+**Industrial and Commercial Building**
+* tar_paper: 51.32%
+* None: 19.44%
+* roof_tiles: 13.09%
+* concrete: 9.85%
+* metal: 5.15%
+* glass: 1.16%
+
+**Mixed-Use Building with Residential**
+* roof_tiles: 59.56%
+* None: 16.69%
+* tar_paper: 14.52%
+* concrete: 7.05%
+* metal: 1.6%
+* glass: 0.58%
+
+**Parking Building**
+* None: 89.85%
+* tar_paper: 4.47%
+* concrete: 2.15%
+* roof_tiles: 1.74%
+* metal: 1.45%
+* glass: 0.34%
+
+**Residential Building with Trade and Services**
+* roof_tiles: 50.6%
+* tar_paper: 29.59%
+* concrete: 14.17%
+* None: 4.32%
+* metal: 1.04%
+* glass: 0.27%
+
+**Residential Home / Dormitory**
+* tar_paper: 39.87%
+* roof_tiles: 35.0%
+* concrete: 8.82%
+* None: 7.62%
+* metal: 6.49%
+* glass: 2.19%
+
+**Security and Order Building**
+* tar_paper: 35.73%
+* None: 30.99%
+* roof_tiles: 19.24%
+* concrete: 7.94%
+* metal: 3.97%
+* glass: 2.14%
+
+**Sports Building**
+* tar_paper: 51.87%
+* None: 16.96%
+* roof_tiles: 16.15%
+* concrete: 8.93%
+* metal: 4.38%
+* glass: 1.7%
+
+**Storage Building**
+* None: 44.47%
+* tar_paper: 30.83%
+* roof_tiles: 10.57%
+* metal: 6.65%
+* concrete: 6.16%
+* glass: 1.31%
+
+**Trade and Services Building**
+* tar_paper: 52.07%
+* roof_tiles: 18.06%
+* concrete: 13.24%
+* None: 13.16%
+* metal: 2.58%
+* glass: 0.89%
+
+**Utilities / Supply Building**
+* None: 75.91%
+* tar_paper: 10.87%
+* roof_tiles: 5.91%
+* concrete: 4.79%
+* metal: 1.78%
+* glass: 0.73%
+
+**Other identified functions (ID-based):**
+* **31001_1130**: roof_tiles (53.79%), tar_paper (24.05%), concrete (11.26%), None (8.77%), metal (1.9%), glass (0.24%)
+* **31001_1210**: roof_tiles (81.6%), None (8.01%), tar_paper (5.88%), metal (2.38%), concrete (1.63%), glass (0.5%)
+* **31001_1310**: None (97.2%), roof_tiles (1.1%), tar_paper (0.78%), concrete (0.71%), metal (0.2%), glass (0.02%)
+* **31001_1313**: None (97.31%), roof_tiles (0.9%), concrete (0.77%), tar_paper (0.73%), metal (0.28%), glass (0.01%)
+* **31001_2080**: tar_paper (34.7%), None (28.1%), roof_tiles (21.27%), concrete (11.6%), metal (3.19%), glass (1.14%)
+* **31001_2310**: tar_paper (42.75%), roof_tiles (36.51%), concrete (10.41%), None (6.49%), metal (2.8%), glass (1.04%)
+* **31001_2600**: None (69.94%), tar_paper (16.72%), concrete (4.91%), roof_tiles (4.6%), metal (2.91%), glass (0.92%)
+* **31001_2700**: None (48.17%), roof_tiles (23.26%), tar_paper (15.96%), metal (5.71%), concrete (4.61%), glass (2.29%)
+* **31001_2740**: glass (30.49%), tar_paper (25.2%), concrete (13.61%), None (13.4%), roof_tiles (11.02%), metal (6.27%)
+* **31001_3040**: roof_tiles (48.96%), tar_paper (29.17%), None (13.15%), concrete (5.34%), metal (2.47%), glass (0.91%)
+* **51003_1205**: None (64.72%), metal (13.01%), tar_paper (9.41%), concrete (7.49%), glass (3.29%), roof_tiles (2.08%)
+
+Query time: 80.695 s
+
+
+// -----------------------------------------------------------------------------
+// 6. Urban heat island proxy — dark roof fraction per 2 km grid cell
+//    Tar paper and metal absorb significantly more solar radiation than
+//    concrete, tiles, or glass. High dark-roof density correlates with
+//    elevated surface temperatures (urban heat island effect).
+//    Only cells with ≥ 50 buildings with material predictions included.
+// -----------------------------------------------------------------------------
+
+Urban heat island proxy -- dark roof fraction per 2 km grid cell Tar paper and metal absorb significantly more solar radiation than concrete, tiles, or glass. High dark-roof density correlates with elevated surface temperatures (urban heat island effect). Only cells with ≥ 50 buildings with material predictions included.
+
+```cypher
+MATCH (b:Building)
+WHERE b.predictedroofmaterial IS NOT NULL
+WITH floor(b.center_x / 2000) AS gx, floor(b.center_y / 2000) AS gy, b
+WITH gx, gy, count(b) AS total, sum(CASE WHEN b.predictedroofmaterial IN ['tar_paper', 'metal'] THEN 1 ELSE 0 END) AS dark
+WHERE total >= 50
+RETURN gx, gy, total, dark, toFloat(dark) / total AS dark_roof_fraction
+```
+
+The dark roof fraction for each 2 km grid cell with $\ge 50$ buildings is as follows:
+
+*   **(274.0, 2967.0):** 0.1607
+*   **(274.0, 2968.0):** 0.2009
+*   **(274.0, 2969.0):** 0.1404
+*   **(275.0, 2967.0):** 0.3050
+*   **(275.0, 2968.0):** 0.2332
+*   **(275.0, 2969.0):** 0.1930
+*   **(275.0, 2965.0):** 0.2350
+*   **(275.0, 2966.0):** 0.1098
+*   **(276.0, 2964.0):** 0.2409
+*   **(276.0, 2965.0):** 0.2213
+*   **(276.0, 2967.0):** 0.2010
+*   **(276.0, 2968.0):** 0.2502
+*   **(276.0, 2962.0):** 0.1667
+*   **(277.0, 2962.0):** 0.2815
+*   **(277.0, 2964.0):** 0.3293
+*   **(277.0, 2965.0):** 0.2991
+*   **(277.0, 2967.0):** 0.2096
+*   **(277.0, 2966.0):** 0.6732
+*   **(277.0, 2968.0):** 0.2277
+*   **(278.0, 2961.0):** 0.1497
+*   **(278.0, 2962.0):** 0.3232
+*   **(278.0, 2963.0):** 0.1618
+*   **(278.0, 2964.0):** 0.2827
+*   **(278.0, 2965.0):** 0.1817
+*   **(278.0, 2966.0):** 0.3441
+*   **(278.0, 2967.0):** 0.2470
+*   **(278.0, 2968.0):** 0.3658
+*   **(278.0, 2969.0):** 0.2748
+*   **(278.0, 2970.0):** 0.2338
+*   **(279.0, 2961.0):** 0.3492
+*   **(279.0, 2962.0):** 0.2846
+*   **(279.0, 2963.0):** 0.2094
+*   **(279.0, 2964.0):** 0.4737
+*   **(279.0, 2965.0):** 0.3487
+*   **(279.0, 2966.0):** 0.2446
+*   **(279.0, 2967.0):** 0.2344
+*   **(279.0, 2968.0):** 0.4869
+*   **(279.0, 2969.0):** 0.3567
+*   **(279.0, 2970.0):** 0.2684
+*   **(279.0, 2971.0):** 0.2119
+*   **(280.0, 2962.0):** 0.5300
+*   **(280.0, 2963.0):** 0.3377
+*   **(280.0, 2964.0):** 0.5000
+*   **(280.0, 2965.0):** 0.5721
+*   **(280.0, 2966.0):** 0.3267
+*   **(280.0, 2967.0):** 0.4605
+*   **(280.0, 2968.0):** 0.5146
+*   **(280.0, 2969.0):** 0.4360
+*   **(280.0, 2970.0):** 0.2664
+*   **(280.0, 2971.0):** 0.2887
+*   **(280.0, 2972.0):** 0.2138
+*   **(280.0, 2961.0):** 0.2326
+*   **(283.0, 2969.0):** 0.3908
+*   **(281.0, 2960.0):** 0.3133
+*   **(281.0, 2961.0):** 0.2721
+*   **(281.0, 2962.0):** 0.2646
+*   **(281.0, 2963.0):** 0.4778
+*   **(281.0, 2964.0):** 0.7206
+*   **(281.0, 2965.0):** 0.6624
+*   **(281.0, 2966.0):** 0.4346
+*   **(281.0, 2967.0):** 0.3978
+*   **(281.0, 2968.0):** 0.3934
+*   **(281.0, 2969.0):** 0.3480
+*   **(281.0, 2970.0):** 0.2893
+*   **(281.0, 2971.0):** 0.2387
+*   **(281.0, 2972.0):** 0.1982
+*   **(282.0, 2959.0):** 0.2270
+*   **(282.0, 2960.0):** 0.2495
+*   **(282.0, 2961.0):** 0.3065
+*   **(282.0, 2962.0):** 0.4601
+*   **(282.0, 2963.0):** 0.6332
+*   **(282.0, 2964.0):** 0.4270
+*   **(282.0, 2965.0):** 0.5394
+*   **(282.0, 2966.0):** 0.5202
+*   **(282.0, 2967.0):** 0.4494
+*   **(282.0, 2968.0):** 0.3909
+*   **(282.0, 2969.0):** 0.3584
+*   **(282.0, 2970.0):** 0.3042
+*   **(282.0, 2971.0):** 0.3711
+*   **(282.0, 2972.0):** 0.1565
+*   **(282.0, 2973.0):** 0.2458
+*   **(283.0, 2960.0):** 0.2453
+*   **(283.0, 2961.0):** 0.3862
+*   **(283.0, 2962.0):** 0.4013
+*   **(283.0, 2963.0):** 0.2498
+*   **(283.0, 2964.0):** 0.3396
+*   **(283.0, 2965.0):** 0.6188
+*   **(283.0, 2966.0):** 0.5670
+*   **(283.0, 2967.0):** 0.5179
+*   **(283.0, 2968.0):** 0.3905
+*   **(283.0, 2970.0):** 0.3533
+*   **(283.0, 2971.0):** 0.2858
+*   **(283.0, 2972.0):** 0.2833
+*   **(283.0, 2973.0):** 0.3215
+*   **(283.0, 2974.0):** 0.1795
+*   **(284.0, 2962.0):** 0.2955
+*   **(284.0, 2963.0):** 0.2337
+*   **(284.0, 2964.0):** 0.3733
+*   **(284.0, 2965.0):** 0.6753
+*   **(284.0, 2966.0):** 0.6491
+*   **(284.0, 2967.0):** 0.3448
+*   **(284.0, 2968.0):** 0.3390
+*   **(284.0, 2969.0):** 0.3877
+*   **(284.0, 2970.0):** 0.4467
+*   **(284.0, 2971.0):** 0.2539
+*   **(284.0, 2972.0):** 0.3852
+*   **(284.0, 2973.0):** 0.1918
+*   **(284.0, 2974.0):** 0.1699
+*   **(285.0, 2962.0):** 0.1661
+*   **(285.0, 2963.0):** 0.1925
+*   **(285.0, 2964.0):** 0.1844
+*   **(285.0, 2965.0):** 0.5590
+*   **(285.0, 2966.0):** 0.4677
+*   **(285.0, 2967.0):** 0.3217
+*   **(285.0, 2968.0):** 0.3796
+*   **(285.0, 2969.0):** 0.3575
+*   **(285.0, 2970.0):** 0.3453
+*   **(285.0, 2971.0):** 0.1662
+*   **(285.0, 2972.0):** 0.2271
+*   **(285.0, 2973.0):** 0.2261
+*   **(285.0, 2974.0):** 0.1379
+*   **(285.0, 2961.0):** 0.2714
+*   **(285.0, 2975.0):** 0.1337
+*   **(286.0, 2961.0):** 0.2545
+*   **(286.0, 2962.0):** 0.2884
+*   **(286.0, 2963.0):** 0.3559
+*   **(286.0, 2964.0):** 0.4925
+*   **(286.0, 2965.0):** 0.6441
+*   **(286.0, 2966.0):** 0.4605
+*   **(286.0, 2967.0):** 0.3016
+*   **(286.0, 2968.0):** 0.2635
+*   **(286.0, 2969.0):** 0.3347
+*   **(286.0, 2970.0):** 0.2882
+*   **(286.0, 2971.0):** 0.1898
+*   **(286.0, 2972.0):** 0.1954
+*   **(286.0, 2973.0):** 0.2064
+*   **(286.0, 2974.0):** 0.1931
+*   **(286.0, 2975.0):** 0.1736
+*   **(286.0, 2976.0):** 0.1429
+*   **(287.0, 2960.0):** 0.2250
+*   **(287.0, 2961.0):** 0.1316
+*   **(287.0, 2962.0):** 0.1961
+*   **(287.0, 2963.0):** 0.4196
+*   **(287.0, 2964.0):** 0.3614
+*   **(287.0, 2965.0):** 0.3833
+*   **(287.0, 2966.0):** 0.3431
+*   **(287.0, 2967.0):** 0.2495
+*   **(287.0, 2968.0):** 0.3398
+*   **(287.0, 2969.0):** 0.2686
+*   **(287.0, 2970.0):** 0.2104
+*   **(287.0, 2971.0):** 0.1917
+*   **(287.0, 2972.0):** 0.1739
+*   **(287.0, 2973.0):** 0.2033
+*   **(287.0, 2974.0):** 0.1933
+*   **(287.0, 2975.0):** 0.2250
+*   **(288.0, 2959.0):** 0.2513
+*   **(288.0, 2960.0):** 0.1400
+*   **(288.0, 2962.0):** 0.1897
+*   **(288.0, 2961.0):** 0.2314
+*   **(288.0, 2963.0):** 0.3333
+*   **(288.0, 2964.0):** 0.1836
+*   **(288.0, 2965.0):** 0.3040
+*   **(288.0, 2966.0):** 0.2655
+*   **(288.0, 2968.0):** 0.3333
+*   **(288.0, 2969.0):** 0.2217
+*   **(288.0, 2970.0):** 0.2122
+*   **(288.0, 2971.0):** 0.2583
+*   **(288.0, 2972.0):** 0.2316
+*   **(288.0, 2973.0):** 0.2101
+*   **(288.0, 2974.0):** 0.2800
+*   **(288.0, 2958.0):** 0.2783
+*   **(289.0, 2958.0):** 0.2473
+*   **(289.0, 2959.0):** 0.2274
+*   **(289.0, 2960.0):** 0.2938
+*   **(289.0, 2961.0):** 0.2576
+*   **(289.0, 2962.0):** 0.2112
+*   **(289.0, 2963.0):** 0.3496
+*   **(289.0, 2964.0):** 0.3664
+*   **(289.0, 2965.0):** 0.2209
+*   **(289.0, 2969.0):** 0.4939
+*   **(289.0, 2970.0):** 0.4571
+*   **(289.0, 2971.0):** 0.2585
+*   **(289.0, 2972.0):** 0.2169
+*   **(289.0, 2973.0):** 0.2131
+*   **(290.0, 2958.0):** 0.2424
+*   **(290.0, 2959.0):** 0.2590
+*   **(290.0, 2960.0):** 0.2757
+*   **(290.0, 2961.0):** 0.2185
+*   **(290.0, 2962.0):** 0.3006
+*   **(290.0, 2963.0):** 0.2573
+*   **(290.0, 2964.0):** 0.3905
+*   **(290.0, 2965.0):** 0.5714
+*   **(291.0, 2959.0):** 0.2542
+*   **(291.0, 2960.0):** 0.2893
+*   **(291.0, 2961.0):** 0.2368
+*   **(291.0, 2962.0):** 0.2000
+*   **(291.0, 2963.0):** 0.2074
+*   **(292.0, 2960.0):** 0.1196
+*   **(292.0, 2962.0):** 0.2164
+*   **(292.0, 2961.0):** 0.2000
+*   **(293.0, 2960.0):** 0.2034
+*   **(293.0, 2961.0):** 0.2000
+
+Query time: 349.420 s
+
+
+// -----------------------------------------------------------------------------
+// 7. Roof material prediction coverage completeness
+//    The material_cov values from the ML prediction indicate what fraction
+//    of the roof each material covers. A building with total coverage < 0.9
+//    has an unexplained portion — useful to assess prediction confidence
+//    and identify buildings that need re-inspection.
+// -----------------------------------------------------------------------------
+
+Roof material prediction coverage completeness The material_cov values from the ML prediction indicate what fraction of the roof each material covers. A building with total coverage < 0.9 has an unexplained portion -- useful to assess prediction confidence and identify buildings that need re-inspection.
+
+```cypher
+MATCH (b:Building)
+WITH b, (
+  coalesce(b.material_concrete_cov, 0) + 
+  coalesce(b.material_glass_cov, 0) + 
+  coalesce(b.material_metal_cov, 0) + 
+  coalesce(b.material_roof_tiles_cov, 0) + 
+  coalesce(b.material_tar_paper_cov, 0) + 
+  coalesce(b.material_vegetation_cov, 0) + 
+  coalesce(b.material_solar_panels_cov, 0) + 
+  coalesce(b.material_gravel_cov, 0)
+) AS total_coverage
+WHERE total_coverage < 0.9
+RETURN b.id, b.name, total_coverage
+ORDER BY total_coverage ASC
+```
+
+All buildings in the provided result have a total coverage of 0, which is less than 0.9, indicating that they all have an unexplained portion. These buildings include:
+
+* DEHHALKAn0007rgg
+* DEHHALKAn0007riO
+* DEHHALKAn0007rgW
+* DEHHALKAn0007roc
+* DEHHALKAn0007rl8
+* DEHHALKAn0007rqg
+* DEHHALKAn0007rqS
+* DEHHALKA61u0008P
+* DEHHALKAn0007rh3
+* DEHHALKAn0007rkM
+* DEHHALKAn0007rqy
+* DEHHALKAn0007rmh
+* DEHHALKAP0000vam
+* DEHHALKAP0005f6M
+* DEHHALKAP0000vs2
+* DEHHALKAn0007rik
+* DEHHALKAn0007rle
+* DEHHALKAn0007rli
+* DEHHALKAP0000o1C
+* DEHHALKAP0001JG7
+* DEHHALKAn0007rm9
+* DEHHALKAn0007rqC
+* DEHHALKAP0000o0J
+* DEHHALKAn0007rnS
+* DEHHALKAn0007rgn
+* DEHHALKA1Qf0007j
+* DEHHALKAP0000qno
+* DEHHALKAn0007rky
+* DEHHALKAn0007rnf
+* DEHHALKAn0007roZ
+* DEHHALKAP0000vao
+* DEHHALKAn0007rhx
+* DEHHALKAn0007roF
+* DEHHALKA1lD000KA
+* DEHHALKA1lD000KC
+* DEHHALKAP0000v5S
+* DEHHALKA1lD000NL
+* DEHHALKAn0007rjN
+* DEHHALKAn0007rip
+* DEHHALKAn0007rfg
+* DEHHALKAn0007rlK
+* DEHHALKAn0007rrl
+* DEHHALKAn0007rkD
+* DEHHALKAn0007rhe
+* DEHHALKAP0000o3Q
+* DEHHALKAn0007rls
+* DEHHALKAP0000okb
+* DEHHALKAP0000vm2
+* DEHHALKAP0005dI9
+* DEHHALKAn0007rqr
+* DEHHALKAn0007rla
+* DEHHALKAn0007rka
+* DEHHALKAn0007rko
+* DEHHALKA3Wd0002D
+* DEHHALKAP0000puH
+* DEHHALKAP0000ptF
+* DEHHALKAP0000q8x
+* DEHHALKAn0007rl1
+* DEHHALKAn0007rpM
+* DEHHALKAn0007rpU
+* DEHHALKAP0005dJ7
+* DEHHALKAP0000vyW
+* DEHHALKAP0000q3u
+* DEHHALKAn0007rlP
+* DEHHALKAG000002i
+* DEHHALKAn0007rhv
+* DEHHALKAn0007rm0
+* DEHHALKAn0007rlH
+* DEHHALKAn0007rro
+* DEHHALKAP0000pG4
+* DEHHALKAn0007roJ
+* DEHHALKAn0007rjH
+* DEHHALKAn0007rqp
+* DEHHALKAP0000rOl
+* DEHHALKAP0000rgl
+* DEHHALKAP0000oa5
+* DEHHALKAn0007rrB
+* DEHHALKAn0007rih
+* DEHHALKAP0000pZL
+* DEHHALKAP0000qpD
+* DEHHALKAP0001JRS
+* DEHHALKAP0000qiU
+* DEHHALKAP0000pPB
+* DEHHALKAn0007riB
+* DEHHALKAn0007rn6
+* DEHHALKAP0000vC2
+* DEHHALKA1Qd0000z
+* DEHHALKAn0007rmQ
+* DEHHALKAP0000oUD
+* DEHHALKAn0007rnr
+* DEHHALKAn0007rqO
+* DEHHALKAn0007rpn
+* DEHHALKAn0007rqH
+* DEHHALKAn0007rpe
+* DEHHALKA1nL000J2
+* DEHHALKAn0007rlW
+* DEHHALKAP0000q0p
+* DEHHALKAn0007rjk
+* DEHHALKAn0007rfv
+* DEHHALKA1Qf0007u
+* DEHHALKAP0000q6v
+* DEHHALKAn0007rfr
+* DEHHALKAn0007rnz
+* DEHHALKAP0000piO
+* DEHHALKAP0000o3o
+* DEHHALKAn0007rgq
+* DEHHALKAn0007ros
+* DEHHALKAP0000pEK
+* DEHHALKA1Qf00086
+* DEHHALKAn0007rhL
+* DEHHALKAP0000pRD
+* DEHHALKAn0007rre
+* DEHHALKAn0007rl6
+* DEHHALKAn0007rk1
+* DEHHALKA2xW0008u
+* DEHHALKAn0007rlg
+* DEHHALKAn0007rhN
+* DEHHALKAP0000vqT
+* DEHHALKAn0007rmo
+* DEHHALKAP0001JOe
+* DEHHALKAP0005dUX
+* DEHHALKAP0000pps
+* DEHHALKAP0000p6g
+* DEHHALKAP0000oA3
+* DEHHALKAn0007rpR
+* DEHHALKAP0005d4C
+* DEHHALKAn0007rmK
+* DEHHALKAP0005cw5
+* DEHHALKA1Qf0007q
+* DEHHALKA1Qf00082
+* DEHHALKAn0007rpv
+* DEHHALKAn0007riZ
+* DEHHALKAn0007riE
+* DEHHALKAP0000vfY
+* DEHHALKA1Qf0007y
+* DEHHALKAP0000vmb
+* DEHHALKAP0001JH1
+* DEHHALKA10005Y4l
+* DEHHALKAn0007rkF
+* DEHHALKAP0000vt8
+* DEHHALKAP0000w53
+* DEHHALKAP0005cpd
+* DEHHALKAP0000psC
+* DEHHALKAP0000vDa
+* DEHHALKAn0007rkt
+* DEHHALKAP0005d9Q
+* DEHHALKAP0005dPc
+* DEHHALKAP0000vkF
+* DEHHALKAn0007rmt
+* DEHHALKAP0005dCI
+* DEHHALKAP0005dKT
+* DEHHALKA3Wd00024
+* DEHHALKAP0005dFJ
+* DEHHALKAP0000vGE
+* DEHHALKA3Wd0002I
+* DEHHALKAP0005d8f
+* DEHHALKAn0007rpc
+* DEHHALKAP0000od5
+* DEHHALKAP0000v7U
+* DEHHALKAP0005dMZ
+* DEHHALKAP0005dKI
+* DEHHALKAP0000p4Z
+* DEHHALKAP0000pVY
+* DEHHALKAP0000pqQ
+* DEHHALKAP0001JF3
+* DEHHALKAP0001JaV
+* DEHHALKAP0005dKD
+* DEHHALKAP0005dKp
+* DEHHALKAP0005dSL
+* DEHHALKAP0000p4t
+* DEHHALKAP0000oUi
+* DEHHALKA4Jm00086
+* DEHHALKAP0000puA
+* DEHHALKAZp00006a
+* DEHHALKAn0007rlA
+* DEHHALKA8Iv000Hd
+* DEHHALKAn0007rlw
+* DEHHALKAP0000pgI
+* DEHHALKAP0005d3Z
+* DEHHALKAn0007rfo
+* DEHHALKAP0005dF2
+* DEHHALKAP0000pnL
+* DEHHALKAn0007rpk
+* DEHHALKAP0005dS2
+* DEHHALKAP0005dNI
+* DEHHALKAP0001JFL
+* DEHHALKAP0005d6N
+* DEHHALKAP0005dIF
+* DEHHALKAn0007rnd
+* DEHHALKAP0000vuc
+* DEHHALKAP0005dIi
+* DEHHALKAP0000wRK
+* DEHHALKAP0000wP6
+* DEHHALKAP0005czm
+* DEHHALKAP0000qbb
+* DEHHALKAP0000w3B
+* DEHHALKAP0005dH4
+* DEHHALKAP0000pyB
+* DEHHALKAP0000wXP
+* DEHHALKAP0000wJs
+* DEHHALKAP0000w0T
+* DEHHALKAP0000qPM
+* DEHHALKAP0000oZO
+* DEHHALKA1lD000NP
+* DEHHALKAP0000p2b
+* DEHHALKAP0000w6l
+* DEHHALKAP0005dAk
+* DEHHALKAP0005cpy
+* DEHHALKAP0000v8W
+* DEHHALKAP0000qDc
+* DEHHALKAP0000pc5
+* DEHHALKAP0000pT3
+* DEHHALKAP0005eqV
+* DEHHALKAP0000oPI
+* DEHHALKAP0005dUV
+* DEHHALKAP0000vmB
+* DEHHALKAP0005d3z
+* DEHHALKAP0000qkK
+* DEHHALKAP0000pNn
+* DEHHALKA61u0008K
+* DEHHALKAP0000w59
+* DEHHALKA10004mR1
+* DEHHALKA3Wd00028
+* DEHHALKAP0005dDm
+* DEHHALKAP0000pW2
+* DEHHALKAP0000pee
+* DEHHALKAP0000vZj
+* DEHHALKAP0000v69
+* DEHHALKAP0000vbX
+* DEHHALKA3Wd0002L
+* DEHHALKAP0000vsV
+* DEHHALKA2xW0008z
+* DEHHALKAP0000vAT
+* DEHHALKAP0000oT8
+* DEHHALKAP0000qjJ
+* DEHHALKA8O0000JP
+* DEHHALKAP0000q7E
+* DEHHALKA3Wd0002C
+* DEHHALKA1eM000PG
+* DEHHALKAP0000qCI
+* DEHHALKAP0000wVn
+* DEHHALKAP0000vG2
+* DEHHALKAP0000qDK
+* DEHHALKA1nL000J0
+* DEHHALKAP0000p3y
+* DEHHALKA1nM000Mv
+* DEHHALKAP0000olw
+* DEHHALKAP0000o0B
+* DEHHALKAP0000wWk
+* DEHHALKAP0000wWw
+* DEHHALKA10000v9t
+* DEHHALKAP0000o2y
+* DEHHALKAP0000w3t
+* DEHHALKAP0000vuv
+* DEHHALKAP0000pCJ
+* DEHHALKAP0000p3a
+* DEHHALKAP0000vNq
+* DEHHALKAP0001JUs
+* DEHHALKAP0000vio
+* DEHHALKAP0000oVv
+* DEHHALKAP0000nwb
+* DEHHALKAP0000p3O
+* DEHHALKAP0000o9K
+* DEHHALKAP0000vD8
+* DEHHALKAP0000o7M
+* DEHHALKAP0000oSW
+* DEHHALKAP0000oXZ
+* DEHHALKAP0000va9
+* DEHHALKA1lD000KE
+* DEHHALKAP0000w5j
+* DEHHALKAP0000w4T
+* DEHHALKA10003UHv
+* DEHHALKAP0000v71
+* DEHHALKAP0000vCZ
+* DEHHALKAP0000p9Z
+* DEHHALKAP0001JQ5
+* DEHHALKAP0000pri
+* DEHHALKAP0000oz7
+* DEHHALKAP0000w7G
+* DEHHALKA5u00002A
+* DEHHALKAP0000vHR
+* DEHHALKAP0000w0p
+* DEHHALKA1lD000NN
+* DEHHALKAP0000vlD
+* DEHHALKAP0000vzT
+* DEHHALKAP0000vx3
+* DEHHALKAP0000ozP
+* DEHHALKAP0000w9m
+* DEHHALKAP0000oyx
+* DEHHALKA7zU0007J
+* DEHHALKAP0000nt8
+* DEHHALKA1Q9000CO
+* DEHHALKAP0000w9E
+* DEHHALKAP0000v3e
+* DEHHALKAP0000p9j
+* DEHHALKAP0000p9x
+* DEHHALKAP0000oaq
+* DEHHALKAP0000vou
+* DEHHALKA10006DhK
+* DEHHALKAP0000vHE
+* DEHHALKAP0000qC1
+* DEHHALKA5N00005Y
+* DEHHALKAP0000vVI
+* DEHHALKAP0000oDy
+* DEHHALKA90000Uhu
+* DEHHALKAP0000pDH
+* DEHHALKA10004mQv
+* DEHHALKAP0000r4E
+* DEHHALKAP0000vEq
+* DEHHALKAP0000pF5
+* DEHHALKAP0000swc
+* DEHHALKAP0000vE2
+* DEHHALKAP0000p3I
+* DEHHALKA90000Uhz
+* DEHHALKA1lD000NJ
+* DEHHALKAP0000pqa
+* DEHHALKAP0000pLz
+* DEHHALKAP0000wMx
+* DEHHALKAP0000wXl
+* DEHHALKA7zU0007Q
+* DEHHALKAP0000o3U
+* DEHHALKAP0000p2D
+* DEHHALKA1do0009O
+* DEHHALKAP0000p6R
+* DEHHALKAP0000veI
+* DEHHALKAP0001Jfy
+* DEHHALKA100012b3
+* DEHHALKAP0000vvX
+* DEHHALKA68Z0007r
+* DEHHALKAP0000v7z
+* DEHHALKAP0000oVG
+* DEHHALKAP0000v2M
+* DEHHALKAP0000oXW
+* DEHHALKAP0000oZy
+* DEHHALKA10003UI0
+* DEHHALKAP0000o27
+* DEHHALKAP0001JEI
+* DEHHALKAP0000ovM
+* DEHHALKAP0000oR8
+* DEHHALKAP0000oyO
+* DEHHALKAP0000vNe
+* DEHHALKAP0000pG6
+* DEHHALKAP0000w3K
+* DEHHALKAP0000w66
+* DEHHALKAP0000oTl
+* DEHHALKAP0000v8U
+* DEHHALKAP0000o5O
+* DEHHALKAP0000p4X
+* DEHHALKAP0000vFG
+* DEHHALKA300000nc
+* DEHHALKAP0000nxO
+* DEHHALKA2SB000Bf
+* DEHHALKA10005SAX
+* DEHHALKA1lD000NF
+* DEHHALKAP0000o5E
+* DEHHALKAP0000oEp
+* DEHHALKAP0000o1A
+* DEHHALKAP0000oWR
+* DEHHALKAM40000D6
+* DEHHALKAP0000ny0
+* DEHHALKAP0000oX3
+* DEHHALKA2pY000Pt
+* DEHHALKAP0000oNV
+* DEHHALKA1n3000ff
+* DEHHALKAP0000oc1
+* DEHHALKAP0000vix
+* DEHHALKAP0000vpv
+* DEHHALKAP0000p4I
+* DEHHALKAP0000o2Y
+* DEHHALKAP0000op4
+* DEHHALKAP0000p5h
+* DEHHALKA1fc000Ri
+* DEHHALKA1lD000NH
+* DEHHALKAP0000o4N
+* DEHHALKAP0000oSf
+* DEHHALKAP0000o0i
+* DEHHALKAP0000o3e
+* DEHHALKA71L00070
+* DEHHALKAP0000vEQ
+* DEHHALKAP0000obI
+* DEHHALKA10001Yxt
+* DEHHALKA1do0009S
+* DEHHALKA90000BCT
+* DEHHALKAP0000nx3
+* DEHHALKA3uR000J1
+* DEHHALKAP0000omV
+* DEHHALKAP0000o0D
+* DEHHALKAP0000npz
+* DEHHALKAP0000vIP
+* DEHHALKAP0000p4d
+* DEHHALKAZg0000CK
+* DEHHALKAP0000o2k
+* DEHHALKA2SB000Ba
+* DEHHALKAP0000p71
+* DEHHALKA1ef000HN
+* DEHHALKAP0000nz8
+* DEHHALKA1nM000Nl
+* DEHHALKA2SJ000LU
+* DEHHALKAP0000ov4
+* DEHHALKAZp00006V
+* DEHHALKAP0000nsg
+* DEHHALKAP0000vYq
+* DEHHALKAP0000nwh
+* DEHHALKA5N00005U
+* DEHHALKAP0000v2j
+* DEHHALKA10004i2x
+* DEHHALKA1fc000Rb
+* DEHHALKAP0000ppT
+* DEHHALKAP0000w5H
+* DEHHALKA7lW00010
+* DEHHALKAP0000p2L
+* DEHHALKA3ow0007u
+* DEHHALKAP0000wVy
+* DEHHALKAP0000o1Z
+* DEHHALKAP0001JRH
+* DEHHALKA5u00002K
+* DEHHALKAP0005fDa
+* DEHHALKAP0000oy0
+* DEHHALKAP0000p7a
+* DEHHALKAP0000o45
+* DEHHALKA1ef000HF
+* DEHHALKAP0000oVA
+* DEHHALKAP0000o1K
+* DEHHALKA87F0009O
+* DEHHALKAP0000oPh
+* DEHHALKA10005SAS
+* DEHHALKAP0000ooW
+* DEHHALKAP0000w7V
+* DEHHALKAP0000o0w
+* DEHHALKAP0000o3W
+* DEHHALKAP0000vtE
+* DEHHALKA1fc000RT
+* DEHHALKA5qr000BI
+* DEHHALKAP0000oMz
+* DEHHALKAP0000nw2
+* DEHHALKA1lG000Qd
+* DEHHALKAP0000o4B
+* DEHHALKAP0000nzg
+* DEHHALKA2F200002
+* DEHHALKAP0000noE
+* DEHHALKAP0000nzi
+* DEHHALKAP0000p9I
+* DEHHALKA6EF0005l
+* DEHHALKAP0000o3L
+* DEHHALKAP0000nuQ
+* DEHHALKA10004cNT
+* DEHHALKAP0000o2Q
+* DEHHALKAP0000o41
+* DEHHALKAP0000o3F
+* DEHHALKAP0000nxy
+* DEHHALKAP0000p3Y
+* DEHHALKA90000BCk
+* DEHHALKA100064GJ
+* DEHHALKA90000BD1
+* DEHHALKAP0000o34
+* DEHHALKAP0000nvV
+* DEHHALKA2fJ000U5
+* DEHHALKAP0000o3i
+* DEHHALKA10006d45
+* DEHHALKAP0000o5S
+* DEHHALKAP0000oS6
+* DEHHALKA36s000EZ
+* DEHHALKA90000BCw
+* DEHHALKA1fc000RX
+* DEHHALKAP0000ott
+* DEHHALKA1ed000Dv
+* DEHHALKA6NY000KZ
+* DEHHALKAP0000p6i
+* DEHHALKAP0000oro
+* DEHHALKA7000CkBs
+* DEHHALKAP0000nvq
+* DEHHALKA2SJ000LZ
+* DEHHALKAP0000o30
+* DEHHALKAP0000noT
+* DEHHALKA90000BTZ
+* DEHHALKAP0000nxe
+* DEHHALKAP0000nx9
+* DEHHALKA1n3000fj
+* DEHHALKA87F0008I
+* DEHHALKA2c50007a
+* DEHHALKA1do0009I
+* DEHHALKAP0000oOa
+* DEHHALKA4gr0001q
+* DEHHALKAP0000o0R
+* DEHHALKA500005So
+* DEHHALKA1ed0009S
+* DEHHALKA5qr000BN
+* DEHHALKAP0000nw4
+* DEHHALKA71L0006v
+* DEHHALKA10003UIA
+* DEHHALKAP0000oMK
+* DEHHALKAP0000nwZ
+* DEHHALKAP0000np8
+* DEHHALKA1lD000KI
+* DEHHALKA90000BCv
+* DEHHALKA1ef000HJ
+* DEHHALKA2SJ000Lf
+* DEHHALKAP0000o4s
+* DEHHALKAP0000o1n
+* DEHHALKA90000BCQ
+
+Query time: 183.662 s
+
+
+// -----------------------------------------------------------------------------
+// 8. High-rise cluster detection — 500 m grid cells with multiple tall buildings
+//    Tall buildings (> 30 m) rarely stand alone — this identifies dense
+//    high-rise clusters useful for wind, shadow, and microclimate analysis.
+//    Each cell reports count, height stats, and sample building IDs.
+// -----------------------------------------------------------------------------
+
+High-rise cluster detection -- 500 m grid cells with multiple tall buildings Tall buildings (> 30 m) rarely stand alone -- this identifies dense high-rise clusters useful for wind, shadow, and microclimate analysis. Each cell reports count, height stats, and sample building IDs.
+
+```cypher
+MATCH (b:Building)
+WHERE b.measured_height > 30
+WITH floor(b.center_x / 500) AS cell_x, 
+     floor(b.center_y / 500) AS cell_y, 
+     b
+WITH cell_x, cell_y, 
+     count(b) AS building_count, 
+     avg(b.measured_height) AS avg_height, 
+     max(b.measured_height) AS max_height, 
+     collect(b.id) AS ids
+WHERE building_count > 1
+RETURN cell_x, cell_y, 
+       building_count, 
+       round(avg_height, 2) AS avg_height, 
+       max_height, 
+       ids[0..5] AS sample_ids
+ORDER BY building_count DESC
+```
+
+The high-rise cluster detection analysis identifies several dense areas of tall buildings (> 30 m) across the grid. The most significant clusters are as follows:
+
+**Densest Clusters (Highest Building Count):**
+*   **Cell (1132.0, 11868.0):** The densest cell with **48 buildings**, an average height of 33.24 m, and a maximum height of 41.601 m.
+*   **Cell (1131.0, 11867.0):** Contains **46 buildings** and features one of the tallest structures in the dataset with a maximum height of **121.641 m** (avg height: 36.96 m).
+*   **Cell (1131.0, 11868.0):** Contains **39 buildings** (avg height: 33.27 m, max height: 39.148 m).
+*   **Cell (1125.0, 11860.0):** Contains **38 buildings** (avg height: 39.93 m, max height: 51.207 m).
+
+**Tallest Clusters (Highest Height Stats):**
+*   **Cell (1129.0, 11870.0):** While it only contains 3 buildings, it is the tallest cluster by average, with an **average height of 122.55 m** and a **maximum height of 158.47 m**.
+*   **Cell (1125.0, 11854.0):** Contains 14 buildings with a significant maximum height of **128.966 m** (avg height: 52.65 m).
+*   **Cell (1137.0, 11859.0):** Contains 3 buildings with a maximum height of **109.401 m** (avg height: 66.36 m).
+*   **Cell (1130.0, 11870.0):** Contains 3 buildings with a maximum height of **107.929 m** (avg height: 56.4 m).
+
+**General Distribution:**
+There is a high concentration of dense high-rise activity centered around the coordinates **X: 1130–1132** and **Y: 11866–11869**, where multiple cells report building counts between 20 and 50. These areas are primary candidates for wind, shadow, and microclimate analysis.
+
+Query time: 61.094 s
+
+
+// -----------------------------------------------------------------------------
+// 9. Floor area ratio (FAR) proxy per 1 km grid cell
+//    FAR = total floor area / plot area. Here approximated as:
+//      gross floor area ≈ bbox_footprint × storeys_above_ground
+//    Aggregated to 1 km cells as a density planning indicator.
+//    High FAR cells indicate compact, high-intensity development.
+// -----------------------------------------------------------------------------
+
+Floor area ratio (FAR) proxy per 1 km grid cell FAR = total floor area / plot area. Here approximated as: gross floor area ca bbox_footprint x storeys_above_ground Aggregated to 1 km cells as a density planning indicator. High FAR cells indicate compact, high-intensity development.
+
+```cypher
+MATCH (b:Building)
+WHERE b.storeys_above_ground IS NOT NULL
+WITH b, (b.bbox_max_x - b.bbox_min_x) * (b.bbox_max_y - b.bbox_min_y) AS footprint
+WITH b, footprint * b.storeys_above_ground AS floor_area
+WITH floor(b.center_x / 1000) * 1000 AS grid_x, floor(b.center_y / 1000) * 1000 AS grid_y, sum(floor_area) AS total_floor_area
+RETURN grid_x, grid_y, total_floor_area / 1000000.0 AS far_proxy
+ORDER BY far_proxy DESC
+```
+
+The provided data lists the Floor Area Ratio (FAR) proxy for various 1 km grid cells, where higher values indicate more compact, high-intensity development.
+
+**Key Findings:**
+*   **Highest Intensity Development:** The cell at `grid_x: 565000.0, grid_y: 5934000.0` has the highest FAR proxy of **4.60**, followed by `grid_x: 565000.0, grid_y: 5933000.0` (**4.26**) and `grid_x: 567000.0, grid_y: 5933000.0` (**4.10**).
+*   **Lowest Intensity Development:** The lowest FAR proxy values are approximately **0.11**, found in cells such as `grid_x: 568000.0, grid_y: 5928000.0`, `grid_x: 569000.0, grid_y: 5925000.0`, and `grid_x: 560000.0, grid_y: 5928000.0`.
+
+Query time: 73.260 s
+
+
+
+// -----------------------------------------------------------------------------
+// 10. Ground elevation profile — flood risk and topographic context
+//     Hamburg has areas below sea level (dikes, port basins) down to −5 m
+//     and elevated areas up to 88 m (Alstertal/Bergedorf ridges).
+//     This query combines ground_z with building height to classify
+//     buildings by elevation zone — relevant for flood risk planning.
+// -----------------------------------------------------------------------------
+
+Ground elevation profile — flood risk and topographic context Hamburg has areas below sea level (dikes, port basins) down to −5 m and elevated areas up to 88 m (Alstertal/Bergedorf ridges). This query combines ground_z with building height to classify buildings by elevation zone -- relevant for flood risk planning.
+
+```cypher
+MATCH (b:Building)
+WITH b, 
+     b.ground_z AS ground, 
+     coalesce(b.measured_height, 0.0) AS height, 
+     (b.ground_z + coalesce(b.measured_height, 0.0)) AS roof_z
+WITH b, ground, height, roof_z,
+     CASE 
+       WHEN ground < 0 THEN 'Below Sea Level (Critical)'
+       WHEN ground < 5 THEN 'Low Elevation (High Risk)'
+       WHEN ground < 20 THEN 'Mid Elevation (Moderate Risk)'
+       ELSE 'High Elevation (Low Risk)'
+     END AS elevation_zone
+RETURN b.id AS building_id, 
+       ground AS ground_elevation, 
+       height AS building_height, 
+       roof_z AS roof_peak_elevation, 
+       elevation_zone
+ORDER BY ground ASC
+```
+
+All buildings in the provided result are classified within the **Below Sea Level (Critical)** elevation zone. The ground elevations range from a minimum of **-4.989 m** (Building ID: DEHHALKAJ0000vNh) to a maximum of **-0.05 m** (e.g., Building IDs: DEHHALKAP0000pQA, DEHHALKAJ00059dM, and DEHHALKAJ00017CG). This topographic context indicates a critical flood risk for these structures.
+
+Query time: 58.412 s
+

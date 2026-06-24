@@ -1,0 +1,294 @@
+// -----------------------------------------------------------------------------
+// 1. Hamburg at a glance
+//    How many buildings are in the dataset, how tall are they on average,
+//    and how many storeys does a typical Hamburg building have?
+// -----------------------------------------------------------------------------
+
+Hamburg at a glance How many buildings are in the dataset, how tall are they on average, and how many storeys does a typical Hamburg building have?
+ 
+```cypher
+MATCH (n:Building)
+WITH count(n) AS total_buildings, avg(n.measured_height) AS avg_height, avg(n.storeys_above_ground) AS avg_storeys
+RETURN total_buildings, round(avg_height, 1) AS avg_height_m, round(avg_storeys, 1) AS avg_storeys_above_ground
+```
+
+Hamburg has **388,267 buildings** in the dataset. On average, the buildings are **7.7 meters tall** and have **1.7 storeys above ground**.
+
+Query time: 63.988 s
+
+
+// -----------------------------------------------------------------------------
+// 2. What is Hamburg's most common roof material?
+//    Shows the distribution of predicted roof materials across all buildings,
+//    with percentage share.
+// -----------------------------------------------------------------------------
+
+What is Hamburg's most common roof material? Shows the distribution of predicted roof materials across all buildings, with percentage share.
+
+```cypher
+MATCH (b:Building)
+WHERE b.predictedroofmaterial IS NOT NULL
+WITH collect(b.predictedroofmaterial) AS materials
+UNWIND materials AS material
+WITH material, count(*) AS count
+WITH sum(count) AS total, collect({material: material, count: count}) AS data
+UNWIND data AS d
+RETURN d.material AS roof_material, d.count AS count, round(toFloat(d.count) / total * 100) AS percentage
+ORDER BY d.count DESC
+```
+
+Hamburg's most common roof material is **roof_tiles**, which accounts for **56.0%** of all buildings.
+
+Here is the full distribution of predicted roof materials:
+- **roof_tiles**: 56.0% (108,659 buildings)
+- **tar_paper**: 26.0% (51,435 buildings)
+- **concrete**: 12.0% (22,923 buildings)
+- **metal**: 4.0% (8,550 buildings)
+- **glass**: 2.0% (3,232 buildings)
+
+Query time: 19.893 s
+
+
+
+// -----------------------------------------------------------------------------
+// 3. What are the 20 tallest buildings in Hamburg?
+//    Good to spot landmarks, towers, and high-rises.
+// -----------------------------------------------------------------------------
+
+What are the 20 tallest buildings in Hamburg? Good to spot landmarks, towers, and high-rises.
+
+```cypher
+MATCH (b:Building)
+WHERE b.measured_height IS NOT NULL
+RETURN b.id, b.name, b.measured_height, b.gml_name
+ORDER BY toFloat(b.measured_height) DESC
+LIMIT 20
+```
+
+Here are the 20 tallest buildings in Hamburg based on the measured height:
+
+1. **DEHHALKAJ0000yvD** - 158.47 m
+2. **DEHHALKAJ0004qT4** - 158.256 m
+3. **DEHHALKAP0007WG0** - 139.754 m
+4. **DEHHALKA1FW000LN** - 128.966 m
+5. **Mahnmal St. Nikolai (DEHHALKAJ0000ovW)** - 121.641 m
+6. **DEHHALKAn0006JXQ** - 111.334 m
+7. **DEHHALKA9dh0006P** - 109.401 m
+8. **DEHHALKAJ0000yIP** - 107.929 m
+9. **Kraftwerk Moorburg (DEHHALKA1FW000K6)** - 99.507 m
+10. **DEHHALKA10006bd3** - 97.196 m
+11. **Elbphilharmonie (DEHHALKAJ0000pTk)** - 96.328 m
+12. **DEHHALKAP0007cPo** - 94.555 m
+13. **Museum (DEHHALKAV0000fCD)** - 93.834 m
+14. **DEHHALKA10007wzP** - 88.963 m
+15. **DEHHALKAJ000104O** - 88.438 m
+16. **DEHHALKA6Ec0008g** - 87.124 m
+17. **St.-Katharinen-Kirche (DEHHALKAJ0000pO5)** - 83.843 m
+18. **DEHHALKAJ0000zOL** - 81.731 m
+19. **DEHHALKAJ0000p74** - 80.985 m
+20. **DEHHALKAP0007cG6** - 80.406 m
+
+Query time: 85.647 s
+
+
+
+// -----------------------------------------------------------------------------
+// 4. Which roof shapes are most popular in Hamburg?
+//    Flat, Gable, Hip, Mono-Pitch — shows the architectural character
+//    of different neighbourhoods.
+// -----------------------------------------------------------------------------
+
+Which roof shapes are most popular in Hamburg? Flat, Gable, Hip, Mono-Pitch -- shows the architectural character of different neighbourhoods.
+
+```cypher
+MATCH (b:Building)-[:HAS_ROOF_TYPE]->(rt:RoofType)
+WITH rt.name AS roof_shape, count(b) AS building_count
+ORDER BY building_count DESC
+RETURN roof_shape, building_count
+```
+
+The most popular roof shapes in Hamburg are:
+
+1. **Flat Roof** – 169,964 buildings
+2. **Gable Roof** – 162,368 buildings
+3. **Hip Roof** – 29,990 buildings
+4. **Mono-Pitch Roof** – 21,202 buildings
+
+These four roof shapes dominate the architectural character of Hamburg's neighborhoods.
+
+Query time: 50.280 s
+
+
+// -----------------------------------------------------------------------------
+// 5. Solar panel potential — flat-roofed buildings taller than 5 m
+//    Flat roofs on larger buildings are the easiest surfaces for solar
+//    installations. This query finds them and ranks by roof area proxy (height).
+// -----------------------------------------------------------------------------
+
+Solar panel potential -- flat-roofed buildings taller than 5 m Flat roofs on larger buildings are the easiest surfaces for solar installations. This query finds them and ranks by roof area proxy (height).
+
+```cypher
+MATCH (b:Building)-[:HAS_ROOF_TYPE]->(rt:RoofType {code: '1000'})
+WHERE b.measured_height > 5
+RETURN b.id AS building_id, b.name AS building_name, b.measured_height AS height_m, b.ground_z AS ground_z
+ORDER BY b.measured_height DESC
+```
+
+The query returned a list of buildings with their respective heights and ground elevations. To determine the solar panel potential for flat-roofed buildings taller than 5 meters, we can use the height as a proxy for roof area (assuming flat roofs are common on taller buildings).
+
+Here are the top buildings ranked by height (roof area proxy):
+
+1. **DEHHALKAJ0000yvD** - Height: 158.47 m, Ground Z: 20.104 m
+2. **DEHHALKAJ0004qT4** - Height: 158.256 m, Ground Z: 20.32 m
+3. **DEHHALKA1FW000LN** - Height: 128.966 m, Ground Z: 7.63 m
+4. **DEHHALKAn0006JXQ** - Height: 111.334 m, Ground Z: 37.836 m
+5. **DEHHALKA9dh0006P** - Height: 109.401 m, Ground Z: 5.212 m
+6. **DEHHALKAJ0000yIP** - Height: 107.929 m, Ground Z: 11.6 m
+7. **DEHHALKA1FW000K6** - Height: 99.507 m, Ground Z: 7.542 m
+8. **DEHHALKA10006bd3** - Height: 97.196 m, Ground Z: 13.184 m
+9. **DEHHALKAP0007cPo** - Height: 94.555 m, Ground Z: 5.859 m
+10. **DEHHALKAV0000fCD** - Height: 93.834 m, Ground Z: 9.061 m
+
+All buildings in the list are taller than 5 meters, making them potential candidates for solar panel installations on their flat roofs. The ranking is based on height as a proxy for roof area.
+
+Query time: 127.381 s
+
+// -----------------------------------------------------------------------------
+// 6. How many buildings are there per storey count?
+//    Shows whether Hamburg is a city of single-family houses or
+//    dense apartment blocks.
+// -----------------------------------------------------------------------------
+
+How many buildings are there per storey count? Shows whether Hamburg is a city of single-family houses or dense apartment blocks.
+
+```cypher
+MATCH (b:Building)
+WITH b.storeys_above_ground AS storeys, count(b) AS count
+RETURN storeys, count
+ORDER BY storeys
+```
+
+Here is the count of buildings per storey in Hamburg:
+
+- **1 storey:** 244,389 buildings
+- **2 storeys:** 75,353 buildings
+- **3 storeys:** 24,071 buildings
+- **4 storeys:** 16,698 buildings
+- **5 storeys:** 9,056 buildings
+- **6 storeys:** 3,158 buildings
+- **7 storeys:** 1,208 buildings
+- **8 storeys:** 695 buildings
+- **9 storeys:** 470 buildings
+- **10 storeys:** 274 buildings
+- **11 storeys:** 62 buildings
+- **12 storeys:** 58 buildings
+- **13 storeys:** 70 buildings
+- **14 storeys:** 51 buildings
+- **15 storeys:** 32 buildings
+- **16 storeys:** 39 buildings
+- **17 storeys:** 15 buildings
+- **18 storeys:** 13 buildings
+- **19 storeys:** 6 buildings
+- **20 storeys:** 4 buildings
+- **21 storeys:** 6 buildings
+- **22 storeys:** 7 buildings
+- **23 storeys:** 2 buildings
+- **24 storeys:** 2 buildings
+- **26 storeys:** 3 buildings
+- **27 storeys:** 1 building
+- **29 storeys:** 1 building
+- **Unknown storeys:** 12,523 buildings
+
+### Interpretation:
+Hamburg is **dominated by single-family houses or low-rise buildings**, with **~244K 1-storey buildings** (likely detached/semi-detached houses) and **~75K 2-storey buildings**. Higher storey counts (4+) are far less common, indicating that **dense apartment blocks are not the primary housing type** in the city. The data suggests a **suburban or low-density urban structure** with a significant number of small residential buildings.
+
+Query time: 77.248 s
+
+
+// -----------------------------------------------------------------------------
+// 7. Which buildings have glass roofs?
+//    Glass roofs typically indicate modern commercial buildings,
+//    train stations, shopping centres, or public spaces.
+// -----------------------------------------------------------------------------
+
+Which buildings have glass roofs? Glass roofs typically indicate modern commercial buildings, train stations, shopping centres, or public spaces.
+
+```cypher
+MATCH (b:Building)-[:HAS_ROOF_TYPE]->(rt:RoofType)
+WHERE b.predictedroofmaterial = 'glass'
+RETURN b.id AS building_id, b.name AS building_name, b.measured_height AS height_m, b.function_code AS function, rt.name AS roof_type, rt.code AS roof_type_code
+ORDER BY b.measured_height DESC
+```
+
+No results found.
+
+Query time: 114.456 s
+
+
+
+// -----------------------------------------------------------------------------
+// 8. Hamburg high-rises — buildings taller than 50 meters.
+//    How many skyscrapers and tower blocks does Hamburg have?
+// -----------------------------------------------------------------------------
+    
+Hamburg high-rises -- buildings taller than 50 meters. How many skyscrapers and tower blocks does Hamburg have?
+
+```cypher
+MATCH (b:Building)
+WHERE b.measured_height > 50
+RETURN count(b) AS high_rise_count
+```
+
+Hamburg has 149 high-rises (buildings taller than 50 meters).
+
+Query time: 41.618 s
+
+
+
+// -----------------------------------------------------------------------------
+// 9. Buildings with mixed roof materials
+//    Some buildings have more than one material on the roof — interesting for
+//    understanding complex roof landscapes or renovation history.
+// -----------------------------------------------------------------------------
+
+Buildings with mixed roof materials Some buildings have more than one material on the roof — interesting for understanding complex roof landscapes or renovation history.
+
+```cypher
+MATCH (b:Building)
+WHERE b.predictedroofmaterial CONTAINS ','
+RETURN b.id, b.predictedroofmaterial, b.measured_height, b.storeys_above_ground
+ORDER BY b.id
+```
+
+No results found.
+
+Query time: 42.743 s
+
+
+
+// -----------------------------------------------------------------------------
+// 10. Buildings in HafenCity — Hamburg's modern harbour district
+//     Filters by bounding box in ETRS89 UTM32 coordinates (meters).
+//     Shows roof materials and height — great for exploring a specific
+//     neighbourhood's architectural character.
+// -----------------------------------------------------------------------------
+
+Buildings in HafenCity -- Hamburg's modern harbour district Filters by bounding box in ETRS89 UTM32 coordinates (meters). Shows roof materials and height -- great for exploring a specific neighbourhood's architectural character.
+
+```cypher
+MATCH (ds:Dataset {name: 'hamburg_hafencity.gml'})
+CALL spatial.bbox('features',
+     {x: 566500.0, y: 5932800.0},
+     {x: 567000.0, y: 5933200.0}) YIELD node AS b
+WHERE b:Building
+RETURN b.id AS building_id, b.name AS name, b.measured_height AS height_m,
+       b.predictedroofmaterial AS roof_material, b.roof_type_code AS roof_type,
+       b.function_code AS function
+ORDER BY b.measured_height DESC
+```
+
+No results found.
+
+Query time: 50.399 s
+
+

@@ -1,0 +1,13 @@
+* text=auto eol=lf
+
+# Binary assets — never normalize line endings
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.tif  binary
+*.tfw  binary
+*.pdf  binary
+*.jar  binary
+*.glb  binary
+*.pnts binary

@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Building Footprints — 100 m Proximity</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, sans-serif;
+      background: #f0f0f0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 24px 16px;
+      gap: 14px;
+    }
+    h2 { font-size: 1.2rem; color: #222; }
+    p  { font-size: 0.85rem; color: #555; max-width: 680px; text-align: center; }
+    canvas {
+      border: 1px solid #bbb;
+      background: #fff;
+      cursor: crosshair;
+      box-shadow: 0 2px 8px rgba(0,0,0,.12);
+    }
+    .legend {
+      display: flex;
+      gap: 22px;
+      font-size: 0.82rem;
+      color: #333;
+    }
+    .legend-item { display: flex; align-items: center; gap: 7px; }
+    .swatch {
+      width: 22px; height: 14px;
+      border-radius: 3px;
+      border: 2px solid;
+      flex-shrink: 0;
+    }
+    #tooltip {
+      position: fixed;
+      background: rgba(30,30,30,.88);
+      color: #fff;
+      padding: 7px 11px;
+      border-radius: 5px;
+      font-size: 0.78rem;
+      pointer-events: none;
+      display: none;
+      max-width: 280px;
+      line-height: 1.5;
+      z-index: 999;
+    }
+    #scale-bar {
+      font-size: 0.75rem;
+      color: #555;
+    }
+  </style>
+</head>
+<body>
+
+<h2>Building Footprints — HafenCity Hamburg</h2>
+<p>
+  Reference building <strong>DEHHALKA4IB000Cv</strong> (green) with 100 m search radius (dashed circle).
+  Two neighbouring buildings within 100 m are shown in red.
+</p>
+
+<canvas id="c" width="680" height="680"></canvas>
+
+<div class="legend">
+  <div class="legend-item">
+    <div class="swatch" style="background:#4caf5066;border-color:#2e7d32"></div>
+    Reference building
+  </div>
+  <div class="legend-item">
+    <div class="swatch" style="background:#f4433666;border-color:#b71c1c"></div>
+    Neighbouring buildings (&le;100 m)
+  </div>
+  <div class="legend-item">
+    <div class="swatch" style="background:none;border-color:#000;border-style:dashed"></div>
+    100 m radius
+  </div>
+</div>
+
+<div id="tooltip"></div>
+
+<script>
+const BUILDINGS = {
+  "DEHHALKA4IB000Cv": {
+    pts: [
+      [566429.291,5932827.202],[566432.108,5932828.46],[566427.163,5932839.533],
+      [566427.572,5932839.817],[566450.448,5932855.683],[566457.79,5932838.884],
+      [566454.783,5932837.57],[566459.557,5932826.642],[566436.623,5932810.406],
+      [566429.291,5932827.202]
+    ],
+    cx: 566443.36, cy: 5932833.0445,
+    h: 72.94, storeys: 17,
+    role: "reference",
+    label: "DEHHALKA4IB000Cv",
+    desc: "Trade & Services, 72.9 m, 17 storeys, Flat Roof"
+  },
+  "DEHHALKA4IB000Ce": {
+    pts: [
+      [566448.44,5932886.841],[566449.417,5932866.51],[566409.696,5932880.012],
+      [566400.911,5932899.786],[566448.44,5932886.841]
+    ],
+    cx: 566425.164, cy: 5932883.148,
+    h: 32.799, storeys: 9,
+    role: "neighbour",
+    label: "DEHHALKA4IB000Ce",
+    desc: "Residential + Trade & Services, 32.8 m, 9 storeys, Flat Roof"
+  },
+  "DEHHALKA4IB000Cj": {
+    pts: [
+      [566500.885,5932861.898],[566462.554,5932875.89],[566457.948,5932888.704],
+      [566456.586,5932892.559],[566456.519,5932892.75],[566521.477,5932884.307],
+      [566527.137,5932871.704],[566500.885,5932861.898]
+    ],
+    cx: 566491.828, cy: 5932877.324,
+    h: 25.93, storeys: 7,
+    role: "neighbour",
+    label: "DEHHALKA4IB000Cj",
+    desc: "Trade & Services, 25.9 m, 7 storeys, Flat Roof"
+  }
+};
+
+const REF_ID = "DEHHALKA4IB000Cv";
+const RADIUS = 100; // metres
+
+// ── Compute world bounding box ────────────────────────────────────────────────
+const ref = BUILDINGS[REF_ID];
+const allX = [], allY = [];
+for (const b of Object.values(BUILDINGS)) {
+  b.pts.forEach(([x,y]) => { allX.push(x); allY.push(y); });
+}
+// ensure circle fits
+allX.push(ref.cx - RADIUS - 20, ref.cx + RADIUS + 20);
+allY.push(ref.cy - RADIUS - 20, ref.cy + RADIUS + 20);
+
+const wxMin = Math.min(...allX), wxMax = Math.max(...allX);
+const wyMin = Math.min(...allY), wyMax = Math.max(...allY);
+const wW = wxMax - wxMin, wH = wyMax - wyMin;
+
+// ── Canvas setup ──────────────────────────────────────────────────────────────
+const canvas = document.getElementById("c");
+const W = canvas.width, H = canvas.height;
+const PAD = 40;
+
+const scaleX = (W - 2*PAD) / wW;
+const scaleY = (H - 2*PAD) / wH;
+const scale  = Math.min(scaleX, scaleY);
+
+// offset to centre within canvas
+const drawW = wW * scale, drawH = wH * scale;
+const offX = PAD + (W - 2*PAD - drawW) / 2;
+const offY = PAD + (H - 2*PAD - drawH) / 2;
+
+function toScreen(wx, wy) {
+  return [
+    offX + (wx - wxMin) * scale,
+    H - offY - (wy - wyMin) * scale   // flip Y
+  ];
+}
+
+// ── Draw ──────────────────────────────────────────────────────────────────────
+const ctx = canvas.getContext("2d");
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+
+  // background grid / graticule
+  ctx.strokeStyle = "#e8e8e8";
+  ctx.lineWidth = 1;
+  const gridStep = 50; // 50 m intervals
+  const gxStart = Math.ceil(wxMin / gridStep) * gridStep;
+  const gyStart = Math.ceil(wyMin / gridStep) * gridStep;
+  for (let gx = gxStart; gx <= wxMax; gx += gridStep) {
+    const [sx] = toScreen(gx, wyMin);
+    ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, H); ctx.stroke();
+  }
+  for (let gy = gyStart; gy <= wyMax; gy += gridStep) {
+    const [, sy] = toScreen(wxMin, gy);
+    ctx.beginPath(); ctx.moveTo(0, sy); ctx.lineTo(W, sy); ctx.stroke();
+  }
+
+  // 100 m radius circle
+  const [rcx, rcy] = toScreen(ref.cx, ref.cy);
+  const screenR = RADIUS * scale;
+  ctx.beginPath();
+  ctx.arc(rcx, rcy, screenR, 0, 2*Math.PI);
+  ctx.setLineDash([7, 5]);
+  ctx.strokeStyle = "#000";
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // radius label
+  ctx.fillStyle = "#333";
+  ctx.font = "11px system-ui";
+  ctx.textAlign = "center";
+  ctx.fillText("r = 100 m", rcx, rcy - screenR - 6);
+
+  // buildings
+  for (const [id, b] of Object.entries(BUILDINGS)) {
+    const isRef = b.role === "reference";
+    const fillColor   = isRef ? "rgba(76,175,80,0.4)"  : "rgba(244,67,54,0.4)";
+    const strokeColor = isRef ? "#2e7d32" : "#b71c1c";
+
+    ctx.beginPath();
+    b.pts.forEach(([wx, wy], i) => {
+      const [sx, sy] = toScreen(wx, wy);
+      i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
+    });
+    ctx.closePath();
+    ctx.fillStyle = fillColor;
+    ctx.fill();
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // building label
+    const [lx, ly] = toScreen(b.cx, b.cy);
+    ctx.fillStyle = "#111";
+    ctx.font = "bold 10px system-ui";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(b.label.slice(-4), lx, ly - 8);
+    ctx.font = "9px system-ui";
+    ctx.fillStyle = "#444";
+    ctx.fillText(`${b.h} m`, lx, ly + 5);
+  }
+
+  // scale bar — 50 m
+  const barLen = 50 * scale;
+  const bx = PAD, by = H - 18;
+  ctx.strokeStyle = "#333";
+  ctx.lineWidth = 2;
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.moveTo(bx, by); ctx.lineTo(bx + barLen, by);
+  ctx.moveTo(bx, by - 4); ctx.lineTo(bx, by + 4);
+  ctx.moveTo(bx + barLen, by - 4); ctx.lineTo(bx + barLen, by + 4);
+  ctx.stroke();
+  ctx.fillStyle = "#333";
+  ctx.font = "11px system-ui";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "alphabetic";
+  ctx.fillText("50 m", bx + barLen / 2, by - 7);
+
+  // compass N
+  ctx.font = "bold 13px system-ui";
+  ctx.fillStyle = "#333";
+  ctx.textAlign = "left";
+  ctx.fillText("N ↑", W - PAD - 22, PAD + 2);
+}
+
+draw();
+
+// ── Tooltip on hover ──────────────────────────────────────────────────────────
+const tooltip = document.getElementById("tooltip");
+
+function ptInPoly(px, py, pts) {
+  let inside = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const [xi, yi] = pts[i], [xj, yj] = pts[j];
+    if ((yi > py) !== (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+canvas.addEventListener("mousemove", e => {
+  const rect = canvas.getBoundingClientRect();
+  const mx = e.clientX - rect.left, my = e.clientY - rect.top;
+
+  for (const [id, b] of Object.entries(BUILDINGS)) {
+    const screenPts = b.pts.map(([wx, wy]) => toScreen(wx, wy));
+    if (ptInPoly(mx, my, screenPts)) {
+      const dist = id === REF_ID ? "— (reference)" :
+        Math.round(Math.hypot(b.cx - ref.cx, b.cy - ref.cy)) + " m from reference";
+      tooltip.innerHTML =
+        `<strong>${id}</strong><br>${b.desc}<br>Distance: ${dist}`;
+      tooltip.style.display = "block";
+      tooltip.style.left = (e.clientX + 14) + "px";
+      tooltip.style.top  = (e.clientY - 10) + "px";
+      return;
+    }
+  }
+  tooltip.style.display = "none";
+});
+
+canvas.addEventListener("mouseleave", () => { tooltip.style.display = "none"; });
+</script>
+</body>
+</html>
