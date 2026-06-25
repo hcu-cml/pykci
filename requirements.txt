@@ -1,0 +1,18 @@
+# Core — CityGML parsing, Neo4j ingest/export, 3D Tiles
+lxml
+neo4j
+pyproj
+mapbox-earcut
+numpy
+
+# Optional — clean window/door holes in 3D Tiles wall geometry
+shapely
+
+# LangChain NL-query layer (db-llm/)
+langchain
+langchain-community
+langchain-ollama
+langchain-neo4j
+
+# Commercial LLM backend (Claude)
+langchain-anthropic
