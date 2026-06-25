@@ -1,12 +1,16 @@
-# ── Start background services (Neo4j + Ollama) ──────────────────────────────
+# ── Option A: Neo4j only (ingestion + export, no NL queries) ─────────────────
+docker compose up -d neo4j
+# Ready when http://localhost:7474 responds. Run ingest/export scripts now.
+
+# ── Option B: Neo4j + Ollama (ingestion + NL queries via db-llm/) ────────────
 docker compose up -d neo4j ollama
 
-# ── Pull LLM model (first time only, ~9 GB) ──────────────────────────────────
+# Pull LLM model (first time only, ~9 GB):
 docker compose exec ollama ollama pull deepseek-r1:14b
 # Lighter alternative (~4.7 GB):
 # docker compose exec ollama ollama pull deepseek-r1:7b
 
-# ── Start interactive query session ──────────────────────────────────────────
+# Start interactive query session:
 docker compose run --rm llm-query
 # Override model:
 # docker compose run --rm llm-query --model deepseek-r1:7b
