@@ -216,6 +216,24 @@ All concrete feature types (`Building` + all `CityObject` subtypes) that carry a
 (TerrainIntersection)      -[:HAS_LINE {order}]->               (GeometryLineString)
 ```
 
+── OSM enrichment (see [OSM_INTEGRATION.md](OSM_INTEGRATION.md)) ──────────────────
+(OsmFeature)               -[:PART_OF]->                       (Dataset)
+(OsmFeature)               -[:HAS_FOOTPRINT {order}]->         (GeometryPolygon)
+(OsmFeature)               -[:HAS_LOD_SURFACE {order}]->       (GeometryLineString)  # OSM lines
+(OsmFeature)               -[:HAS_OSM_MEMBER {role, order}]->  (OsmFeature)          # relations
+(Building|CityObject)      -[:ENRICHED_BY {overlap_ratio, jaccard,
+                              intersection_area, match_type, is_primary}]-> (OsmFeature)
+(Building)                 -[:HAS_POI {distance_m}]->          (OsmFeature)          # point POIs
+
+`OsmFeature` nodes are written by [`ingest_osm.py`](ingest_osm.py), which enriches the
+graph with OpenStreetMap data over the same area without overwriting authoritative
+CityGML/ALKIS attributes (OSM-derived scalars use an `osm_*` prefix; the `OsmFeature`
+node + `ENRICHED_BY` edge are the provenance "hint"). The 1:1 / 1:n / n:1 / n:m
+building-footprint correspondences are resolved by an overlap-graph + connected-component
+method and indexed in a separate `osm_features` R-tree layer. See
+[OSM_INTEGRATION.md](OSM_INTEGRATION.md) for the full concept, matching strategy, and
+attribution rules.
+
 **XLinks are explicit, marked edges.** A CityGML `xlink:href` geometry reference
 becomes a real `HAS_SURFACE_MEMBER` / `HAS_POLYGON` edge to the shared target node
 (merged on `gml:id`), with **`via_xlink = true`** so export re-emits `xlink:href`
@@ -483,6 +501,8 @@ The Neo4j Spatial plugin (https://github.com/neo4j-contrib/spatial) is installed
 - A WKT spatial layer named **`features`** is created once via `CALL spatial.addWKTLayer('features', 'bbox_wkt')`.
 - All `Building` and `CityObject` nodes with a valid `bbox_wkt` are registered in the layer via `CALL spatial.addNodes('features', nodes)`, inserting their bounding-box polygons into the R-tree.
 - Re-running the ingest script is safe: the layer is only created if absent, and `spatial.addNodes` re-indexes nodes in place.
+
+**OSM features use a separate layer `osm_features`.** When `ingest_osm.py` has been run, all `OsmFeature` nodes are indexed in their own WKT layer **`osm_features`** (same `bbox_wkt` property), kept distinct from `features` so CityGML spatial queries are unaffected. Query OSM by location with `CALL spatial.intersects('osm_features', <wkt>)` / `spatial.bbox('osm_features', …)`; query CityGML with `'features'`. See [OSM_INTEGRATION.md](OSM_INTEGRATION.md) §5.
 
 #### Spatial layer procedures (reference)
 
@@ -785,6 +805,7 @@ bbox min = `{x: 566500.0, y: 5932800.0}` · bbox max = `{x: 567000.0, y: 5933200
 - For a bounding-box area query use `CALL spatial.bbox('features', lowerLeft, upperRight) YIELD node`.
 - For an intersection / overlap query use `CALL spatial.intersects('features', wkt) YIELD node`.
 - For a radius query use `CALL spatial.withinDistance('features', point, distKm) YIELD node`.
+- For **OSM** features (`OsmFeature`), use the **`osm_features`** layer with the same procedures (e.g. `CALL spatial.intersects('osm_features', wkt)`); the CityGML `features` layer contains no OSM nodes and vice versa.
 
 **Never substitute a full `MATCH (b:Building) WHERE b.center_y >= … AND b.center_y <= …`** — that forces a complete label scan. Always prefer the spatial procedures above and filter further in `WHERE` clauses on the yielded nodes (e.g. `WHERE node:Building` or `WHERE node.feature_type = 'Road'`).
 
@@ -1001,6 +1022,32 @@ The script is **idempotent** — re-running it merges into existing nodes via `M
 
 **Known namespace requirement:**  
 `creationDate` is in the CityGML core namespace (`http://www.opengis.net/citygml/2.0`), registered in the script's `NS` dict as `"cg"`. Use `cg:creationDate` in any xpath lookup — plain `"creationDate"` without a prefix will silently fail.
+
+---
+
+### `ingest_osm.py` — OpenStreetMap → pykci enrichment
+
+Enriches an existing pykci graph with OpenStreetMap data over the same area (run **after**
+`ingest_citygml.py`). See [OSM_INTEGRATION.md](OSM_INTEGRATION.md) for the full concept,
+matching strategy, and attribution rules.
+
+```bash
+python3 ingest_osm.py input/osm/<city>.osm.pbf            # auto-detects the single Dataset
+python3 ingest_osm.py input/osm/<city>.osm.pbf --dataset <name>   # if >1 dataset present
+python3 ingest_osm.py input/osm/<city>.osm.pbf --buffer 10 --overlap-threshold 0.3
+```
+
+- Input: an `.osm.pbf` file; reads the target `Dataset`'s CRS + bbox from the graph, clips
+  the PBF to that tile (+ `--buffer` m), and reprojects WGS84 → the dataset CRS.
+- Output: one `(:OsmFeature)` node per OSM object (carrying all tags + geometry, `osm_*`
+  scalars, `source='osm:<file>'`), `(:Building|:CityObject)-[:ENRICHED_BY]->(:OsmFeature)`
+  matches across the 1:1 / 1:n / n:1 / n:m footprint cases, `HAS_POI` for point POIs, and a
+  separate `osm_features` R-tree layer. **Non-destructive**: OSM never overwrites
+  authoritative attributes (OSM-derived values use the `osm_` prefix; OSM `name` → `osm_name`).
+- **Idempotent**: each run first resets prior OSM data, so changed `--buffer` /
+  `--overlap-threshold` re-runs cleanly. CityGML nodes/geometry are never touched.
+- Reads the PBF via the `ogr2ogr` CLI (GDAL) — no OGR Python binding required; uses
+  `shapely` + `pyproj` for geometry/CRS.
 
 ---
 

@@ -49,6 +49,7 @@ From the graph you can:
 | 🌐 **3D in the browser** | Exports OGC **3D Tiles 1.1**, including window/door openings cut as holes in walls, viewable in CesiumJS. |
 | 🕸️ **Graph viewers** | Self-contained HTML: a 2D force-directed graph and a combined 3D-Tiles-plus-graph view, both with light/dark mode. |
 | 📍 **Spatial features** | Neo4j Spatial R-tree index, `NEARBY_BUILDING` proximity edges, and GDS Louvain community detection. |
+| 🗺️ **OpenStreetMap enrichment** | Optional non-destructive enrichment from `.osm.pbf`: building use, names, addresses, heights, roof shapes, POIs, land use, water, vegetation and the street network, matched to pykci features across 1:1/1:n/n:1/n:m footprints with full provenance ([OSM_INTEGRATION.md](OSM_INTEGRATION.md)). |
 | 📊 **Benchmarked** | Compared against 3DCityKG and 3DCityDB v5 on a 6.93 GB Hamburg LoD2 dataset under a fixed resource envelope (see [Benchmarks](#benchmarks)). |
 
 ---
@@ -141,12 +142,14 @@ docker compose down -v
 
 ```bash
 pip install lxml neo4j pyproj mapbox-earcut numpy
-pip install shapely                                                        # optional: clean window/door holes in 3D Tiles
+pip install shapely                                                        # required for ingest_osm.py; also cleans window/door holes in 3D Tiles
 pip install langchain langchain-community langchain-ollama langchain-neo4j  # NL queries (local)
 pip install langchain-anthropic                                            # NL queries (Claude)
 ```
 
 For the Claude backend, set an API key: `export ANTHROPIC_API_KEY=sk-ant-...` (PowerShell: `$env:ANTHROPIC_API_KEY = "sk-ant-..."`).
+
+**OpenStreetMap enrichment** ([`ingest_osm.py`](ingest_osm.py)) additionally needs **GDAL's `ogr2ogr` CLI** on your PATH (e.g. `brew install gdal` / `apt install gdal-bin`) plus `shapely` and `pyproj` (above) — the OGR Python binding is **not** required.
 
 ### Neo4j plugins
 
@@ -183,6 +186,19 @@ Parses a CityGML 2.0 file and writes all supported modules into Neo4j. The scrip
 - Runs **GDS Louvain** community detection and writes `community_id` onto each `Building` node
 
 Output: nodes and relationships in Neo4j + `output/<stem>_summary.md`
+
+### 1b · Enrich with OpenStreetMap (optional)
+
+```bash
+python ingest_osm.py input/osm/<city>.osm.pbf            # run after ingest_citygml.py
+python ingest_osm.py input/osm/<city>.osm.pbf --buffer 10 --overlap-threshold 0.3
+```
+
+Enriches the graph with OpenStreetMap data over the same area. Reads the target `Dataset`'s CRS + bounding box from the graph, clips the `.osm.pbf` to that tile (+ buffer) and reprojects WGS84 → the dataset CRS. Adds one `(:OsmFeature)` node per OSM object (all tags + geometry, `osm_*` scalars, OSM building/landuse/water/vegetation/road/POI/furniture), links them to pykci features with `(:Building|:CityObject)-[:ENRICHED_BY {overlap_ratio, jaccard, is_primary, match_type}]->(:OsmFeature)` resolving the **1:1 / 1:n / n:1 / n:m** building-footprint correspondences via an overlap-graph + connected-component method, and attaches point POIs with `HAS_POI`. Indexed in a separate `osm_features` R-tree layer.
+
+**Non-destructive & idempotent:** OSM never overwrites authoritative CityGML/ALKIS attributes (OSM values use the `osm_` prefix; the `OsmFeature` node + `ENRICHED_BY` edge are the provenance hint), and each run resets prior OSM data so it can be re-run with new parameters. Uses the `ogr2ogr` CLI (GDAL) + `shapely` + `pyproj`. See **[OSM_INTEGRATION.md](OSM_INTEGRATION.md)** for the full concept, matching strategy, and tuning.
+
+Output: `OsmFeature` nodes + `ENRICHED_BY`/`HAS_POI` edges in Neo4j + `output/<stem>_osm_summary.md`
 
 ### 2 · Export Neo4j → CityGML
 
@@ -412,6 +428,8 @@ CityGML 2.0 defines 14 modules. 10 are ingested; the remaining 4 are not stored 
 
 All concrete feature types (`Building` + all `CityObject` subtypes) that carry a `gml:boundedBy` envelope are registered in the **Neo4j Spatial R-tree** (layer `features`) after ingestion, enabling `spatial.bbox`, `spatial.intersects`, and `spatial.withinDistance` queries across the entire dataset.
 
+**OpenStreetMap enrichment (optional).** After CityGML ingestion, [`ingest_osm.py`](ingest_osm.py) adds `(:OsmFeature)` nodes linked to pykci features via `ENRICHED_BY` (and `HAS_POI` for point POIs), with OSM-derived attributes kept under an `osm_` prefix so authoritative CityGML/ALKIS values are never overwritten. OSM features are indexed in a separate `osm_features` R-tree layer. See [OSM_INTEGRATION.md](OSM_INTEGRATION.md).
+
 ### Schema
 
 All non-Building feature nodes carry two labels: the module-specific label (e.g. `Bridge`) and the shared base label `CityObject`. Query either way:
@@ -574,7 +592,8 @@ In this run, pykci produced the smallest of the two graphs and retained its R-tr
 ```text
 pykci/
 ├── input/
-│   └── citygml/          ← place *.gml files here (read-only)
+│   ├── citygml/          ← place *.gml files here (read-only)
+│   └── osm/              ← place *.osm.pbf files here (read-only)
 ├── output/
 │   ├── citygml/          ← exported GML files
 │   ├── 3dtiles/          ← tileset.json, tiles/city.glb, serve.py
@@ -590,10 +609,12 @@ pykci/
 │   └── tool_comparison/  ← pykci vs 3DCityKG vs 3DCityDB benchmark (report + run_benchmark.sh)
 ├── resources/            ← project logo and brand assets
 ├── ingest_citygml.py     ← CityGML → Neo4j
+├── ingest_osm.py         ← OpenStreetMap → Neo4j enrichment
 ├── export_citygml.py     ← Neo4j → CityGML
 ├── build_3dtiles.py      ← CityGML → 3D Tiles
 ├── build_graph_pointcloud.py  ← Neo4j graph → 3D Tiles point-cloud
 ├── GRAPH.md              ← Full graph schema, Cypher rules, ALKIS codes
+├── OSM_INTEGRATION.md    ← OSM enrichment concept, matching & schema
 ├── CYPHER.md             ← Cypher 25 + Neo4j Spatial reference
 └── README.md
 ```
@@ -605,6 +626,7 @@ pykci/
 | File | Audience | Contents |
 | ---- | -------- | -------- |
 | [`GRAPH.md`](GRAPH.md) | Agents / developers | Full graph schema, ingestion rules, ALKIS codes, Cypher examples |
+| [`OSM_INTEGRATION.md`](OSM_INTEGRATION.md) | Agents / developers | OSM enrichment: data model, semantic mapping, 1:1/1:n/n:1/n:m footprint matching, provenance schema, `ingest_osm.py` code map |
 | [`CYPHER.md`](CYPHER.md) | Agents / LLM (injected) | Cypher 25 + Neo4j Spatial plugin reference |
 | [`eval/tool_comparison/comparison_2026-06-19.md`](eval/tool_comparison/comparison_2026-06-19.md) | Developers / reviewers | Mapping-time & database benchmark: pykci vs 3DCityKG vs 3DCityDB v5. Reproduce with [`run_benchmark.sh`](eval/tool_comparison/run_benchmark.sh) |
 
