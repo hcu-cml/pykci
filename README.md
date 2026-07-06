@@ -37,6 +37,20 @@ From the graph you can:
 
 > **New to 3D city models?** CityGML describes a city's geometry together with semantic attributes (function, roof type, height, and so on). Representing it as a graph makes the relationships between objects - which surfaces belong to a building, which buildings are near each other - explicit and queryable.
 
+pykci is described in the paper [*pykci: A Compact Urban Knowledge Graph for Semantic and Spatial Queries using LLMs*](https://arxiv.org/abs/2607.01605) (Nguyen, Arzoumanidis & Dehbi, 2026). If you use pykci in your research, please cite:
+
+```bibtex
+@misc{nguyen_pykci_2026,
+      title={pykci: A Compact Urban Knowledge Graph for Semantic and Spatial Queries using LLMs},
+      author={Huynh Duc An Son Nguyen and Lukas Arzoumanidis and Youness Dehbi},
+      year={2026},
+      eprint={2607.01605},
+      archivePrefix={arXiv},
+      primaryClass={cs.DB},
+      url={https://arxiv.org/abs/2607.01605},
+}
+```
+
 ---
 
 ## Highlights
