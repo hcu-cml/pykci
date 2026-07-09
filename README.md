@@ -596,8 +596,11 @@ pykci was compared with **3DCityKG** (Neo4j) and **3DCityDB v5** (PostGIS) on th
 | Graph size | 15.2 M nodes / 21.3 M edges | ~5.9× nodes / ~4.4× edges | relational (not a graph) |
 | Spatial index | R-tree persisted | R-tree not persisted at this scale | PostGIS spatial index |
 | Mapping time | slower than 3DCityDB | - | fastest of the three |
+| Net query time (mean, 18 NL questions) | **~0.37 s** (fastest) | ~2.10 s | ~2.62 s |
+| Query compactness (mean length) | **~290 chars**, self-contained | ~460 chars (max ~1060) | ~230 chars + ~745-char shared CTE |
+| Schema-discovery queries needed | **~2** | ~7 | ~3 |
 
-In this run, pykci produced the smallest of the two graphs and retained its R-tree, while 3DCityDB was the fastest to load. These numbers are from a single hardware and dataset configuration; treat them as indicative rather than definitive. Full methodology, raw numbers, and reproduction steps: [`eval/tool_comparison/comparison_2026-06-19.md`](eval/tool_comparison/comparison_2026-06-19.md), reproduce with [`run_benchmark.sh`](eval/tool_comparison/run_benchmark.sh).
+In this run, pykci produced the smallest of the two graphs and retained its R-tree, while 3DCityDB was the fastest to load. On the query side, the same 20 natural-language questions (10 citizen, 10 expert) were answered on all three databases: all returned identical, correct answers, but pykci's condensed domain schema made its queries the fastest to run (net of client startup) and the most compact to author: building attributes are direct node properties, so no multi-hop traversals (3DCityKG) or property-pivot CTEs (3DCityDB) are needed. These numbers are from a single hardware and dataset configuration; treat them as indicative rather than definitive. Full methodology, raw numbers, and reproduction steps: [`eval/tool_comparison/comparison_2026-06-19.md`](eval/tool_comparison/comparison_2026-06-19.md) (mapping) and [`eval/tool_comparison/queries/QUERY_BENCHMARK.md`](eval/tool_comparison/queries/QUERY_BENCHMARK.md) (querying), reproduce with [`run_benchmark.sh`](eval/tool_comparison/run_benchmark.sh).
 
 ---
 
