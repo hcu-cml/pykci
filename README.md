@@ -64,7 +64,7 @@ pykci is described in the paper [*pykci: A Compact Urban Knowledge Graph for Sem
 | 🕸️ **Graph viewers** | Self-contained HTML: a 2D force-directed graph and a combined 3D-Tiles-plus-graph view, both with light/dark mode. |
 | 📍 **Spatial features** | Neo4j Spatial R-tree index, `NEARBY_BUILDING` proximity edges, and GDS Louvain community detection. |
 | 🗺️ **OpenStreetMap enrichment** | Optional non-destructive enrichment from `.osm.pbf`: building use, names, addresses, heights, roof shapes, POIs, land use, water, vegetation and the street network, matched to pykci features across 1:1/1:n/n:1/n:m footprints with full provenance ([OSM_INTEGRATION.md](OSM_INTEGRATION.md)). |
-| 📊 **Benchmarked** | Compared against 3DCityKG and 3DCityDB v5 on a 6.93 GB Hamburg LoD2 dataset under a fixed resource envelope (see [Benchmarks](#benchmarks)). |
+| 📊 **Benchmarked** | Holds all of Hamburg (6.93 GB CityGML, 388,267 buildings) in a graph **~6× smaller** than 3DCityKG's (15.2 M vs 89.5 M nodes). On a suite of 20 natural-language questions, every answerable question was answered correctly, with each query running **~2× to ~16× faster** than on 3DCityDB v5 (net of client startup, ~7× faster on average) with the **shortest query text length** (~290 vs ~970 chars compared to 3DCityDB v5) and the **fewest schema-discovery queries** (~2 vs ~7 consecutive queries for 3DCityKG). See [Benchmarks](#benchmarks). |
 
 ---
 
