@@ -64,18 +64,21 @@ TerrainIntersection  id, lod, source
 GeometryLineString   id, pos_list (verbatim), srs_dimension, source
 """
 
+import hashlib
 import json
 import os
 import queue
 import re
 import sys
 import threading
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from lxml import etree
 from neo4j import GraphDatabase
+from neo4j.exceptions import TransientError
 
 # ---------------------------------------------------------------------------
 # Namespaces
@@ -351,11 +354,124 @@ def _text(el, xpath):
     return found.text.strip() if found is not None and found.text else None
 
 
+# ── Optional coordinate reprojection ───────────────────────────────────────
+# When a dataset is not in a projected metric CRS (e.g. Tokyo/PLATEAU is
+# EPSG:6697 = geographic degrees, NYC is EPSG:2263 = US survey feet), every
+# distance/area/proximity query and the OSM footprint fusion would be wrong.
+# With --target-crs, coordinates are reprojected to a metric CRS AT INGEST, at
+# the two coordinate primitives below (_parse_corner for all bbox/centroid math,
+# _ring_coords/line posLists for geometry). The transformer is held per-thread.
+# NOTE: this deliberately breaks byte-exact round-trip for reprojected cities
+# (their pos_list is rewritten); an already-metric dataset stays lossless.
+# See the CRS/units caveat in GRAPH.md.
+_tls = threading.local()
+
+# Serializes the few statements that MERGE *shared* singleton nodes (Dataset,
+# City, District) plus schema setup across parallel tile parsers: a concurrent
+# `MERGE (n {id})` without a uniqueness constraint can create duplicate nodes.
+# Edge-only MERGEs between existing nodes don't need this (Neo4j node locks
+# serialize them); they get transient-retry instead (_run_retry).
+_SHARED_NODE_LOCK = threading.Lock()
+
+
+def _run_retry(sess, query, retries=5, **params):
+    """Run one statement, retrying transient lock conflicts (deadlocks between
+    parallel tile finalizers whose edge batches lock shared endpoints such as the
+    Dataset / BuildingFunction / District nodes in differing orders)."""
+    from neo4j.exceptions import TransientError as _TE
+    for attempt in range(retries):
+        try:
+            return sess.run(query, **params).consume()
+        except _TE:
+            time.sleep(0.2 * (attempt + 1))
+    return sess.run(query, **params).consume()
+
+
+def _epsg_from_srs(srs):
+    """Resolve a CityGML srsName to an 'EPSG:NNNN' string (mirrors ingest_osm)."""
+    if not srs:
+        return None
+    m = re.search(r"EPSG[:/]+(?:\d+/)?(\d{4,6})", srs)
+    if m:
+        return f"EPSG:{m.group(1)}"
+    u = srs.upper().replace(" ", "")
+    m = re.search(r"UTM(\d{2})", u)
+    if m:
+        return f"EPSG:258{m.group(1)}"
+    if "CH1903+" in u or "LV95" in u:
+        return "EPSG:2056"
+    if "CH1903" in u or "LV03" in u:
+        return "EPSG:21781"
+    return srs
+
+
+class _Reprojector:
+    """Reproject CityGML coordinates from a source CRS to a target metric CRS.
+    Emits (easting, northing[, height_m]) so downstream x/y are metric-planar.
+    Handles GML axis order (geographic CRS store lat,lon) and scales Z by the
+    source horizontal linear unit (feet->m) for projected non-metric sources
+    (geographic Z is already a metric height and passes through)."""
+
+    def __init__(self, src_srs, dst_crs):
+        from pyproj import CRS, Transformer
+        src = _epsg_from_srs(src_srs) or src_srs
+        dst = _epsg_from_srs(dst_crs) or dst_crs
+        self.dst_epsg = dst
+        src_obj = CRS.from_user_input(src)
+        self.geographic = src_obj.is_geographic
+        self.z_factor = 1.0
+        if not self.geographic:
+            try:
+                f = src_obj.axis_info[0].unit_conversion_factor
+                if f:
+                    self.z_factor = f
+            except Exception:
+                pass
+        self.tf = Transformer.from_crs(src_obj, CRS.from_user_input(dst), always_xy=True)
+
+    def point(self, a, b, z=0.0):
+        # GML geographic order is (lat, lon); always_xy wants (lon, lat).
+        x, y = self.tf.transform(b, a) if self.geographic else self.tf.transform(a, b)
+        return x, y, z * self.z_factor
+
+    def poslist(self, text, srs_dim):
+        vals = text.split()
+        if not vals:
+            return text
+        stride = srs_dim if srs_dim in (2, 3) else (3 if len(vals) % 3 == 0 else 2)
+        out = []
+        for i in range(0, len(vals) - stride + 1, stride):
+            try:
+                a = float(vals[i]); b = float(vals[i + 1])
+                z = float(vals[i + 2]) if stride == 3 else 0.0
+            except ValueError:
+                return text  # non-numeric content: leave untouched
+            x, y, zz = self.point(a, b, z)
+            out.append(f"{x} {y} {zz}" if stride == 3 else f"{x} {y}")
+        return " ".join(out)
+
+
+def _reproject_poslist(text, srs_dim):
+    xf = getattr(_tls, "reproj", None)
+    return xf.poslist(text, srs_dim) if (xf is not None and text) else text
+
+
+def _peek_srsname(path, limit=2_000_000):
+    """Read the first srsName from a (possibly huge) CityGML file, bounded."""
+    with open(path, "rb") as fh:
+        chunk = fh.read(limit).decode("utf-8", "ignore")
+    m = re.search(r'srsName="([^"]+)"', chunk)
+    return m.group(1) if m else None
+
+
 def _parse_corner(raw):
     parts = raw.strip().split()
     x = float(parts[0])
     y = float(parts[1])
     z = float(parts[2]) if len(parts) > 2 else 0.0
+    xf = getattr(_tls, "reproj", None)
+    if xf is not None:
+        x, y, z = xf.point(x, y, z)
     return x, y, z
 
 
@@ -404,6 +520,137 @@ def _fmt_num(v):
 
 def _slug(s):
     return re.sub(r"[^a-z0-9_]", "_", s.lower())
+
+
+def _attr_key(s):
+    """
+    Unicode-aware property key for generic (gen:*) attribute names. Unlike
+    _slug (ASCII-only, used for ids), this preserves non-Latin letters/digits
+    so that non-German/English schemas survive as distinct, queryable keys.
+    Example: the Tokyo PLATEAU attribute names are Japanese —
+    _slug('地区計画') == '____' (all attributes collide to underscores and are
+    lost), whereas _attr_key('地区計画') == '地区計画'. Neo4j supports Unicode
+    property keys (address them with backticks in Cypher). For pure-ASCII names
+    this returns exactly what _slug did (e.g. 'PredictedRoofMaterial' ->
+    'predictedroofmaterial'), so existing datasets are unaffected. The original
+    name is always preserved verbatim in _gen_attrs_map for lossless export.
+    """
+    key = re.sub(r"[^\w]", "_", s.lower(), flags=re.UNICODE).strip("_")
+    return key or "attr"
+
+
+def _new_id_registry():
+    """Per-ingest-run state for feature-id resolution (see _resolve_feature_id).
+    ``seen``: raw gml:id -> {"c": {content_hash: id}, "g": {geom_hash: id}} for the
+    content and geometry duplicate tiers. ``assigned``: every id handed out (raw +
+    synthesized), so synthesized ids never collide. ``lock`` guards both dicts when
+    one registry is shared across parallel tile parsers (--parse-workers > 1); the
+    hash computation stays outside the lock, so contention is microseconds."""
+    return {"seen": {}, "assigned": set(), "lock": threading.Lock()}
+
+
+def _content_hash(el):
+    """Compact hash of a feature's FULL content (geometry + attributes + nested
+    structure). Serializing the whole element means the hash also proves non-
+    geometric identity: two byte-identical occurrences (e.g. a Tokyo PLATEAU tile
+    replicated verbatim across ward packages) hash the same and deduplicate."""
+    return hashlib.sha1(etree.tostring(el)).digest()
+
+
+def _geom_hash(el):
+    """SHA1 over a feature's raw coordinate strings (gml:posList / gml:pos), in
+    document order, or ``None`` when the feature carries no coordinates. This is the
+    second-tier duplicate signal: two occurrences that share a gml:id and have
+    coordinate-identical geometry but differ in ancillary attributes are the same
+    physical building and must deduplicate, not split. The archetype is Tokyo
+    PLATEAU, where a boundary building recurs in adjacent ward packages with
+    identical geometry but ward-specific ``uro:*`` ADE data-quality codes: an exact
+    content hash would over-split those into phantom buildings, whereas an identical
+    geometry hash correctly merges them. Returning ``None`` for a geometry-less
+    feature keeps two distinct coordinate-free features (e.g. Zurich placeholder
+    ``ID_`` buildings with no geometry) from ever merging on an empty signature.
+    Coordinate-identical is a deliberately strict criterion: a fuzzy footprint
+    overlap would risk merging two genuinely distinct buildings that share a
+    gml:id and happen to overlap (Helsinki's duplicates already share bounding
+    boxes), which would silently break the lossless round-trip."""
+    parts = [sub.text.strip() for sub in el.iter()
+             if isinstance(sub.tag, str)
+             and (sub.tag.endswith("}posList") or sub.tag.endswith("}pos"))
+             and sub.text and sub.text.strip()]
+    return hashlib.sha1("\n".join(parts).encode()).digest() if parts else None
+
+
+def _resolve_feature_id(raw_id, content_hash, geom_hash, source):
+    """Resolve the node id for a top-level feature (Building / BuildingPart /
+    CityObject), distinguishing exact/geometric duplicates from distinct features
+    that share a gml:id. Returns ``(id_to_use, original_gml_id_or_None, is_dup)``.
+
+    ``MERGE (n {id: raw_gml_id})`` silently *collapses* two features that share a
+    gml:id into one node. That is correct for a genuine duplicate (dedup) but loses
+    a distinct feature. The collision is decided in three tiers, by content then by
+    geometry, never by editing the source:
+
+    * **Exact duplicate** (same gml:id, same *content* hash) -> return the already
+      assigned id with ``is_dup=True``; the caller skips it (MERGE would only re-
+      touch the same node). Byte-identical ward-replicated PLATEAU tiles hit this.
+    * **Geometric duplicate** (same gml:id, different content but identical *geometry*
+      hash) -> the same building re-shipped with differing ancillary attributes
+      (Tokyo's ward-specific ADE metadata); merge onto the existing node
+      (``is_dup=True``) rather than fabricate a phantom split.
+    * **Distinct feature sharing an id** (same gml:id, different geometry, or geometry
+      absent) -> synthesize a deterministic unique id ``<id>__<source-slug>__<n>``
+      (split) and return the original gml:id so callers store it as
+      ``source_gml_id`` (export re-emits it for a faithful round-trip). This is the
+      Zurich ``ID_`` / Helsinki case; keeping distinct features distinct is what
+      preserves the lossless round-trip.
+
+    Complexity: O(1) amortized per feature. Thread-safety: the registry dicts hang
+    off ``_tls`` (one pointer per parser thread); when the tiled path shares one
+    registry across parallel tile parsers (--parse-workers > 1) every access runs
+    under the registry lock (set as ``_tls.id_lock``), so cross-tile duplicates are
+    still caught race-free. Hashes are computed by the caller, outside the lock.
+    Ordering note: with parallel parsers, WHICH occurrence of a duplicate id is seen
+    first (and thus keeps the raw id / donates the stored attributes of a
+    geometry-identical dedup) follows thread scheduling rather than file order;
+    content-identical replicas are unaffected.
+    """
+    lock = getattr(_tls, "id_lock", None)
+    if lock is not None:
+        with lock:
+            return _resolve_feature_id_locked(raw_id, content_hash, geom_hash, source)
+    return _resolve_feature_id_locked(raw_id, content_hash, geom_hash, source)
+
+
+def _resolve_feature_id_locked(raw_id, content_hash, geom_hash, source):
+    seen = getattr(_tls, "seen_ids", None)
+    if seen is None:
+        seen = _tls.seen_ids = {}
+        _tls.assigned_ids = set()
+    assigned = _tls.assigned_ids
+    bucket = seen.get(raw_id)
+    if bucket is None:
+        seen[raw_id] = {"c": {content_hash: raw_id},
+                        "g": ({geom_hash: raw_id} if geom_hash is not None else {})}
+        assigned.add(raw_id)
+        return raw_id, None, False
+    hit = bucket["c"].get(content_hash)                 # tier 1: exact content
+    if hit is not None:
+        return hit, None, True
+    if geom_hash is not None:                           # tier 2: identical geometry
+        ghit = bucket["g"].get(geom_hash)
+        if ghit is not None:
+            bucket["c"][content_hash] = ghit           # cache for future occurrences
+            return ghit, None, True
+    n = 1                                               # tier 3: distinct -> split
+    while True:
+        candidate = f"{raw_id}__{_slug(source)}__{n}"
+        if candidate not in assigned:
+            bucket["c"][content_hash] = candidate
+            if geom_hash is not None:
+                bucket["g"][geom_hash] = candidate
+            assigned.add(candidate)
+            return candidate, raw_id, False
+        n += 1
 
 
 def _lod_level(root):
@@ -465,32 +712,110 @@ def _read_citymodel_header(gml_path):
     return name, desc, schema_loc
 
 
+# Structural / identity node property keys that a generic (gen:*) attribute must
+# never overwrite. A gen:*Attribute name is slugged with _attr_key and used as the
+# storage key; without this guard a real dataset attribute such as Helsinki's
+# gen:stringAttribute name="ID" slugs to "id" and, when merged in _collect_*,
+# silently clobbers the gml:id-based node id (which also detaches the feature's
+# geometry, since child edges still point at the correct id). Colliding keys are
+# remapped to a namespaced "gen_<key>"; the original name is preserved in the
+# gen_map so export re-emits the attribute unchanged.
+RESERVED_NODE_KEYS = frozenset({
+    # identity / provenance / structure
+    "id", "name", "source", "source_gml_id", "id_synthesized", "feature_type",
+    "description", "_gen_attrs_map", "gtype", "predicate", "composite_surface_id",
+    # bbox / spatial anchor
+    "bbox_lower_corner", "bbox_upper_corner", "bbox_wkt", "has_bbox_envelope",
+    "bbox_min_x", "bbox_min_y", "bbox_min_z", "bbox_max_x", "bbox_max_y", "bbox_max_z",
+    "center_x", "center_y", "ground_z", "location",
+    # lossless common-extras subtrees
+    "termination_date", "metadata_xml", "location_xml", "generalizes_to_xml",
+    "external_reference_xml", "ade_xml", "address_xml",
+    # typed AbstractBuilding / feature scalars
+    "measured_height", "storeys_above_ground", "storeys_below_ground",
+    "storey_heights_above_ground", "storey_heights_below_ground",
+    "roof_type_code", "function_code", "class_code", "usage_code",
+    "creation_date", "year_of_construction", "relative_to_terrain",
+    "external_information_system", "external_object_name",
+    "gml_name", "gml_description",
+})
+
+
+_GEN_ATTR_TYPES = (
+    ("gen:stringAttribute",  "string"),
+    ("gen:intAttribute",     "int"),
+    ("gen:doubleAttribute",  "double"),
+    ("gen:dateAttribute",    "date"),
+    ("gen:uriAttribute",     "uri"),
+    ("gen:measureAttribute", "measure"),
+)
+
+
 def _extract_gen_attrs(el):
+    """Collect all gen:*Attribute values of a feature, including those nested in
+    gen:genericAttributeSet wrappers (recursively — e.g. Helsinki wraps its data-
+    integration attributes in one set per building; dropping them was a lossless
+    round-trip violation). Values are stored FLAT on the node; set membership is
+    recorded in gen_map so export can rebuild the wrapper elements.
+
+    gen_map[key] = {"name": original-name,
+                    "type": "string|int|double|date|uri|measure"
+                    [, "set": [{"name": set-name, "i": sibling-index
+                                [, "codeSpace": …]}, …]]}   # root→leaf wrapper path
+    The per-parent sibling index keeps two same-named sibling sets distinct on
+    re-emit. A duplicate attribute name within one feature gets a numeric key
+    suffix so both values survive (each gen_map entry re-emits with the original
+    name). Keys colliding with RESERVED_NODE_KEYS are namespaced to gen_<key> so a
+    source attribute like Helsinki's name="ID" can never overwrite the node id.
+    """
     props   = {}
     gen_map = {}
 
-    # gen:*Attribute — preserve the attribute TYPE and (for measure) the uom so
-    # the element round-trips faithfully (not collapsed to stringAttribute).
-    # gen_map[key] = {"name": original-name, "type": "string|int|double|date|uri|measure"}
-    for tag, gtype in (
-        ("gen:stringAttribute",  "string"),
-        ("gen:intAttribute",     "int"),
-        ("gen:doubleAttribute",  "double"),
-        ("gen:dateAttribute",    "date"),
-        ("gen:uriAttribute",     "uri"),
-        ("gen:measureAttribute", "measure"),
-    ):
-        for attr_el in el.findall(tag, NS):
-            name   = attr_el.get("name", "").strip()
-            val_el = attr_el.find("gen:value", NS)
-            if name and val_el is not None and val_el.text:
-                key          = _slug(name)
-                props[key]   = val_el.text.strip()
-                gen_map[key] = {"name": name, "type": gtype}
-                uom = val_el.get("uom", "") if gtype == "measure" else ""
-                if uom:
-                    props[f"{key}_uom"] = uom
+    def _add(attr_el, gtype, set_path):
+        name   = attr_el.get("name", "").strip()
+        val_el = attr_el.find("gen:value", NS)
+        # an EMPTY <gen:value/> is still a real attribute (Helsinki has 291, e.g.
+        # blank REPAIRED flags) — store "" so the element round-trips; only skip
+        # when the value element itself is absent.
+        if not (name and val_el is not None):
+            return
+        key = _attr_key(name)
+        if key in RESERVED_NODE_KEYS:
+            # would clobber a structural node property: namespace it so the
+            # value survives without corrupting id/name/source/bbox/… .
+            base, n = f"gen_{key}", 2
+            key = base
+            while key in RESERVED_NODE_KEYS or key in props:
+                key = f"{base}_{n}"
+                n += 1
+        elif key in props:
+            # same attribute name occurs more than once on this feature (e.g. a
+            # direct attribute and a set member): keep both under distinct keys.
+            base, n = key, 2
+            while key in props:
+                key = f"{base}_{n}"
+                n += 1
+        props[key]   = (val_el.text or "").strip()
+        meta = {"name": name, "type": gtype}
+        if set_path:
+            meta["set"] = set_path
+        gen_map[key] = meta
+        uom = val_el.get("uom", "") if gtype == "measure" else ""
+        if uom:
+            props[f"{key}_uom"] = uom
 
+    def _walk(container, set_path):
+        for tag, gtype in _GEN_ATTR_TYPES:
+            for attr_el in container.findall(tag, NS):
+                _add(attr_el, gtype, set_path)
+        for i, set_el in enumerate(container.findall("gen:genericAttributeSet", NS)):
+            entry = {"name": set_el.get("name", "").strip(), "i": i}
+            cs = set_el.get("codeSpace")
+            if cs:
+                entry["codeSpace"] = cs
+            _walk(set_el, set_path + [entry])
+
+    _walk(el, [])
     return props, gen_map
 
 
@@ -531,25 +856,162 @@ def _ensure_spatial_layer(session, layer_name="features"):
         return False
 
 
-def _index_features_spatial(session, layer_name="features"):
+def _derive_code_hubs(sess, source_filter=None):
+    """Derive the BuildingFunction / RoofType vocabulary HUB nodes and their
+    HAS_FUNCTION / HAS_ROOF_TYPE edges from the scalar codes already stored on
+    the Building nodes (`function_code` / `roof_type_code` — the authoritative,
+    lossless round-trip representation).
+
+    Hubs are a handful of shared nodes per city (e.g. a few roof-form classes
+    for 388k Hamburg buildings), so they are never written from the parallel
+    batch hot path (a concurrent MERGE on the same hub id can duplicate it, and
+    every edge-create serializes on the hub's write lock). This derivation runs
+    either once per file (``source_filter=<filename>``, in the single post-pass
+    thread of that ingest) or once per tiled Dataset (``source_filter=None``,
+    one global single-threaded pass after all tiles). Hub node content is
+    identical to the historical model: {id: fn_/rt_<slug(code)>, name, code}
+    plus the Entity label. Edge rows are sorted by code so any concurrent
+    per-file passes acquire hub locks in a consistent order."""
+    for codeprop, label, prefix, names, rel in (
+        ("function_code",  "BuildingFunction", "fn", BUILDING_FUNCTION_NAMES, "HAS_FUNCTION"),
+        ("roof_type_code", "RoofType",         "rt", ROOF_TYPE_NAMES,         "HAS_ROOF_TYPE"),
+    ):
+        where_src = "b.source = $src AND " if source_filter else ""
+        codes = [r["c"] for r in sess.run(
+            f"MATCH (b:Building) WHERE {where_src}b.{codeprop} IS NOT NULL "
+            f"RETURN DISTINCT b.{codeprop} AS c", src=source_filter)]
+        if not codes:
+            continue
+        with _SHARED_NODE_LOCK:
+            for c in sorted(codes):
+                _run_retry(sess,
+                    f"MERGE (n:{label} {{id: $id}}) "
+                    f"SET n.name = $name, n.code = $code, n:Entity",
+                    id=f"{prefix}_{_slug(c)}", name=names.get(c, c), code=c)
+        rows = sess.run(
+            f"MATCH (b:Building) WHERE {where_src}b.{codeprop} IS NOT NULL "
+            f"AND NOT (b)-[:{rel}]->() RETURN b.id AS id, b.{codeprop} AS code",
+            src=source_filter).data()
+        rows.sort(key=lambda r: (r["code"], r["id"]))
+        for i in range(0, len(rows), 1000):
+            _run_retry(sess,
+                f"UNWIND $rows AS row MATCH (b:Building {{id: row.id}}) "
+                f"MATCH (f:{label} {{code: row.code}}) MERGE (b)-[:{rel}]->(f)",
+                rows=rows[i:i + 1000])
+
+
+def _index_features_spatial(session, layer_name="features", batch_size=25000):
     """
     Index all top-level feature bounding-box polygons in the neo4j-spatial R-tree.
     Covers both Building and CityObject nodes that carry a bbox_wkt property.
     R-tree insertions MUST be serial — concurrent writes corrupt the tree during
     rebalancing.  This is slow (~1–3 ms/node) but the resulting index supports
     spatial.intersects / bbox / withinDistance queries on full bbox polygons.
+
+    Inserts in serial id-indexed batches (never one `collect(n)` over the whole
+    label): a single addNodes over ~1M nodes materializes every node + geometry
+    in one transaction and trips `dbms.memory.transaction.total.max` (~70 % of
+    heap) on city-scale graphs (NYC 1.08M buildings). Batches keep each
+    transaction small; addNodes is idempotent and the batches run sequentially on
+    the one session, so the tree stays serially built and correct.
     """
     try:
         print("  Indexing all features in R-tree …")
-        result = session.run(
+        # Collect ids first (cheap: no geometry materialized), then re-match each
+        # batch through the Entity(id) index — a single scan, index-backed lookups.
+        ids = [r["id"] for r in session.run(
             "MATCH (n) WHERE (n:Building OR n:CityObject) AND n.bbox_wkt IS NOT NULL "
-            "WITH collect(n) AS nodes "
-            "CALL spatial.addNodes($layer, nodes) YIELD count RETURN count AS n",
-            layer=layer_name,
-        ).single()
-        return result["n"] if result else 0
+            "RETURN n.id AS id"
+        )]
+        total = 0
+        for i in range(0, len(ids), batch_size):
+            batch = ids[i:i + batch_size]
+            result = session.run(
+                "UNWIND $ids AS nid MATCH (n:Entity {id: nid}) "
+                "WITH collect(n) AS nodes "
+                "CALL spatial.addNodes($layer, nodes) YIELD count RETURN count AS n",
+                ids=batch, layer=layer_name,
+            ).single()
+            total += result["n"] if result else 0
+        return total
     except Exception as exc:
         print(f"  WARNING: spatial indexing failed ({exc})")
+        return 0
+
+
+def _backfill_cityobject_bbox_from_geometry(session, batch_size=2000):
+    """
+    Compute bbox_wkt for CityObject nodes that lack one, from their already-stored
+    graph geometry (reprojected in place when --target-crs was used), so the
+    non-Building modules (roads, bridges, city furniture, vegetation, water) enter
+    the spatial R-tree too.
+
+    `_collect_city_object` derives a CityObject bbox only from a per-feature
+    `gml:boundedBy/gml:Envelope`; sources that omit it (e.g. Tokyo/PLATEAU
+    tran/brid/frn/veg/wtr, which ship geometry but no per-feature envelope) would
+    otherwise leave those features with no bbox and thus outside the R-tree. Reads
+    coordinates from the graph so it is CRS-correct regardless of reprojection.
+    pos_list convention: "x y z …" (x=idx0, y=idx1, stride 3); only non-degenerate
+    boxes are written. Serial, idempotent (SET only), safe to re-run.
+    """
+    def _bbox(pos_lists):
+        minx = miny = minz = float("inf")
+        maxx = maxy = maxz = float("-inf")
+        ok = False
+        for pl in pos_lists:
+            v = pl.split()
+            if len(v) < 3 or len(v) % 3 != 0:
+                continue
+            f = [float(t) for t in v]
+            xs, ys, zs = f[0::3], f[1::3], f[2::3]
+            minx, maxx = min(minx, min(xs)), max(maxx, max(xs))
+            miny, maxy = min(miny, min(ys)), max(maxy, max(ys))
+            minz, maxz = min(minz, min(zs)), max(maxz, max(zs))
+            ok = True
+        if not ok or not (maxx > minx and maxy > miny):
+            return None
+        return minx, miny, minz, maxx, maxy, maxz
+
+    try:
+        ids = [r["id"] for r in session.run(
+            "MATCH (c:CityObject) WHERE c.bbox_wkt IS NULL RETURN c.id AS id")]
+        if not ids:
+            return 0
+        print(f"  Backfilling bbox for {len(ids)} CityObject(s) from graph geometry …")
+        written = 0
+        for i in range(0, len(ids), batch_size):
+            batch = ids[i:i + batch_size]
+            rows = session.run(
+                "UNWIND $ids AS cid MATCH (c:Entity {id: cid}) "
+                "OPTIONAL MATCH (c)-[*1..6]->(g) "
+                "WHERE (g:GeometryRing OR g:GeometryLineString) AND g.pos_list IS NOT NULL "
+                "RETURN cid AS id, collect(g.pos_list) AS pl", ids=batch).data()
+            writes = []
+            for r in rows:
+                if not r["pl"]:
+                    continue
+                bb = _bbox(r["pl"])
+                if bb is None:
+                    continue
+                minx, miny, minz, maxx, maxy, maxz = bb
+                writes.append({
+                    "id": r["id"],
+                    "wkt": (f"POLYGON(({minx} {miny}, {maxx} {miny}, {maxx} {maxy}, "
+                            f"{minx} {maxy}, {minx} {miny}))"),
+                    "minx": minx, "miny": miny, "minz": minz,
+                    "maxx": maxx, "maxy": maxy, "maxz": maxz,
+                    "cx": (minx + maxx) / 2.0, "cy": (miny + maxy) / 2.0})
+            if writes:
+                session.run(
+                    "UNWIND $rows AS row MATCH (n:Entity {id: row.id}) "
+                    "SET n.bbox_wkt=row.wkt, n.bbox_min_x=row.minx, n.bbox_min_y=row.miny, "
+                    "n.bbox_min_z=row.minz, n.bbox_max_x=row.maxx, n.bbox_max_y=row.maxy, "
+                    "n.bbox_max_z=row.maxz, n.center_x=row.cx, n.center_y=row.cy",
+                    rows=writes)
+                written += len(writes)
+        return written
+    except Exception as exc:
+        print(f"  WARNING: CityObject bbox backfill failed ({exc})")
         return 0
 
 
@@ -626,10 +1088,9 @@ def _new_batch():
     return {
         # Building-specific
         "buildings":          [],
-        "functions":          {},   # function_code -> props dict (deduped)
-        "roof_types":         {},   # roof_type_code -> props dict (deduped)
-        "bldg_function_rels": [],
-        "bldg_roof_rels":     [],
+        # (BuildingFunction/RoofType hubs + HAS_FUNCTION/HAS_ROOF_TYPE edges are
+        #  derived post-parse from the Building scalars — see _derive_code_hubs —
+        #  never from batches, so parallel writers can't race on the hub nodes.)
         "solid_rels":         [],   # (Building|Room) → GeometrySolid {generic id match}
         "boundary_rels":      [],   # (Building|Room|Installation) → BoundarySurface {order}
         "bldg_terrain_rels":  [],
@@ -698,16 +1159,9 @@ def _flush_batch(sess, batch):
             "UNWIND $rows AS row MERGE (n:BuildingPart {id: row.id}) SET n += row, n:Entity",
             rows=batch["building_parts"],
         )
-    if batch["functions"]:
-        sess.run(
-            "UNWIND $rows AS row MERGE (n:BuildingFunction {id: row.id}) SET n += row, n:Entity",
-            rows=list(batch["functions"].values()),
-        )
-    if batch["roof_types"]:
-        sess.run(
-            "UNWIND $rows AS row MERGE (n:RoofType {id: row.id}) SET n += row, n:Entity",
-            rows=list(batch["roof_types"].values()),
-        )
+    # NOTE: BuildingFunction / RoofType hub nodes are no longer written here —
+    # see _collect_building: they are derived post-parse from the Building
+    # scalars, so parallel writers never race on the shared vocabulary nodes.
 
     # ── Generic CityObject nodes (with APOC dynamic label) ─────────────────
     if has_objects:
@@ -978,13 +1432,13 @@ def _ring_coords(ring_el):
     pos_el = ring_el.find("gml:posList", NS)
     if pos_el is not None and pos_el.text:
         srs_dim = int(pos_el.get("srsDimension", "3"))
-        return pos_el.text.strip(), srs_dim
+        return _reproject_poslist(pos_el.text.strip(), srs_dim), srs_dim
 
     pos_els = ring_el.findall("gml:pos", NS)
     if pos_els:
         srs_dim = int(pos_els[0].get("srsDimension", "3"))
         coords = " ".join(p.text.strip() for p in pos_els if p.text and p.text.strip())
-        return coords, srs_dim
+        return _reproject_poslist(coords, srs_dim), srs_dim
 
     return "", 3
 
@@ -1242,10 +1696,14 @@ def _collect_boundary_surface(bb_el, parent_id, boundary_order, source, batch):
 
 
 def _collect_solid(b_el, parent_id, source, batch, ns_prefix="bldg"):
-    """Collect a lod*Solid for a Building/Room (parent_id owns it). The solid's
-    exterior CompositeSurface members become explicit HAS_SURFACE_MEMBER edges
+    """Collect ALL lod*Solid geometries of a Building/Room (parent_id owns them).
+    A feature may carry one solid per LOD simultaneously (Helsinki buildings ship
+    both lod1Solid and lod2Solid; keeping only the first lost the lod2 solid and
+    its xlink member list for 2 666 buildings). Each solid's exterior
+    CompositeSurface members become explicit HAS_SURFACE_MEMBER edges
     (surface_member_rels) marked with via_xlink / orientation, so the exact
-    xlink:href member list round-trips. Returns the solid id or None."""
+    xlink:href member list round-trips. Returns the first solid id or None."""
+    first_id = None
     for lod_candidate in ("1", "2", "3", "4"):
         solid_el = b_el.find(f"{ns_prefix}:lod{lod_candidate}Solid/gml:Solid", NS)
         if solid_el is None:
@@ -1267,8 +1725,9 @@ def _collect_solid(b_el, parent_id, source, batch, ns_prefix="bldg"):
             "source":               source,
         })
         batch["solid_rels"].append({"src": parent_id, "tgt": solid_id})
-        return solid_id
-    return None
+        if first_id is None:
+            first_id = solid_id
+    return first_id
 
 
 def _collect_building_multisurfaces(b_el, bldg_id, source, batch):
@@ -1484,8 +1943,9 @@ def _collect_terrain_intersection(b_el, bldg_id, source, batch):
                     continue
                 ls_id    = ls_el.get(GML_ID) or f"{ti_id}_ls_{ls_order}"
                 pos_el   = ls_el.find("gml:posList", NS)
-                pos_list = pos_el.text.strip() if (pos_el is not None and pos_el.text) else ""
                 srs_dim  = int(pos_el.get("srsDimension", "3")) if pos_el is not None else 3
+                pos_list = _reproject_poslist(pos_el.text.strip(), srs_dim) \
+                    if (pos_el is not None and pos_el.text) else ""
                 batch["linestrings"].append({
                     "id": ls_id, "pos_list": pos_list,
                     "srs_dimension": srs_dim, "source": source,
@@ -1524,10 +1984,12 @@ def _extract_abstract_building_props(b_el):
     relative_terrain  = _text(b_el, "cg:relativeToTerrain")
     relative_water    = _text(b_el, "cg:relativeToWater")
 
-    # Address: store the bldg:address subtree verbatim (xAL is unbounded).
-    addr_el  = b_el.find("bldg:address", NS)
-    address_xml = (etree.tostring(addr_el, encoding="unicode")
-                   if addr_el is not None else None)
+    # Address: store ALL bldg:address subtrees verbatim as a JSON list (xAL is
+    # unbounded AND bldg:address itself is unbounded — Helsinki buildings carry
+    # up to several; keeping only the first lost 2 605 of 5 577 addresses).
+    addr_els = b_el.findall("bldg:address", NS)
+    address_xml = (json.dumps([etree.tostring(a, encoding="unicode") for a in addr_els])
+                   if addr_els else None)
 
     mh_el               = b_el.find("bldg:measuredHeight", NS)
     measured_height     = None
@@ -1605,11 +2067,20 @@ def _collect_building_part(bp_el, parent_id, order, source, batch):
     node linked from its parent via HAS_BUILDING_PART {order}. Reuses the full
     building geometry pipeline (boundaries, solid, terrain, multicurve,
     multisurfaces, interior) and recurses into nested building parts."""
-    part_id = bp_el.get(GML_ID) or f"{parent_id}_part_{order}"
+    part_id, orig_gml_id, is_dup = _resolve_feature_id(
+        bp_el.get(GML_ID) or f"{parent_id}_part_{order}",
+        _content_hash(bp_el), _geom_hash(bp_el), source)
+    if is_dup:
+        # identical part already collected; still ensure this parent links to it.
+        batch["bldg_part_rels"].append({"src": parent_id, "tgt": part_id, "order": order})
+        return
     props, _fn, _rt, _gk = _extract_abstract_building_props(bp_el)
     props["id"]     = part_id
     props["name"]   = part_id
     props["source"] = source
+    if orig_gml_id is not None:
+        props["source_gml_id"] = orig_gml_id
+        props["id_synthesized"] = True
 
     # A BuildingPart's gml:boundedBy/Envelope is optional; preserve it verbatim
     # for round-trip when present (parts are not registered in the R-tree).
@@ -1659,8 +2130,9 @@ def _collect_building_multicurve(b_el, parent_id, source, batch):
                 continue
             ls_id   = ls_el.get(GML_ID) or f"{parent_id}_mc_lod{lod}_{ls_order}"
             pos_el  = ls_el.find("gml:posList", NS)
-            pos     = pos_el.text.strip() if (pos_el is not None and pos_el.text) else ""
             srs_dim = int(pos_el.get("srsDimension", "3")) if pos_el is not None else 3
+            pos     = _reproject_poslist(pos_el.text.strip(), srs_dim) \
+                if (pos_el is not None and pos_el.text) else ""
             batch["linestrings"].append({
                 "id": ls_id, "pos_list": pos,
                 "srs_dimension": srs_dim, "source": source,
@@ -1674,8 +2146,15 @@ def _collect_building(b_el, source, batch, seen_functions, seen_roof_types):
     Extract all data from a Building element into batch dicts (no DB calls).
     Returns (bldg_id, gemeinde_key) or (None, None) if the building is invalid.
     """
-    bldg_id = b_el.get(GML_ID)
-    if not bldg_id:
+    raw_id = b_el.get(GML_ID)
+    if not raw_id:
+        return None, None
+    bldg_id, orig_gml_id, is_dup = _resolve_feature_id(
+        raw_id, _content_hash(b_el), _geom_hash(b_el), source)
+    if is_dup:
+        # exact or geometric duplicate of an already-collected building (e.g. a
+        # ward-replicated PLATEAU tile, verbatim or ADE-metadata-only differing);
+        # the same physical building is already a node, so skip this occurrence.
         return None, None
 
     b_env = b_el.find("gml:boundedBy/gml:Envelope", NS)
@@ -1743,24 +2222,25 @@ def _collect_building(b_el, source, batch, seen_functions, seen_roof_types):
         "has_bbox_envelope": had_envelope,
     }
     props.update(scalar_props)
+    if orig_gml_id is not None:
+        # id was synthesized to avoid a MERGE collapse; keep the authoritative
+        # gml:id so export re-emits it (faithful round-trip of duplicate-id sources).
+        props["source_gml_id"] = orig_gml_id
+        props["id_synthesized"] = True
 
     batch["buildings"].append(props)
 
-    if function_code:
-        fn_id = f"fn_{_slug(function_code)}"
-        if function_code not in seen_functions:
-            fn_name = BUILDING_FUNCTION_NAMES.get(function_code, function_code)
-            batch["functions"][function_code] = {"id": fn_id, "name": fn_name, "code": function_code}
-            seen_functions.add(function_code)
-        batch["bldg_function_rels"].append({"src": bldg_id, "tgt": fn_id})
-
-    if roof_type_code:
-        rt_id = f"rt_{_slug(roof_type_code)}"
-        if roof_type_code not in seen_roof_types:
-            rt_name = ROOF_TYPE_NAMES.get(roof_type_code, roof_type_code)
-            batch["roof_types"][roof_type_code] = {"id": rt_id, "name": rt_name, "code": roof_type_code}
-            seen_roof_types.add(roof_type_code)
-        batch["bldg_roof_rels"].append({"src": bldg_id, "tgt": rt_id})
+    # BuildingFunction / RoofType HUB nodes (a handful of shared vocabulary nodes
+    # for the whole city, e.g. a few roof-form classes for 388k Hamburg buildings)
+    # are deliberately NOT written from the parse/writer hot path: concurrent
+    # `MERGE (n {id})` on the same hub id from parallel tiles' writers can create
+    # duplicate hubs (no uniqueness constraint), and every edge-create serializes
+    # on the hub's write lock. The authoritative codes are already stored as
+    # scalar properties on each Building row (`function_code`/`roof_type_code`,
+    # the lossless round-trip representation); the hubs and their HAS_FUNCTION /
+    # HAS_ROOF_TYPE edges are DERIVED from those scalars after parsing, in the
+    # per-file post-pass (single-file ingest) or in one global single-threaded
+    # pass (tiled ingest) — race-free by construction.
 
     for b_order, bb_el in enumerate(b_el.findall("bldg:boundedBy", NS)):
         _collect_boundary_surface(bb_el, bldg_id, b_order, source, batch)
@@ -1780,7 +2260,9 @@ def _collect_building(b_el, source, batch, seen_functions, seen_roof_types):
 # ---------------------------------------------------------------------------
 
 def _collect_lod_solid_generic(el, feature_id, ns_prefix, source, batch, lod_range):
-    """Collect lod*Solid for any module. Returns lod string or None."""
+    """Collect ALL lod*Solid geometries for any module (a feature may carry one
+    solid per LOD simultaneously). Returns the first lod string or None."""
+    first_lod = None
     for lod in lod_range:
         solid_el = el.find(f"{ns_prefix}:lod{lod}Solid/gml:Solid", NS)
         if solid_el is None:
@@ -1797,8 +2279,9 @@ def _collect_lod_solid_generic(el, feature_id, ns_prefix, source, batch, lod_ran
             for sm_order, sm_el in enumerate(cs_el.findall("gml:surfaceMember", NS)):
                 _record_member(sm_el, solid_id, sm_order, source, batch,
                                "surface_member_rels")
-        return lod
-    return None
+        if first_lod is None:
+            first_lod = lod
+    return first_lod
 
 
 def _collect_lod_multi_surface_generic(el, feature_id, ns_prefix, source, batch, lod_range):
@@ -1996,8 +2479,9 @@ def _collect_relief_geometry(el, feature_id, source, batch):
                         continue
                     ls_id    = ls_el.get(GML_ID) or f"{comp_id}_ls_{ls_order}"
                     pos_el   = ls_el.find("gml:posList", NS)
-                    pos_list = pos_el.text.strip() if pos_el is not None and pos_el.text else ""
                     srs_dim  = int(pos_el.get("srsDimension", "3")) if pos_el is not None else 3
+                    pos_list = _reproject_poslist(pos_el.text.strip(), srs_dim) \
+                        if (pos_el is not None and pos_el.text) else ""
                     batch["linestrings"].append({
                         "id": ls_id, "pos_list": pos_list,
                         "srs_dimension": srs_dim, "source": source,
@@ -2188,9 +2672,13 @@ def _collect_city_object(el, feature_type, ns_prefix, scalar_attrs,
     Generic collector for any non-building CityGML top-level feature.
     Returns feature_id or None if the element has no gml:id.
     """
-    feature_id = el.get(GML_ID)
-    if not feature_id:
+    raw_id = el.get(GML_ID)
+    if not raw_id:
         return None
+    feature_id, orig_gml_id, is_dup = _resolve_feature_id(
+        raw_id, _content_hash(el), _geom_hash(el), source)
+    if is_dup:
+        return None   # exact or geometric duplicate already collected; skip
 
     props: dict = {
         "id":           feature_id,
@@ -2198,6 +2686,9 @@ def _collect_city_object(el, feature_type, ns_prefix, scalar_attrs,
         "feature_type": feature_type,
         "source":       source,
     }
+    if orig_gml_id is not None:
+        props["source_gml_id"] = orig_gml_id
+        props["id_synthesized"] = True
 
     # Optional bounding box
     b_env = el.find("gml:boundedBy/gml:Envelope", NS)
@@ -2326,6 +2817,14 @@ def _create_indexes(sess):
         ("Dataset",               "id"),
         ("CityObject",            "id"),
         ("CityObject",            "feature_type"),
+        # `source` indexes: the per-file post-pass (PART_OF, HAS_FUNCTION,
+        # HAS_ROOF_TYPE, LOCATED_IN, xlink prototype resolution) filters by the
+        # tile's filename. Without these, every one of those queries is a full
+        # label scan — O(total nodes) per FILE, i.e. quadratic across a tiled
+        # city (the dominant slowdown on Tokyo's 2,335 tiles).
+        ("Building",              "source"),
+        ("CityObject",            "source"),
+        ("GeometryMultiSurface",  "source"),
     ]:
         try:
             idx_name = f"{label.lower()}_{prop}_idx"
@@ -2355,12 +2854,43 @@ def _create_indexes(sess):
 # Main ingestion
 # ---------------------------------------------------------------------------
 
-def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = True):
+def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = True,
+           dataset_id: str = None, dataset_name: str = None,
+           target_crs: str = None, source_crs: str = None, id_registry: dict = None,
+           skip_spatial_index: bool = False, defer_code_hubs: bool = False):
+    # `source` stays per-file (tile-level provenance on every feature node);
+    # `dataset_id`/`dataset_name`, when given, merge many tiles into ONE Dataset
+    # node (see main()). Without them, behaviour is unchanged: one file, one Dataset.
+    # `target_crs` reprojects all coordinates to a metric CRS at ingest (see the
+    # reprojection primitives above); `source_crs` overrides the file's srsName.
+    # `id_registry` is the feature-id resolution state (see _resolve_feature_id):
+    # pass a shared registry across the sequential tiles of ONE Dataset so cross-tile
+    # duplicate/collision gml:ids are deduped/disambiguated; leave None for an
+    # independent dataset (each parallel ingest gets its own registry on its own thread).
     source = gml_path.name
+    _reg = id_registry if id_registry is not None else _new_id_registry()
+    _tls.seen_ids = _reg["seen"]
+    _tls.assigned_ids = _reg["assigned"]
+    # Lock is only needed when this registry is shared across parallel parser
+    # threads; for a private registry it is uncontended and effectively free.
+    _tls.id_lock = _reg.get("lock")
 
     with open(gml_path, "rb") as fh:
         header_bytes = fh.read(2000)
     fmt = _format_version(header_bytes)
+
+    # Set up (or clear) the per-thread reprojector before any coordinate is parsed.
+    reproj_target = _epsg_from_srs(target_crs) if target_crs else None
+    if reproj_target:
+        src_srs = source_crs or _peek_srsname(gml_path)
+        if not src_srs:
+            raise SystemExit(f"ERROR: --target-crs set but no source CRS found in "
+                             f"{gml_path.name}; pass --source-crs.")
+        _tls.reproj = _Reprojector(src_srs, reproj_target)
+        print(f"  Reprojecting: {_epsg_from_srs(src_srs) or src_srs} -> {reproj_target}")
+    else:
+        _tls.reproj = None
+    src_crs_original = None
 
     crs           = None
     srs_dim       = 3
@@ -2370,7 +2900,8 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
     lod_detected  = False
     envelope_done = False
 
-    dataset_id         = _slug(gml_path.stem)
+    dataset_id         = dataset_id or _slug(gml_path.stem)
+    ds_display_name    = dataset_name or source
     seen_functions     = set()
     seen_roof_types    = set()
     gemeinde_key       = ""
@@ -2381,12 +2912,12 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
     batch = _new_batch()
 
     with driver.session(database="neo4j") as sess:
-        _create_indexes(sess)
-
-        sess.run(
-            "MERGE (n:Dataset {id: $id}) SET n.name = $name, n.source = $src",
-            id=dataset_id, name=source, src=source,
-        )
+        with _SHARED_NODE_LOCK:
+            _create_indexes(sess)
+            sess.run(
+                "MERGE (n:Dataset {id: $id}) SET n.name = $name, n.source = $src",
+                id=dataset_id, name=ds_display_name, src=ds_display_name,
+            )
 
         # ── Writer thread pool ───────────────────────────────────────────────
         batch_queue: queue.Queue = queue.Queue(maxsize=num_writers * 2)
@@ -2401,7 +2932,17 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
                         batch_queue.task_done()
                         break
                     try:
-                        _flush_batch(wsess, item)
+                        # Batches are pure MERGE/SET (idempotent), so a whole-batch
+                        # retry on transient lock conflicts (deadlocks between
+                        # writer threads sharing edge endpoints) is safe.
+                        for attempt in range(5):
+                            try:
+                                _flush_batch(wsess, item)
+                                break
+                            except TransientError:
+                                if attempt == 4:
+                                    raise
+                                time.sleep(0.2 * (attempt + 1))
                     except Exception as exc:
                         with flush_lock:
                             flush_errors.append(exc)
@@ -2522,7 +3063,7 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
             ).data()
         ]
         for _i in range(0, len(_bids), 1000):
-            sess.run(
+            _run_retry(sess,
                 "UNWIND $ids AS bid MATCH (b:Building {id: bid}) "
                 "MATCH (d:Dataset {id: $did}) MERGE (b)-[:PART_OF]->(d)",
                 ids=_bids[_i : _i + 1000], did=dataset_id,
@@ -2536,81 +3077,87 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
             ).data()
         ]
         for _i in range(0, len(_co_ids), 1000):
-            sess.run(
+            _run_retry(sess,
                 "UNWIND $ids AS coid MATCH (n:CityObject {id: coid}) "
                 "MATCH (d:Dataset {id: $did}) MERGE (n)-[:PART_OF]->(d)",
                 ids=_co_ids[_i : _i + 1000], did=dataset_id,
             )
 
         # ── HAS_FUNCTION / HAS_ROOF_TYPE (serial post-pass) ──────────────────
-        _fn_rows = sess.run(
-            "MATCH (b:Building {source: $src}) WHERE b.function_code IS NOT NULL "
-            "AND NOT (b)-[:HAS_FUNCTION]->() RETURN b.id AS id, b.function_code AS code",
-            src=source,
-        ).data()
-        for _i in range(0, len(_fn_rows), 1000):
-            sess.run(
-                "UNWIND $rows AS row MATCH (b:Building {id: row.id}) "
-                "MATCH (f:BuildingFunction {code: row.code}) MERGE (b)-[:HAS_FUNCTION]->(f)",
-                rows=_fn_rows[_i : _i + 1000],
-            )
-
-        _rt_rows = sess.run(
-            "MATCH (b:Building {source: $src}) WHERE b.roof_type_code IS NOT NULL "
-            "AND NOT (b)-[:HAS_ROOF_TYPE]->() RETURN b.id AS id, b.roof_type_code AS code",
-            src=source,
-        ).data()
-        for _i in range(0, len(_rt_rows), 1000):
-            sess.run(
-                "UNWIND $rows AS row MATCH (b:Building {id: row.id}) "
-                "MATCH (r:RoofType {code: row.code}) MERGE (b)-[:HAS_ROOF_TYPE]->(r)",
-                rows=_rt_rows[_i : _i + 1000],
-            )
+        # Hubs + edges are DERIVED from the Building scalars written by the
+        # batches (function_code / roof_type_code). The hub MERGEs run under
+        # _SHARED_NODE_LOCK because independent datasets may ingest in parallel
+        # threads; each fires once per distinct code per file, so the lock is
+        # held microseconds. In tiled mode (defer_code_hubs=True) this whole
+        # section is skipped and main() derives hubs + edges for the entire
+        # Dataset in ONE single-threaded pass after all tiles — race-free by
+        # construction and free of per-hub lock contention.
+        if not defer_code_hubs:
+            _derive_code_hubs(sess, source_filter=source)
 
         # ── Dataset metadata ──────────────────────────────────────────────────
+        # Scalar metadata uses coalesce and the bbox uses min/max CASE so that
+        # ingesting several tiled files under one dataset_id UNIONS their
+        # envelopes instead of the last tile overwriting the others. For a fresh
+        # single-file dataset this reduces to plain assignment (coalesce of null,
+        # CASE on null), so single-file behaviour is unchanged.
         cm_name, cm_desc, cm_schema_loc = _read_citymodel_header(gml_path)
-        ds_props = {
-            "format":        fmt,
-            "crs":           crs,
-            "srs_dimension": srs_dim,
-            "lod":           lod,
-        }
-        if cm_name:        ds_props["gml_name"]        = cm_name
-        if cm_desc:        ds_props["gml_description"]  = cm_desc
-        if cm_schema_loc:  ds_props["schema_location"]  = cm_schema_loc
+        # When reprojecting, the stored CRS is the target; the original srsName
+        # is kept as source_crs for provenance.
+        stored_crs = reproj_target or crs
+        _run_retry(sess,
+            "MATCH (n:Dataset {id: $id}) SET "
+            "n.format = coalesce(n.format, $format), "
+            "n.crs = coalesce(n.crs, $crs), "
+            "n.srs_dimension = coalesce(n.srs_dimension, $srs_dim), "
+            "n.lod = coalesce(n.lod, $lod), "
+            "n.source_crs = coalesce(n.source_crs, $scrs)",
+            id=dataset_id, format=fmt, crs=stored_crs, srs_dim=srs_dim, lod=lod,
+            scrs=(crs if reproj_target else None),
+        )
+        for _k, _v in (("gml_name", cm_name), ("gml_description", cm_desc),
+                       ("schema_location", cm_schema_loc)):
+            if _v:
+                _run_retry(sess, f"MATCH (n:Dataset {{id: $id}}) SET n.{_k} = coalesce(n.{_k}, $v)",
+                           id=dataset_id, v=_v)
         if bbox_lc_text:
             _lc = _parse_corner(bbox_lc_text)
-            ds_props.update({
-                "bbox_lower_corner": bbox_lc_text,
-                "bbox_min_x": _lc[0], "bbox_min_y": _lc[1], "bbox_min_z": _lc[2],
-            })
+            _run_retry(sess,
+                "MATCH (n:Dataset {id: $id}) SET "
+                "n.bbox_lower_corner = coalesce(n.bbox_lower_corner, $t), "
+                "n.bbox_min_x = CASE WHEN n.bbox_min_x IS NULL OR $x < n.bbox_min_x THEN $x ELSE n.bbox_min_x END, "
+                "n.bbox_min_y = CASE WHEN n.bbox_min_y IS NULL OR $y < n.bbox_min_y THEN $y ELSE n.bbox_min_y END, "
+                "n.bbox_min_z = CASE WHEN n.bbox_min_z IS NULL OR $z < n.bbox_min_z THEN $z ELSE n.bbox_min_z END",
+                id=dataset_id, t=bbox_lc_text, x=_lc[0], y=_lc[1], z=_lc[2],
+            )
         if bbox_uc_text:
             _uc = _parse_corner(bbox_uc_text)
-            ds_props.update({
-                "bbox_upper_corner": bbox_uc_text,
-                "bbox_max_x": _uc[0], "bbox_max_y": _uc[1], "bbox_max_z": _uc[2],
-            })
-        sess.run(
-            "MATCH (n:Dataset {id: $id}) SET n += $props",
-            id=dataset_id, props=ds_props,
-        )
+            _run_retry(sess,
+                "MATCH (n:Dataset {id: $id}) SET "
+                "n.bbox_upper_corner = coalesce(n.bbox_upper_corner, $t), "
+                "n.bbox_max_x = CASE WHEN n.bbox_max_x IS NULL OR $x > n.bbox_max_x THEN $x ELSE n.bbox_max_x END, "
+                "n.bbox_max_y = CASE WHEN n.bbox_max_y IS NULL OR $y > n.bbox_max_y THEN $y ELSE n.bbox_max_y END, "
+                "n.bbox_max_z = CASE WHEN n.bbox_max_z IS NULL OR $z > n.bbox_max_z THEN $z ELSE n.bbox_max_z END",
+                id=dataset_id, t=bbox_uc_text, x=_uc[0], y=_uc[1], z=_uc[2],
+            )
 
         # ── District / City ───────────────────────────────────────────────────
         district_name, city_name = _resolve_municipality(gemeinde_key, gml_path.stem)
         district_id = _slug(district_name)
         city_id     = _slug(city_name)
 
-        sess.run("MERGE (n:City {id: $id}) SET n.name = $name", id=city_id, name=city_name)
-        sess.run("MERGE (n:District {id: $id}) SET n.name = $name", id=district_id, name=district_name)
-        sess.run(
+        with _SHARED_NODE_LOCK:
+            sess.run("MERGE (n:City {id: $id}) SET n.name = $name", id=city_id, name=city_name)
+            sess.run("MERGE (n:District {id: $id}) SET n.name = $name", id=district_id, name=district_name)
+        _run_retry(sess,
             "MATCH (a:District {id: $did}), (b:City {id: $cid}) MERGE (a)-[:PART_OF]->(b)",
             did=district_id, cid=city_id,
         )
-        sess.run(
+        _run_retry(sess,
             "MATCH (a:Dataset {id: $dsid}), (b:District {id: $did}) MERGE (a)-[:COVERS]->(b)",
             dsid=dataset_id, did=district_id,
         )
-        sess.run(
+        _run_retry(sess,
             "MATCH (b:Building {source: $src}), (d:District {id: $did}) "
             "MERGE (b)-[:LOCATED_IN]->(d)",
             src=source, did=district_id,
@@ -2625,12 +3172,29 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
             print("  Skipping NEARBY_BUILDING proximity edges (nearby_edges=False).")
 
         # ── Spatial R-tree (all feature bboxes) ──────────────────────────────
-        print("  Populating spatial R-tree index on bounding boxes …")
-        spatial_ok      = _ensure_spatial_layer(sess)
+        # _index_features_spatial re-walks EVERY Building/CityObject node (adds
+        # are idempotent but the walk is O(total nodes)), so running it per file
+        # in a tiled ingest is quadratic across the tile set. The tiled path
+        # therefore defers it (skip_spatial_index=True) and main() runs ONE
+        # final pass after all tiles.
         spatial_indexed = 0
-        if spatial_ok:
-            spatial_indexed = _index_features_spatial(sess)
-        print(f"  Spatial R-tree entries: {spatial_indexed}")
+        if skip_spatial_index:
+            print("  Spatial R-tree indexing deferred to the final pass (tiled mode).")
+        else:
+            print("  Populating spatial R-tree index on bounding boxes …")
+            spatial_ok = _ensure_spatial_layer(sess)
+            if spatial_ok:
+                # NB: CityObject footprints are intentionally NOT indexed here.
+                # OSM fusion (ingest_osm.py) pulls candidate footprints from this
+                # 'features' layer; putting non-Building CityObjects (esp. roads,
+                # whose bbox rectangles span many match tiles) in it before fusion
+                # makes the matcher's per-tile spatial.intersects and the per-type
+                # match phases explode on a dense multi-module city (Tokyo). The
+                # CityObject spatial index is added AFTER fusion instead — see
+                # ingest_osm.py's post-fusion CityObject-index step (and
+                # _backfill_cityobject_bbox_from_geometry).
+                spatial_indexed = _index_features_spatial(sess)
+            print(f"  Spatial R-tree entries: {spatial_indexed}")
 
         # ── GenAI vector embeddings (optional) ───────────────────────────────
         genai_key = os.environ.get("NEO4J_GENAI_KEY")
@@ -2712,23 +3276,83 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Ingest CityGML 2.0 (all modules) into Neo4j.")
-    parser.add_argument("file", nargs="?", help="Path to .gml file")
+    parser.add_argument("paths", nargs="*",
+                        help="One or more .gml files and/or directories of .gml files "
+                             "(a directory is expanded to the .gml files it contains).")
+    parser.add_argument("--dataset-name", default=None,
+                        help="Merge ALL input .gml into a SINGLE Dataset with this name — "
+                             "use for a tiled city (e.g. --dataset-name tokyo for the 23 ward "
+                             "files, or --dataset-name nyc for the 21 DA tiles). Every feature "
+                             "keeps its own file name as `source` (tile provenance), while the "
+                             "Dataset node is shared and its bounding box is the union of all "
+                             "tiles. Without this flag, each .gml becomes its own Dataset.")
+    parser.add_argument("--recursive", action="store_true",
+                        help="Recurse into sub-directories when a path is a directory.")
+    parser.add_argument("--target-crs", default=None,
+                        help="Reproject all coordinates to this metric CRS at ingest "
+                             "(e.g. --target-crs EPSG:6677 for Tokyo, EPSG:32618 for NYC). "
+                             "Required for non-metric sources so distances/areas/proximity "
+                             "and OSM fusion are correct; already-metric datasets don't need it.")
+    parser.add_argument("--source-crs", default=None,
+                        help="Override the source CRS (default: read the srsName from the file). "
+                             "Only relevant together with --target-crs.")
     parser.add_argument(
         "--nearby-edges",
         action="store_true",
         help="Build NEARBY_BUILDING proximity edges and run GDS community detection "
-             "(off by default; expensive on large datasets).",
+             "(off by default; expensive on large datasets). For a tiled city, run this "
+             "once after all tiles are ingested so cross-tile neighbours are included.",
+    )
+    parser.add_argument(
+        "--parse-workers",
+        type=int,
+        default=1,
+        help="Parallel tile parsers for a --dataset-name (tiled) ingest: each worker "
+             "parses one .gml file at a time, all sharing ONE id-resolution registry "
+             "(lock-guarded), so cross-tile duplicate gml:ids still dedup/split "
+             "correctly. Default 1 = sequential (fully deterministic). With N > 1, "
+             "which occurrence of a duplicate id is encountered first follows thread "
+             "scheduling; byte-identical replicas are unaffected, but for "
+             "geometry-identical duplicates the surviving node's ancillary attributes "
+             "come from whichever copy happened to be seen first. Parsing is "
+             "GIL-bound Python + C, so gains saturate around 4-12 workers.",
+    )
+    parser.add_argument(
+        "--writers",
+        type=int,
+        default=min(16, os.cpu_count() or 3),
+        help="Parallel Neo4j writer threads draining the batch queue (default: min(16, cpu "
+             "count), matching ingest_osm/census). Batches are idempotent MERGEs with "
+             "transient-lock retry, so raising this is safe. Note the practical ceiling is "
+             "the single lxml parser thread that feeds the queue (tiles of one --dataset-name "
+             "are parsed sequentially), so writers past what keeps up with it just idle; "
+             "Neo4j commits also serialize on one tx log. The page cache, not writer count, "
+             "is the dominant throughput lever.",
     )
     args = parser.parse_args()
 
-    if args.file:
-        candidates = [Path(args.file)]
-    else:
-        print("ERROR: No input file specified as argument.")
+    # Expand paths (files and/or directories) into a flat, sorted list of .gml files.
+    candidates = []
+    for p in args.paths:
+        pp = Path(p)
+        if pp.is_dir():
+            candidates.extend(sorted(pp.glob("**/*.gml" if args.recursive else "*.gml")))
+        elif pp.is_file():
+            candidates.append(pp)
+        else:
+            print(f"WARNING: {pp} not found — skipping.")
+    if not candidates:
+        print("ERROR: No .gml input files found. Pass one or more files or a directory.")
         sys.exit(1)
 
+    shared_id = _slug(args.dataset_name) if args.dataset_name else None
     do_nearby_edges = args.nearby_edges
-    pool_size = max(20, len(candidates) * 4)
+    # Tiled (shared_id) path runs parse_workers concurrent tile ingests (writers
+    # split among them); independent datasets each get their own full writer pool.
+    parse_workers = max(1, args.parse_workers) if shared_id else 1
+    writers_per = args.writers if parse_workers == 1 else max(2, args.writers // parse_workers)
+    concurrent_ingests = parse_workers if shared_id else len(candidates)
+    pool_size = max(20, concurrent_ingests * (writers_per + 2) + 4)
 
     print("Connecting to Neo4j …")
     driver = GraphDatabase.driver(
@@ -2741,18 +3365,85 @@ if __name__ == "__main__":
     print("  Connected.")
 
     results = {}
-    with ThreadPoolExecutor(max_workers=len(candidates)) as pool:
-        futures = {}
-        for f in candidates:
-            print(f"Ingesting {f} …")
-            futures[pool.submit(ingest, f, driver, nearby_edges=do_nearby_edges)] = f
-        for fut in as_completed(futures):
-            gml_f = futures[fut]
-            try:
-                results[gml_f.name] = fut.result()
-            except Exception as exc:
-                print(f"ERROR ingesting {gml_f}: {exc}")
-                results[gml_f.name] = {"error": str(exc)}
+    if shared_id:
+        # Tiled city -> one Dataset. One id-resolution registry is shared across
+        # ALL tiles (lock-guarded), so a gml:id repeated across tiles is deduped
+        # when the feature is byte/geometry-identical (e.g. Tokyo ward-replicated
+        # tiles) and split when it is a distinct feature sharing an id (e.g. a
+        # placeholder like 'ID_'). Dataset/City/District singleton MERGEs are
+        # serialized via _SHARED_NODE_LOCK; the Dataset bbox union is Cypher-atomic
+        # (CASE min/max under the node write lock); edge batches onto shared nodes
+        # carry transient-lock retry. Per-file spatial indexing is DEFERRED: one
+        # final R-tree pass replaces the per-file full re-walk, which was quadratic
+        # across the tile set.
+        print(f"Merging {len(candidates)} file(s) into one Dataset "
+              f"'{args.dataset_name}' (id={shared_id}) "
+              f"[parse-workers={parse_workers}, writers/file={writers_per}] ...")
+        shared_registry = _new_id_registry()
+
+        def _ingest_tile(f):
+            print(f"Ingesting {f} -> dataset '{args.dataset_name}' ...")
+            return ingest(f, driver, num_writers=writers_per,
+                          nearby_edges=do_nearby_edges,
+                          dataset_id=shared_id, dataset_name=args.dataset_name,
+                          target_crs=args.target_crs, source_crs=args.source_crs,
+                          id_registry=shared_registry, skip_spatial_index=True,
+                          defer_code_hubs=True)
+
+        if parse_workers == 1:
+            for f in candidates:
+                try:
+                    results[f.name] = _ingest_tile(f)
+                except Exception as exc:
+                    print(f"ERROR ingesting {f}: {exc}")
+                    results[f.name] = {"error": str(exc)}
+        else:
+            with ThreadPoolExecutor(max_workers=parse_workers) as tile_pool:
+                tile_futs = {tile_pool.submit(_ingest_tile, f): f for f in candidates}
+                for fut in as_completed(tile_futs):
+                    tf = tile_futs[fut]
+                    try:
+                        results[tf.name] = fut.result()
+                    except Exception as exc:
+                        print(f"ERROR ingesting {tf}: {exc}")
+                        results[tf.name] = {"error": str(exc)}
+
+        # Single final R-tree pass over the whole Dataset (replaces the per-file
+        # full re-walks; spatial.addNodes is idempotent, insertions stay serial),
+        # then ONE single-threaded derivation of the BuildingFunction/RoofType
+        # vocabulary hubs + edges from the Building scalars (race-free: no hub
+        # is ever touched by the parallel writers).
+        with driver.session(database="neo4j") as sess:
+            print("Populating spatial R-tree index on bounding boxes (final pass) …")
+            if _ensure_spatial_layer(sess):
+                # CityObject footprints are added to the R-tree AFTER OSM fusion,
+                # not here — see the note at the single-file call site above and
+                # ingest_osm.py's post-fusion CityObject-index step.
+                _total_spatial = _index_features_spatial(sess)
+                print(f"Spatial R-tree entries: {_total_spatial}")
+                results["_spatial_indexed_total"] = _total_spatial
+            print("Deriving BuildingFunction/RoofType hubs + edges (final pass) …")
+            _derive_code_hubs(sess)
+
+        if do_nearby_edges:
+            print("NOTE: proximity edges were built per tile; for correct cross-tile "
+                  "neighbours, they span all buildings already loaded at each step.")
+    else:
+        # Independent datasets -> parallel (unchanged behaviour).
+        with ThreadPoolExecutor(max_workers=len(candidates)) as pool:
+            futures = {}
+            for f in candidates:
+                print(f"Ingesting {f} ...")
+                futures[pool.submit(ingest, f, driver, num_writers=args.writers,
+                                    nearby_edges=do_nearby_edges,
+                                    target_crs=args.target_crs, source_crs=args.source_crs)] = f
+            for fut in as_completed(futures):
+                gml_f = futures[fut]
+                try:
+                    results[gml_f.name] = fut.result()
+                except Exception as exc:
+                    print(f"ERROR ingesting {gml_f}: {exc}")
+                    results[gml_f.name] = {"error": str(exc)}
 
     driver.close()
     print("Done.")
