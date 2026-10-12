@@ -192,17 +192,43 @@ def _gen_string_attrs(parent, props, gen_attrs_map):
     """Emit gen:*Attribute elements, preserving the original type and uom.
 
     gen_attrs_map values are either a plain name (legacy) or
-    {"name": ..., "type": "string|int|double|date|uri|measure"}.
+    {"name": ..., "type": "string|int|double|date|uri|measure"[, "set": [...]]}.
+    A "set" entry is the root→leaf gen:genericAttributeSet wrapper path captured
+    at ingest ([{"name":…, "i": sibling-index[, "codeSpace":…]}, …]); wrappers are
+    recreated here so nested attribute sets (e.g. Helsinki's per-building data-
+    integration set) round-trip instead of being flattened away.
     """
+    # wrapper-path -> already-created gen:genericAttributeSet element
+    set_elements = {}
+
+    def _set_container(set_path):
+        if not set_path:
+            return parent
+        key = tuple((e.get("name", ""), e.get("i", 0), e.get("codeSpace"))
+                    for e in set_path)
+        el = set_elements.get(key)
+        if el is None:
+            container = _set_container(set_path[:-1])
+            leaf = set_path[-1]
+            el = _sub(container, f"{GEN}genericAttributeSet")
+            if leaf.get("name"):
+                el.set("name", leaf["name"])
+            if leaf.get("codeSpace"):
+                el.set("codeSpace", leaf["codeSpace"])
+            set_elements[key] = el
+        return el
+
     for key, meta in gen_attrs_map.items():
         if key not in props:
             continue
         if isinstance(meta, dict):
             original_name = meta.get("name", key)
             gtype         = meta.get("type", "string")
+            container     = _set_container(meta.get("set") or [])
         else:
             original_name, gtype = meta, "string"
-        sa  = _sub(parent, f"{GEN}{gtype}Attribute", name=original_name)
+            container = parent
+        sa  = _sub(container, f"{GEN}{gtype}Attribute", name=original_name)
         val = _sub(sa, f"{GEN}value", props[key])
         if gtype == "measure":
             uom = props.get(f"{key}_uom")
@@ -576,17 +602,20 @@ def query_all_building_ids(sess, source, bbox_wkt=None):
 
 
 def query_buildings_core_batch(sess, bldg_ids, label="Building"):
-    """Building/BuildingPart props + its lod*Solid node + terrain-intersection
-    lines + lod*MultiCurve lines. Solid surfaceMembers are fetched separately via
-    query_solid_members()."""
+    """Building/BuildingPart props + ALL its lod*Solid nodes + terrain-intersection
+    lines + lod*MultiCurve lines. A feature can carry one solid per LOD at the same
+    time (Helsinki ships lod1Solid + lod2Solid on the same building), so solids are
+    aggregated before the terrain-intersection expansion to avoid a row cross-
+    product. Solid surfaceMembers are fetched separately via query_solid_members()."""
     rows = sess.run(
         f"""
         MATCH (b:{label}) WHERE b.id IN $ids
         OPTIONAL MATCH (b)-[:HAS_LOD_SOLID]->(sol:GeometrySolid)
+        WITH b, collect(DISTINCT sol) AS sols
         OPTIONAL MATCH (b)-[:HAS_TERRAIN_INTERSECTION]->(ti:TerrainIntersection)
         OPTIONAL MATCH (ti)-[hl:HAS_LINE]->(ls:GeometryLineString)
-        WITH b, sol, ti, collect({{ls: ls, order: coalesce(hl.order, 0)}}) AS lines_raw
-        RETURN b, sol, lines_raw, coalesce(ti.lod, '2') AS ti_lod
+        WITH b, sols, ti, collect({{ls: ls, order: coalesce(hl.order, 0)}}) AS lines_raw
+        RETURN b, sols, lines_raw, coalesce(ti.lod, '2') AS ti_lod
         """,
         ids=bldg_ids,
     )
@@ -597,9 +626,11 @@ def query_buildings_core_batch(sess, bldg_ids, label="Building"):
             [x for x in row["lines_raw"] if x["ls"] is not None],
             key=lambda x: x["order"],
         )
+        solids = sorted((dict(s) for s in row["sols"] if s is not None),
+                        key=lambda s: str(s.get("lod", "9")))
         result[b["id"]] = {
             "props":  b,
-            "solid":  dict(row["sol"]) if row["sol"] else None,
+            "solids": solids,
             "lines":  [dict(x["ls"]) for x in lines_sorted],
             "ti_lod": row["ti_lod"],
         }
@@ -909,8 +940,8 @@ def _enrich_building_cores(sess, cores_map, label, crs, srs_dim):
     # Solid surfaceMembers (shell + room solids)
     solid_index: dict = {}
     for core in cores_map.values():
-        if core.get("solid"):
-            solid_index.setdefault(core["solid"]["id"], []).append(core["solid"])
+        for solid in core.get("solids") or []:
+            solid_index.setdefault(solid["id"], []).append(solid)
         for room in core.get("rooms", []):
             if room.get("solid"):
                 solid_index.setdefault(room["solid"]["id"], []).append(room["solid"])
@@ -954,12 +985,14 @@ def query_all_city_object_ids(sess, source):
 
 
 def query_city_objects_core_batch(sess, co_ids):
-    """Props + optional solid node (surfaceMembers fetched via query_solid_members)."""
+    """Props + ALL lod*Solid nodes (a feature may carry one solid per LOD;
+    surfaceMembers fetched via query_solid_members)."""
     rows = sess.run(
         """
         MATCH (n:CityObject) WHERE n.id IN $ids
         OPTIONAL MATCH (n)-[:HAS_LOD_SOLID]->(sol:GeometrySolid)
-        RETURN n, sol
+        WITH n, collect(DISTINCT sol) AS sols
+        RETURN n, sols
         """,
         ids=co_ids,
     )
@@ -968,7 +1001,8 @@ def query_city_objects_core_batch(sess, co_ids):
         n = dict(row["n"])
         result[n["id"]] = {
             "props": n,
-            "solid": dict(row["sol"]) if row["sol"] else None,
+            "solids": sorted((dict(s) for s in row["sols"] if s is not None),
+                             key=lambda s: str(s.get("lod", "9"))),
         }
     return result
 
@@ -1177,8 +1211,7 @@ def _populate_building(bldg, core, surfaces, crs, srs_dim):
     for surf_data in surfaces:
         _write_bldg_surface(bldg, surf_data)
 
-    solid = core.get("solid")
-    if solid:
+    for solid in core.get("solids") or []:
         _write_solid(bldg, solid)
 
     if core.get("lines"):
@@ -1222,19 +1255,32 @@ def _populate_building(bldg, core, surfaces, crs, srs_dim):
     for part_core in core.get("parts", []):
         _write_building_part(bldg, part_core, crs, srs_dim)
 
-    # bldg:address — re-emit the stored xAL subtree verbatim (lossless)
-    if props.get("address_xml"):
+    # bldg:address — re-emit the stored xAL subtree(s) verbatim (lossless).
+    # New format: JSON list of fragments (bldg:address is unbounded); legacy
+    # graphs may still hold a single raw XML fragment string.
+    raw_addr = props.get("address_xml")
+    if raw_addr:
         try:
-            bldg.append(etree.fromstring(props["address_xml"]))
-        except etree.XMLSyntaxError:
-            pass
+            frags = json.loads(raw_addr)
+            if isinstance(frags, str):
+                frags = [frags]
+        except ValueError:
+            frags = [raw_addr]
+        for frag in frags:
+            try:
+                bldg.append(etree.fromstring(frag))
+            except etree.XMLSyntaxError:
+                pass
 
 
 def build_building_element(core, surfaces, crs, srs_dim):
     """Build and return a standalone cityObjectMember element for a Building."""
     member = etree.Element(f"{CG}cityObjectMember")
     bldg   = _sub(member, f"{BLDG}Building")
-    bldg.set(f"{GML}id", core["props"]["id"])
+    # Emit the authoritative gml:id: when ingest synthesized a unique node id to
+    # avoid a MERGE collapse, source_gml_id holds the original (see
+    # ingest_citygml._unique_feature_id) so duplicate-id sources round-trip faithfully.
+    bldg.set(f"{GML}id", core["props"].get("source_gml_id") or core["props"]["id"])
     _populate_building(bldg, core, surfaces, crs, srs_dim)
     return member
 
@@ -1243,7 +1289,7 @@ def _write_building_part(parent_el, core, crs, srs_dim):
     """Emit a bldg:consistsOfBuildingPart/bldg:BuildingPart, populated with the
     full AbstractBuilding content (recursively, incl. nested parts)."""
     bp = _sub(_sub(parent_el, f"{BLDG}consistsOfBuildingPart"), f"{BLDG}BuildingPart")
-    bp.set(f"{GML}id", core["props"]["id"])
+    bp.set(f"{GML}id", core["props"].get("source_gml_id") or core["props"]["id"])
     _populate_building(bp, core, core.get("surfaces", []), crs, srs_dim)
 
 
@@ -1409,7 +1455,7 @@ def build_city_object_element(co_id, core, ms_list, surfaces, crs, srs_dim):
     """
     Build a cityObjectMember element for any non-building CityGML feature type.
     co_id    : gml:id string
-    core     : {"props": {...}, "solid": {...}|None, "solid_poly_ids": [...]}
+    core     : {"props": {...}, "solids": [{...}, …], "solid_poly_ids": [...]}
     ms_list  : [{"ms": ms_props, "lod": lod_str, "polys": {pid: poly_data}}, ...]
     surfaces : [surf_data, ...] from query_city_objects_surfaces_batch
     """
@@ -1424,7 +1470,7 @@ def build_city_object_element(co_id, core, ms_list, surfaces, crs, srs_dim):
 
     member  = etree.Element(f"{CG}cityObjectMember")
     feat_el = _sub(member, f"{NB}{feature_type}")
-    feat_el.set(f"{GML}id", co_id)
+    feat_el.set(f"{GML}id", props.get("source_gml_id") or co_id)
 
     # gml:AbstractFeature head: description, name
     if props.get("gml_description"):
@@ -1471,15 +1517,16 @@ def build_city_object_element(co_id, core, ms_list, surfaces, crs, srs_dim):
 
     # ── Geometry ──────────────────────────────────────────────────────────────
 
-    # Solid (solid_or_surface only) — members re-emit xlink:href / inline / orientable
-    solid = core.get("solid")
-    if solid and geom_style == "solid_or_surface":
-        lod_n  = str(solid.get("lod", "2"))
-        sol_el = _sub(_sub(feat_el, f"{NB}lod{lod_n}Solid"), f"{GML}Solid")
-        sol_el.set(f"{GML}id", solid["id"])
-        cs = _sub(_sub(sol_el, f"{GML}exterior"), f"{GML}CompositeSurface")
-        cs.set(f"{GML}id", solid.get("composite_surface_id") or _new_id())
-        _write_members(cs, solid.get("members", []))
+    # Solids (solid_or_surface only) — one lod{N}Solid per stored solid; members
+    # re-emit xlink:href / inline / orientable
+    if geom_style == "solid_or_surface":
+        for solid in core.get("solids") or []:
+            lod_n  = str(solid.get("lod", "2"))
+            sol_el = _sub(_sub(feat_el, f"{NB}lod{lod_n}Solid"), f"{GML}Solid")
+            sol_el.set(f"{GML}id", solid["id"])
+            cs = _sub(_sub(sol_el, f"{GML}exterior"), f"{GML}CompositeSurface")
+            cs.set(f"{GML}id", solid.get("composite_surface_id") or _new_id())
+            _write_members(cs, solid.get("members", []))
 
     # MultiSurface / Geometry / ImplicitRepresentation
     for ms_entry in ms_list:
@@ -1624,8 +1671,8 @@ def export(out_path, bbox_wkt=None):
 
             co_solid_index = {}
             for core in cores_map.values():
-                if core.get("solid"):
-                    co_solid_index.setdefault(core["solid"]["id"], []).append(core["solid"])
+                for solid in core.get("solids") or []:
+                    co_solid_index.setdefault(solid["id"], []).append(solid)
             co_members_map = query_solid_members(sess, list(co_solid_index))
             for sid, solids in co_solid_index.items():
                 for s in solids:
