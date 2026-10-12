@@ -5,6 +5,12 @@
 > ALKIS), how OSM and pykci features are matched across the 1:1 / 1:n / n:1 / n:m
 > footprint cases, and how the graph stays **compact** and **provenance-aware** while
 > doing so. Implemented by [`ingest_osm.py`](ingest_osm.py).
+>
+> This integration is the **reference implementation** of the *Provenance & Multi-Source
+> Design Principle* in [GRAPH.md](GRAPH.md) — the patterns below (`source` on every node,
+> non-destructive `osm_*` namespacing, an `OsmFeature` provenance node, confidence-weighted
+> `ENRICHED_BY` edges, a separate R-tree layer, compact `other_tags`) are the templates any
+> future source (ML predictions, LoD3, sensor data) should follow.
 
 ---
 
@@ -510,13 +516,15 @@ Hamburg: `building:material`, `building:colour`, `official_name`, `website`. Lon
 
 1. **Resolve target** — `get_dataset(sess, --dataset)` reads the `Dataset` node's `crs`
    (parsed to EPSG via `_epsg_from_srs`) and bbox corners; one dataset required (or name it).
-2. **Clip window** — inverse `pyproj` transform of `bbox ± buffer` → WGS84 `-spat` window.
+2. **City bbox** — inverse `pyproj` transform of `bbox ± buffer` → WGS84 `-spat` filter.
 3. **Idempotent clean** — `ensure_indexes()` then `reset_osm()` (drop `osm_features` layer,
    strip `osm_*` props restoring `Building.name = id`, delete prior `OsmFeature`s + OSM-only
    geometry via `id STARTS WITH 'osm:'`). CityGML data untouched.
 4. **Read & classify** — `extract_layer()` shells out to **`ogr2ogr`** (no GDAL Python
-   binding needed) per layer (`multipolygons`/`points`/`lines`), clipping (`-spat`),
-   reprojecting (`-t_srs`) and tag-filtering (`LAYER_WHERE`) into GeoJSON; parsed with
+   binding needed) per layer (`multipolygons`/`points`/`lines`), clipping (`-spat`) and
+   reprojecting (`-t_srs`) into GeoJSON; `points`/`multipolygons` are read **unfiltered**
+   (every in-bbox feature is ingested; untagged-kind ones land in kind `other`), `lines`
+   is restricted to the transport/water network (`LAYER_WHERE`); parsed with
    `json` + `shapely.shape`. Each feature: `classify_kind()` → `build_osm_props()` →
    `geom_bbox_fields()`; geometry via `ring_rows()` / `line_rows()`; areas/lines bucketed by
    `(target_label, target_ft)` for matching; points of kind `poi` collected for containment.
@@ -554,6 +562,12 @@ reference only), `SHARED_THEMATIC` (keys replicable in 1:n), `ENRICH_KEYS` (osm_
 
 ## 14. Empirical tuning record (buffer / threshold sweep)
 
+### Pilot-tile result (HafenCity tile, 81 buildings)
+
+*This is the original tuning record on one pilot tile. Its τ grid step was not recorded and
+its sweep script was not kept; the city-scale sweep below repeats it on all of Hamburg with a
+documented grid and a kept script.*
+
 A standalone read-only sweep (reusing `match_areas`/`build_enrich_writes`; OSM extracted once
 at max buffer, pykci footprints fetched once, combos evaluated in memory) characterised the
 trade-off. With no ground truth, **mean primary-edge Jaccard** and the **J≥0.5 / J<0.2 edge
@@ -561,7 +575,7 @@ fractions** are the precision proxies. Findings (HafenCity, 220 OSM buildings, 8
 footprints):
 
 - **Buffer never adds a match.** `matchB` is constant (76) across buffers 0→50 m; only the
-  in-window count grows, diluting the rate (0.60→0.47). Every matchable OSM building is
+  in-bbox count grows, diluting the rate (0.60→0.47). Every matchable OSM building is
   already inside the bbox; buffer only pads the graph with margin orphans. → **default 10 m**.
 - **Threshold trades case-purity, not primary quality.** Mean primary Jaccard is flat at
   **0.775** across *all* settings. Lowering τ 0.5→0.1 enriches 62→66 buildings but adds
@@ -582,6 +596,108 @@ footprints):
 `1:1=28, n:1=9, 1:n=8, n:m=3`; **64/81 pykci buildings enriched**; 112 POIs attached; ~2.8 k
 net-new nodes; orphans by reason `no_pykci_type 2833 / no_overlap 69 /
 no_containing_building 511`.
+
+### City-scale sweep (whole Hamburg), 2026-10-05
+
+**Script:** `eval/osm_tau_sweep.py` (read-only; imports `ingest_osm` the way
+`eval/osm_ingestion_census.py` does). **Inputs:** the released Hamburg graph
+(`backups/neo4j_hamburg_lod2_roofmats_lod3_osm_20260717.dump`: 388,267 buildings,
+EPSG:25832), `input/osm/hamburg-260629.osm.pbf`, buffer 10 m, GDAL 3.13.1 (QGIS 3.44.12),
+GEOS 3.13.1. **Method:** OSM side re-derived with the ingest's own code path (373,251 OSM
+features under the `("Building", None)` key, i.e. building polygons plus POI polygons);
+`match_areas(τ=0)` once (503,298 positive-overlap pairs); per τ the edges with
+`overlap_ratio >= τ` are kept, components recomputed and `build_enrich_writes` called.
+**Grid:** τ = 0.01, then 0.05 to 0.95 in steps of 0.05 (20 values). Full results:
+`output/stats/osm_tau_sweep_hamburg.{md,csv,json}`.
+
+**Validation gate (passed).** At τ = 0.30 the sweep reproduces the graph exactly: 373,211
+`ENRICHED_BY` edges, 331,318 enriched buildings, 334,488 matched OSM features, 302,209
+primary edges, match types 1:1 256,219 / 1:n 48,276 / n:1 48,489 / n:m 20,227. Edge by edge,
+all 373,211 pairs coincide with bit-identical `overlap_ratio`, `jaccard` and
+`intersection_area`. The only differences are a few dozen `is_primary` flags (62 to 82 per
+run), all inside 1:n components where two or more buildings tie exactly on Jaccard;
+`build_enrich_writes` breaks that tie with `max()` over a Python set, whose order depends on
+the per-process hash seed. Primary-edge count and primary-Jaccard values are unaffected.
+Graph node and relationship totals were identical before and after the run.
+
+| τ | enriched buildings | % of 388,267 | mean primary J | median | p10 | J<0.2 edges | n:m comps |
+| --: | --: | --: | --: | --: | --: | --: | --: |
+| 0.10 | 334,429 | 86.13 | 0.792 | 0.885 | 0.470 | 14.0% | 6,380 |
+| 0.20 | 332,407 | 85.61 | 0.794 | 0.885 | 0.475 | 12.4% | 3,254 |
+| **0.30** | **331,318** | **85.33** | **0.795** | **0.886** | **0.478** | **11.8%** | **2,363** |
+| 0.40 | 330,411 | 85.10 | 0.796 | 0.886 | 0.480 | 11.4% | 1,904 |
+| 0.50 | 329,332 | 84.82 | 0.797 | 0.886 | 0.483 | 11.2% | 1,497 |
+| 0.60 | 327,444 | 84.33 | 0.799 | 0.887 | 0.488 | 11.1% | 1,329 |
+| 0.70 | 324,003 | 83.45 | 0.802 | 0.889 | 0.495 | 11.0% | 1,207 |
+
+Findings:
+
+- **Precision proxy is nearly flat, not constant.** Mean primary Jaccard rises slowly from
+  0.792 (τ = 0.10) to 0.802 (τ = 0.70), a range of 0.011; median 0.885 to 0.889. The
+  city-scale level is about 0.795, not the pilot tile's 0.775.
+- **Recall proxy falls slowly.** Enrichment drops from 334,429 (τ = 0.10) to 324,003
+  (τ = 0.70) buildings; τ = 0.30 keeps 99.07% of the τ = 0.10 enrichment.
+- **Attribute sources do not move.** Among buildings enriched at both τ = 0.10 and 0.50,
+  99.98% (329,266 of 329,332) copy their `osm_*` values from the same OSM feature (the one
+  sharing the largest intersection area). τ mostly prunes secondary sliver edges; the
+  dominant edge survives.
+- **τ shapes topology at the low end.** n:m components fall from 32,550 (τ = 0.01) and 6,380
+  (0.10) to 2,363 (0.30) and 1,497 (0.50) as sliver edges stop bridging neighbouring
+  footprints; the J<0.2 edge share falls from 25.3% (0.01) to 11.8% (0.30).
+- **0.30 sits at the low end of a flat optimum.** Per 0.05 step, the enrichment loss is
+  smallest between 0.25 and 0.45 (444 to 489 buildings per step), while below 0.25 the n:m
+  count grows quickly (575 to 2,139 components per step) and above 0.50 the enrichment loss
+  accelerates (883 to 2,067 buildings per step). Any τ in [0.25, 0.45] gives near-identical
+  results; the default 0.3 is kept.
+- **Structural ceiling.** 46,459 buildings (11.97%) overlap no OSM feature under the
+  Building key at all, so no τ can enrich them; τ = 0.30 enriches 96.93% of the 341,808 that
+  do.
+- **The largest n:m component is not a sliver effect.** At every τ from 0.10 to 0.70 it has
+  about 287 buildings and 239 OSM features, held together by one POI polygon
+  (`osm:relation/10460644`, "Universität Hamburg", `amenity=university`, spanning several
+  campus sites): the overlap coefficient's min-area denominator gives every contained
+  building a ratio near 1.
+
+### Cross-city check (all five cities), 2026-10-05
+
+The same read-only sweep on each released city graph (each restored from its latest dump
+into its own Docker volume; one Neo4j at a time). The validation gate passed in every city
+(edges, enriched buildings, matched OSM, primary edges and match types reproduced exactly;
+graph totals unchanged). The script now also writes threshold diagnostics: footprint source,
+the overlap-ratio distribution of all candidate pairs, and, per 0.05 step, whether the
+buildings that lose their match were matched to their own OSM outline or to a neighbour's
+(the OSM feature overlaps another building more). `eval/osm_tau_sweep.py --summarize` builds
+`output/stats/osm_tau_sweep_cities.md`.
+
+| city | buildings | GroundSurface footprints | enriched % at 0.1 / 0.3 / 0.5 | mean primary J at 0.1 / 0.3 / 0.7 | pairs with ratio 0.25 to 0.45 | extra at 0.1 (from a neighbour) | own-majority from τ |
+| --- | --: | --: | --: | --: | --: | --: | --: |
+| Tokyo | 2,005,762 | 8.3% | 60.37 / 58.88 / 57.93 | 0.564 / 0.576 / 0.584 | 5.02% | 29,861 (97.1%) | 0.65 |
+| New York | 1,083,437 | 100.0% | 98.81 / 98.78 / 98.72 | 0.980 / 0.981 / 0.982 | 0.08% | 385 (55.8%) | 0.30 |
+| Hamburg | 388,267 | 100.0% | 86.13 / 85.33 / 84.82 | 0.792 / 0.795 / 0.802 | 0.71% | 3,111 (92.1%) | 0.50 |
+| Zurich | 102,668 | 98.4% | 91.92 / 91.52 / 91.15 | 0.757 / 0.760 / 0.766 | 0.83% | 410 (84.4%) | 0.45 |
+| Helsinki | 2,980 | 98.0% | 83.86 / 83.09 / 82.15 | 0.709 / 0.716 / 0.727 | 1.58% | 23 (60.9%) | (too few) |
+
+Findings:
+
+- **The precision proxy is nearly flat in every city** (range at most 0.020 over τ 0.1 to
+  0.7). Its level differs by city (0.98 New York, where OSM imported the city's own
+  footprints; 0.58 Tokyo) and reflects how well the two sources' outlines agree, not τ.
+- **τ = 0.3 keeps at least 97.5% of the τ = 0.1 enrichment everywhere** (at least 99% outside
+  Tokyo), and at least 99.8% of buildings keep their attribute source between 0.1 and 0.5.
+- **Why not 0.1:** in the larger cities most of what 0.1 adds is a neighbour's outline (97%
+  Tokyo, 92% Hamburg, 84% Zurich), and it pulls clean 1:1 matches into larger groups (249,219
+  Tokyo, 11,128 Hamburg, 4,400 Zurich, 4,121 New York).
+- **Why not higher:** the step from which raising τ mostly removes *own-outline* (valid)
+  matches is 0.30 in New York, 0.45 in Zurich and 0.50 in Hamburg (Helsinki has at most 12
+  buildings per step, too few to tell). Between 0.3 and 0.5 enrichment changes by at most
+  0.6% of enriched buildings in these cities. The defensible range is therefore 0.3 to 0.5;
+  0.3 is its inclusive end and is kept as the single default.
+- **Tokyo is the exception, and the cause is footprints, not τ.** 91.7% of Tokyo buildings are
+  LoD1 solids without a GroundSurface, so `fetch_pykci_footprints` matches their axis-aligned
+  bbox rectangle. Rectangles of rotated buildings reach into neighbours, which lowers Jaccard,
+  fattens the middle of the ratio distribution (5% of pairs between 0.25 and 0.45) and keeps
+  neighbour matches dominant up to τ = 0.65. Matching LoD1 solids on their base outline would
+  address this; that is a pipeline change, not made here.
 
 ---
 
@@ -611,7 +727,30 @@ RETURN b.id, collect({osm:o.osm_id, jaccard:r.jaccard, overlap:r.overlap_ratio, 
 
 ---
 
-## 16. References
+## 16. Completeness gate — `eval/osm_ingestion_census.py`
+
+Fusion statistics (match rates, orphan counts) describe *what was matched*, not whether
+anything was silently dropped or corrupted on the way into the graph. The **OSM ingestion
+census** closes that gap: it re-derives the expected graph content from the source
+`.osm.pbf` using the *same code path* the ingestion used (`extract_layer`,
+`classify_kind`, `build_osm_props`, `_pos_list` imported from `ingest_osm`), then verifies
+the live graph at five levels — (1) every admitted feature exists exactly once under its
+stable id, no extras; (2) the full tag dict is reconstructable from the node
+(canonical-JSON SHA1); (3) geometry `pos_list` strings match the source verbatim
+(order-independent digest) and bboxes match exactly; (4) the attach-or-orphan partition is
+exact and exhaustive (`matched=true` ⇔ ≥1 incoming `ENRICHED_BY`/`HAS_POI`;
+`matched=false` ⇒ `unmatched_reason`, no anchor edge; anchor `osm_*` keys stay inside
+`ENRICH_KEYS`); (5) every node is R-tree-registered with full provenance + `PART_OF`.
+A scope pass reports unfiltered vs. admitted counts per GDAL layer, so the admission
+boundary is quantified rather than implicit. Exit 0 only when every gate is clean.
+
+Run it after **every** fusion (per city): see [eval/OSM_INGESTION_CENSUS.md](eval/OSM_INGESTION_CENSUS.md)
+for the full method + the Hamburg result (2026-07-10: **PASSED** — 1,188,139/1,188,139
+features lossless and correctly placed, 0 violations on all gates).
+
+---
+
+## 17. References
 
 - A. Naumann, J. Spoerhase, S. Wolff. *Many-To-Many Polygon Matching à la Jaccard.* ESA
   2024 — formal optimal m:n footprint matching (NP-complete); our rigorous-alternative
