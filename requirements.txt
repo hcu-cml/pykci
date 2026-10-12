@@ -1,3 +1,12 @@
+# pykci — Python dependencies
+# Setup on a fresh workstation:
+#   python -m venv .venv
+#   .venv\Scripts\activate        (Windows)  |  source .venv/bin/activate  (Linux/Mac)
+#   pip install -r requirements.txt
+#   playwright install chromium   (only if using tools/capture_teaser.py)
+# Note: OSM enrichment (ingest_osm.py) additionally needs the GDAL `ogr2ogr`
+# CLI on PATH — not a pip package (e.g. `conda install -c conda-forge gdal`).
+
 # Core — CityGML parsing, Neo4j ingest/export, 3D Tiles
 lxml
 neo4j
@@ -5,7 +14,8 @@ pyproj
 mapbox-earcut
 numpy
 
-# Optional — clean window/door holes in 3D Tiles wall geometry
+# Required for OSM enrichment (ingest_osm.py, eval/osm_ingestion_census.py);
+# also unions window/door openings in 3D Tiles wall geometry (optional there)
 shapely
 
 # LangChain NL-query layer (db-llm/)
@@ -14,5 +24,8 @@ langchain-community
 langchain-ollama
 langchain-neo4j
 
-# Commercial LLM backend (Claude)
+# Commercial LLM backend (Claude) — needs ANTHROPIC_API_KEY
 langchain-anthropic
+
+# Headless teaser/figure capture (tools/capture_teaser.py)
+playwright
