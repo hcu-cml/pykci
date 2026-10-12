@@ -80,6 +80,47 @@ Do this automatically whenever a query question is asked — do not wait to be t
 
 ---
 
+## Provenance & Multi-Source Design Principle
+
+**pykci is a multi-source knowledge graph, not a single-source one.** The authoritative CityGML/ALKIS graph is the anchor, but the same real-world objects are progressively enriched from other sources with different **trust levels, methods, and coverage**: crowd-sourced (OpenStreetMap), ML-predicted (e.g. roof materials from orthophotos), reconstructed (e.g. LoD3 from facade images), and sensed (e.g. detected potholes). The graph therefore must make the **origin and reliability of every fact explicit and queryable** — never blend sources into an indistinguishable soup, and never let a lower-trust value silently replace a higher-trust one.
+
+This is a **binding rule for all current and future mapping functions**: before writing any node, edge, or property, decide *where it came from* and *how much to trust it*, and store that provenance alongside the value. The OSM integration ([OSM_INTEGRATION.md](OSM_INTEGRATION.md)) is the **reference implementation** — model new sources on it.
+
+### The provenance spectrum (trust classes)
+
+| Trust class | Examples in the graph | How it is stored today |
+| ----------- | --------------------- | ---------------------- |
+| **Authoritative / measured** | ALKIS `measured_height`, `function_code`, cadastral geometry | canonical keys on the feature node; `source` = dataset file |
+| **Crowd-sourced** | OSM `osm_height`, `osm_building`, POIs | `(:OsmFeature)` node + `ENRICHED_BY`/`HAS_POI` edge; scalars under the `osm_*` prefix |
+| **ML-predicted** | roof materials (5 classes, partial ~50% coverage, Hamburg) | `predicted_roof_material` gen-attr scalar on `Building` — *should additionally carry confidence + coverage; see rules below* |
+| **Reconstructed** | LoD3 building models from facade images (few, Hamburg) | LoD3 geometry edges — *should carry method + a provenance node; see rules below* |
+| **Sensed / detected** | potholes, street-condition (planned) | *not yet added — follow the rules below when you do* |
+
+### Existing provenance mechanisms (reuse these — do not invent parallel ones)
+
+1. **`source` on every node** — the originating file/system (`osm:<file>`, the CityGML dataset stem, …), already written by both ingesters. **Mandatory.**
+2. **Namespaced, non-destructive scalars** — a non-authoritative value NEVER overwrites the authoritative key; it lands on a **prefixed** key (`osm_height` beside `measured_height`) so the two are directly comparable and the authoritative value is never lost. (OSM's `name → osm_name` remap exists precisely because `name` *is* the gml:id on a `Building`.)
+3. **A dedicated provenance node per external object** — OSM data becomes an `(:OsmFeature)` "hint" node carrying its own id, all tags, geometry, and metadata (version/timestamp). The pykci feature stays the anchor; the external object is reached by traversal, never melted into the anchor.
+4. **Confidence-weighted, explicit fusion edges** — a match/fusion link is a real edge carrying its confidence (`ENRICHED_BY {overlap_ratio, jaccard, intersection_area, match_type, is_primary}`), so any query can re-decide how much to trust the link. Never collapse an uncertain match into a hard scalar overwrite.
+5. **A separate spatial layer per source** — OSM registers in its own `osm_features` R-tree layer, leaving the authoritative `features` layer untouched.
+6. **Compact tag storage** — promoted keys + a single `other_tags` JSON long tail (mirrors CityGML `gen:*Attribute`). No node-per-tag explosion.
+
+### Rules every future mapping function MUST follow
+
+When adding a new data source (e.g. potholes, energy models, sensor feeds, a new prediction):
+
+- [ ] **Record the source.** Set `source` on every node/edge you create.
+- [ ] **Record the trust class + method.** Add a `source_type` property (one of: `authoritative`, `crowdsourced`, `predicted`, `reconstructed`, `sensed`) and, for derived data, the method/model id **and version** (e.g. `method='roofnet'`, `method_version='1.2'`).
+- [ ] **Never overwrite an authoritative value.** Put derived scalars on a namespaced key (`<src>_<attr>`, e.g. `pred_roof_material`, `pothole_severity`) beside the authoritative one.
+- [ ] **Carry confidence.** ML-predicted scalars store a `*_confidence` (probability/score); fused links store confidence on the edge.
+- [ ] **Flag partial coverage explicitly.** If the source covers only some features (e.g. 50% of buildings), the *absence* of a value must be distinguishable from a *negative* value — never impute. A city-wide statistic must be answerable only relative to the covered subset. (This is what makes **coverage-aware** queries — and honest infeasibility answers — possible.)
+- [ ] **Prefer a provenance node + explicit edge** over a silent scalar when the source is external or the mapping is uncertain (follow the `OsmFeature` + `ENRICHED_BY` pattern).
+- [ ] **Stay compact.** Promoted keys for the documented, queryable attributes; a single JSON long tail for the rest. Reuse the existing geometry chain (`GeometryPolygon`/`GeometryRing`/`GeometryLineString`) — never add a parallel geometry model.
+- [ ] **Use a stable, source-prefixed id scheme** (`<src>:<type>/<id>`, as OSM uses `osm:way/123`) so re-ingestion is idempotent (`MERGE`) and one source's nodes can be reset cleanly without touching the authoritative graph.
+- [ ] **Keep authoritative spatial indexing intact.** Index a new source in its own R-tree layer if it should not pollute authoritative spatial queries.
+
+---
+
 ## CityGML Ingestion Rules
 
 CityGML files require special handling to preserve all geometric and spatial information in the graph.
@@ -92,7 +133,7 @@ CityGML files require special handling to preserve all geometric and spatial inf
 - CRS / `srsName` — read from `gml:Envelope/@srsName`.
 - LOD level — detected by scanning which `bldg:lod*` elements are present; check both `*Solid` and `*MultiSurface` variants per LOD.
 - Building function / roof type codes — resolved at runtime using the ALKIS reference tables below.
-- `gen:stringAttribute` values — iterate and store **all** of them; never select by name.
+- `gen:stringAttribute` values — iterate and store **all** of them; never select by name. Property keys are derived with a **Unicode-aware** slug (`_attr_key`), not the ASCII-only `_slug`, so non-Latin attribute names (e.g. the Japanese names in Tokyo PLATEAU such as `地区計画`, `延べ面積換算係数`) are preserved as **distinct, queryable keys** (address them with backticks in Cypher) instead of all collapsing to `____`. The original verbatim name is also kept in `_gen_attrs_map` for lossless export. For pure-ASCII names `_attr_key` matches the old `_slug` output, so existing datasets are unchanged.
 - District / city — derived from `Gemeindeschluessel` gen:stringAttribute (prefix-matched against known keys) or from the filename stem as fallback.
 - `format` version — read from the `xmlns` namespace URI of the root `CityModel` element.
 
@@ -281,7 +322,8 @@ See [LOSSLESS_ROUNDTRIP.md](LOSSLESS_ROUNDTRIP.md) for the full catalogue of Cit
 
 | Property | Source |
 | -------- | ------ |
-| `id`, `name` | `gml:id` |
+| `id`, `name` | `gml:id` (resolved unique per feature: exact duplicates dedup, distinct same-id features split; see `_resolve_feature_id`) |
+| `source_gml_id`, `id_synthesized` | original `gml:id` + flag, set **only** when a *distinct* feature sharing a `gml:id` forced a synthesized unique `id` (export re-emits `source_gml_id`) |
 | `creation_date` | `cg:creationDate` |
 | `function_code` | `bldg:function` text |
 | `roof_type_code` | `bldg:roofType` text |
@@ -637,6 +679,8 @@ python3 ingest_citygml.py
 #### GDS — community detection and proximity graph
 
 This enrichment is **opt-in** — pass `--nearby-edges` to `ingest_citygml.py` (off by default, since it is expensive on large datasets). When enabled, it creates `NEARBY_BUILDING` directed edges between buildings whose centroids are within 100 m, then runs GDS Louvain to assign each building a `community_id`.
+
+> **CRS/units caveat (multi-city).** `NEARBY_BUILDING.distance_m`, the `location` point, and the `bbox_wkt` R-tree are all in the dataset's **native CRS coordinates** — the proximity builder computes a plain Euclidean distance and takes `distance_m`/the 100 m radius to be **metres**. This holds only for a **projected metric CRS** (e.g. EPSG:25832, 2056, 3879). For a feet-based CRS (e.g. NYC EPSG:2263) or a geographic degree CRS (e.g. some PLATEAU tiles, EPSG:6697) the distances/areas are in feet/degrees, not metres. **Reproject such datasets at ingest with `ingest_citygml.py --target-crs EPSG:N`** (e.g. `EPSG:6677` for Tokyo, `EPSG:32618` for NYC) before trusting any distance, area, or `withinDistance` query; the target becomes `Dataset.crs` and the original is kept as `Dataset.source_crs`. Overlap-*ratio* matching (OSM fusion) is unit-invariant and unaffected.
 
 **Proximity graph schema:**
 
@@ -1014,7 +1058,7 @@ The script is **idempotent** — re-running it merges into existing nodes via `M
 - `external_information_system` and `external_object_name` — read from `cg:externalReference` in the file (absent if the file has none)
 - `creationDate` on buildings, city objects, and boundary surfaces
 - `BuildingFunction`, `RoofType` lookup nodes (ALKIS codes → human-readable names; unrecognised codes stored as-is)
-- Predicted roof material is **not** a lookup node — stored as a `gen:stringAttribute` named `PredictedRoofMaterial` on the Building node (property key: `predicted_roof_material`)
+- Predicted roof material is **not** a lookup node — stored as a `gen:stringAttribute` named `PredictedRoofMaterial` on the Building node (property key: `predictedroofmaterial` — gen-attr keys are lowercased verbatim, no underscores inserted)
 - `District` and `City` nodes derived from `Gemeindeschluessel` when present, or from the filename otherwise
 - Full LOD geometry: `GeometrySolid` (lod*Solid), `GeometryMultiSurface` (lod*MultiSurface on city objects), `BoundarySurface` (module boundary surfaces including wtr/brid/tun), `GeometryPolygon`, `GeometryRing` (verbatim posList), `TerrainIntersection`, `GeometryLineString`
 - Implicit geometry: `lod{N}ImplicitRepresentation` (Vegetation, CityFurniture) stored as `GeometryMultiSurface` with `is_implicit=true`, `transformation_matrix` (4×4 row-major), and `reference_point` (world anchor in dataset CRS); polygon rings contain local prototype coordinates. Features using `relativeGMLGeometry xlink:href` share the same prototype polygons via a post-ingest Cypher resolution pass.
@@ -1149,6 +1193,20 @@ The 3D Tiles spec remaps glTF axes before applying the tile transform (glTF +Y �
 
 **GLB content:**  
 Up to 11 mesh primitives (one per material slot; empty slots are omitted). Polygon faces triangulated with `mapbox_earcut` (with `gml:interior` rings cut as holes — see **Window/door holes** above). All modules share a single `city.glb` file.
+
+### `export_roofmat_footprints.py` — 2D footprint map by predicted roof material
+
+The 2D counterpart to `build_3dtiles.py --color-by roofmat`. Reads each `Building`'s `GroundSurface` exterior ring + `predictedroofmaterial` from the graph (the *2D footprint ring* Cypher pattern above), reprojects XY to WGS84 (CRS from `Dataset.crs` via the same `_horiz_epsg_from_srs` logic), and writes a self-contained Leaflet HTML (`output/html/roofmat_footprints.html`) with polygons coloured by roof material, an interactive legend + per-class counts, and per-building popups.
+
+```bash
+python3 export_roofmat_footprints.py                    # the single dataset in the graph
+python3 export_roofmat_footprints.py --dataset <file.gml>
+python3 export_roofmat_footprints.py --basemap osm      # OSM tiles instead of CARTO Voyager
+```
+
+- Palette is the **`soft`** ROOFMAT palette from `build_3dtiles.py` (as hex), so the 2D map and the 3D teaser read as one system.
+- **Provenance-aware:** the popup labels the material *predicted*; buildings without a prediction get a neutral "no prediction" coat rather than being dropped (see the *Provenance & Multi-Source Design Principle*).
+- Degrades gracefully on graphs without `predictedroofmaterial` (everything is "no prediction") and works for any dataset — no hardcoded CRS.
 
 ---
 
