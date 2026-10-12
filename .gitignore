@@ -15,9 +15,28 @@ CLAUDE.md
 # The other plugin JARs (APOC, Spatial, GenAI) are bundled.
 docker/plugins/neo4j-graph-data-science-*.jar
 
+# Large CityGML datasets — too big to version (full cities, tens of GB).
+# Only the small eval fixtures (FZK-Haus, Railway_Scene_LoD3) stay tracked.
+input/citygml/*
+!input/citygml/FZK-Haus/
+!input/citygml/Railway_Scene_LoD3/
+
+# Large OSM source files — keep the input/osm/ folder, ignore the data.
+input/osm/*.osm.pbf
+input/osm/*.osm
+
+# Large exported GeoJSON footprints — keep the output/geojson/ folder, ignore the data.
+output/geojson/*.geojson
+
+# Neo4j database snapshots (multi-GB dumps; see docker/SNAPSHOTS.md).
+backups/
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# Local copy of the separate AuthentiCity repo (published in another repository)
+authenticity_repo/
