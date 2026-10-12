@@ -283,7 +283,12 @@ def parse_gml(gml_path: Path) -> dict:
                 bucket["ids"].append(fid)
                 bucket["geoms_per_id"][fid]    = _geom_names(feat, ns_key)
                 bucket["poly_count_per_id"][fid] = _poly_count_direct(feat)
-                bucket["bsurf_counts_per_id"][fid] = _bsurf_counts(feat, ns_key)
+                # list of per-OCCURRENCE counts: a gml:id may legitimately appear on
+                # more than one distinct feature (e.g. Helsinki duplicates 61 BIDs);
+                # ingest splits those into separate nodes, so the check must compare
+                # the whole group, not assume id uniqueness.
+                bucket["bsurf_counts_per_id"].setdefault(fid, []).append(
+                    _bsurf_counts(feat, ns_key))
 
                 # Scalar attributes
                 scalars: dict[str, str] = {}
@@ -375,25 +380,33 @@ def check_graph(sess, source_inv: dict) -> list[dict]:
         else:
             checks.append(_fail(name, f"Missing: {missing}  Extra: {extra}"))
 
-        # Boundary surface count per building
-        for bid in src_buildings["ids"]:
-            src_bsurf = src_buildings["bsurf_counts_per_id"].get(bid, {})
-            src_total = sum(src_bsurf.values())
-            row2 = sess.run(
-                "MATCH (b:Building {id: $id})-[:HAS_BOUNDARY]->(s:BoundarySurface) "
-                "RETURN count(s) AS n", id=bid
-            ).single()
-            found_n = row2["n"] if row2 else 0
-            if found_n == src_total:
+        # Boundary surface count per building. Grouped by gml:id: a duplicated
+        # source id yields several occurrence records AND several graph nodes
+        # (ingest splits distinct features sharing an id, keeping the original on
+        # source_gml_id) — compare the two groups as sorted count multisets.
+        for bid in dict.fromkeys(src_buildings["ids"]):        # unique, source order
+            occurrences = src_buildings["bsurf_counts_per_id"].get(bid, [])
+            expected_totals = sorted(sum(o.values()) for o in occurrences)
+            rows2 = sess.run(
+                "MATCH (b:Building) WHERE b.id = $id OR b.source_gml_id = $id "
+                "OPTIONAL MATCH (b)-[:HAS_BOUNDARY]->(s:BoundarySurface) "
+                "RETURN b.id AS nid, count(s) AS n", id=bid
+            ).data()
+            found_totals = sorted(r["n"] for r in rows2)
+            if found_totals == expected_totals:
                 checks.append(_pass(f"building_bsurf_count[{bid}]",
-                                    f"{found_n} boundary surfaces ({src_bsurf})"))
+                                    f"{found_totals} boundary surfaces "
+                                    f"({len(occurrences)} occurrence(s))"))
             else:
                 checks.append(_fail(f"building_bsurf_count[{bid}]",
-                                    f"expected {src_total} {src_bsurf}, found {found_n}"))
+                                    f"expected {expected_totals} "
+                                    f"({len(occurrences)} source occurrence(s)), "
+                                    f"found {found_totals}"))
 
-            # Polygon count via boundary surfaces
+            # Polygon count via boundary surfaces (informational)
             row3 = sess.run(
-                "MATCH (b:Building {id: $id})-[:HAS_BOUNDARY]->(s:BoundarySurface)"
+                "MATCH (b:Building) WHERE b.id = $id OR b.source_gml_id = $id "
+                "MATCH (b)-[:HAS_BOUNDARY]->(:BoundarySurface)"
                 "-[:HAS_POLYGON]->(p:GeometryPolygon) RETURN count(p) AS n", id=bid
             ).single()
             graph_polys = row3["n"] if row3 else 0
