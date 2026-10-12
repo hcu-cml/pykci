@@ -59,6 +59,9 @@ LABEL_COLORS = {
     "WaterBody": "#4FC3F7", "LandUse": "#DCE775", "CityFurniture": "#CE93D8",
     "ReliefFeature": "#BCAAA4", "Bridge": "#A1887F", "Tunnel": "#78909C",
     "CityObjectGroup": "#80CBC4",
+    # Enrichment layers (provenance-coloured): OSM = green, LoD3 = gold/violet
+    "OsmBuilding": "#43A047", "OsmPOI": "#9CCC65",
+    "Lod3Facade": "#FFB300", "Opening": "#FFE082",
 }
 _DEFAULT_COLOR = "#90A4AE"
 
@@ -69,6 +72,7 @@ _PIXEL_SIZE = {
     "ClosureSurface": 6, "OuterCeilingSurface": 6, "OuterFloorSurface": 6,
     "GeometrySolid": 8, "TerrainIntersection": 6,
     "GeometryPolygon": 5, "GeometryLineString": 5, "GeometryRing": 4,
+    "OsmBuilding": 12, "OsmPOI": 9, "Lod3Facade": 6, "Opening": 6,
 }
 
 # Priority: lower = higher importance = placed in parent tile (visible at coarser zoom)
@@ -93,7 +97,8 @@ def _node_priority(labels: list) -> int:
 
 
 def _node_group(labels: list, props: dict) -> str:
-    for lbl in ("Dataset", "City", "District", "Building",
+    for lbl in ("OsmBuilding", "OsmPOI", "Lod3Facade", "Opening",
+                "Dataset", "City", "District", "Building",
                 "BuildingFunction", "RoofType",
                 "GeometrySolid", "GeometryMultiSurface", "GeometryCompositeSurface",
                 "GeometryPolygon", "GeometryRing", "GeometryLineString",
@@ -193,10 +198,16 @@ def _centroid_from_pos_str(pos_str: str):
     return _centroid_from_pos_lists([pos_str]) if pos_str else (None, None, None)
 
 
-def fetch_all_nodes(driver) -> list:
+def fetch_all_nodes(driver, exclude_osm_geometry: bool = False,
+                    include_osm_enrichment: bool = False) -> list:
     print("Fetching graph nodes…", flush=True)
     t0_total = time.perf_counter()
     nodes = []
+    # When showing OSM as an explicit enrichment layer we suppress the raw OSM
+    # geometry chain (road linestrings, footprint polygons/rings) so the teaser
+    # graph stays building-centric instead of drowning in street furniture.
+    def _no_osm(var: str) -> str:
+        return f" AND NOT coalesce({var}.source,'') STARTS WITH 'osm'" if exclude_osm_geometry else ""
 
     with driver.session() as s:
 
@@ -275,8 +286,9 @@ def fetch_all_nodes(driver) -> list:
 
         # 5. GeometryPolygon
         t0 = time.perf_counter()
-        rows = s.run("""
+        rows = s.run(f"""
             MATCH (p:GeometryPolygon)-[:HAS_EXTERIOR_RING]->(rng:GeometryRing)
+            WHERE true{_no_osm('p')}
             WITH p, collect(rng.pos_list) AS pls
             RETURN elementId(p) AS eid, labels(p) AS labels, properties(p) AS props, pls
         """).data()
@@ -292,8 +304,8 @@ def fetch_all_nodes(driver) -> list:
 
         # 6. GeometryRing
         t0 = time.perf_counter()
-        rows = s.run("""
-            MATCH (rng:GeometryRing) WHERE rng.pos_list IS NOT NULL
+        rows = s.run(f"""
+            MATCH (rng:GeometryRing) WHERE rng.pos_list IS NOT NULL{_no_osm('rng')}
             RETURN elementId(rng) AS eid, labels(rng) AS labels, properties(rng) AS props,
                    rng.pos_list AS pos_str
         """).data()
@@ -309,8 +321,8 @@ def fetch_all_nodes(driver) -> list:
 
         # 7. GeometryLineString
         t0 = time.perf_counter()
-        rows = s.run("""
-            MATCH (ls:GeometryLineString) WHERE ls.pos_list IS NOT NULL
+        rows = s.run(f"""
+            MATCH (ls:GeometryLineString) WHERE ls.pos_list IS NOT NULL{_no_osm('ls')}
             RETURN elementId(ls) AS eid, labels(ls) AS labels, properties(ls) AS props,
                    ls.pos_list AS pos_str
         """).data()
@@ -340,6 +352,30 @@ def fetch_all_nodes(driver) -> list:
                           "jitter": False, "alt_extra": 0.0})
             ok += 1
         print(f"  {ok:>6} TerrainIntersection  ({time.perf_counter()-t0:.2f}s)", flush=True)
+
+        # 8b. OSM enrichment layer: OSM buildings matched to pykci buildings +
+        #     POIs attached to buildings, floated above their footprints so the
+        #     ENRICHED_BY / HAS_POI edges read as crowd-sourced enrichment tethers.
+        if include_osm_enrichment:
+            t0 = time.perf_counter()
+            rows = s.run("""
+                MATCH (b:Building)-[:ENRICHED_BY|HAS_POI]->(o:OsmFeature)
+                WHERE o.center_x IS NOT NULL AND o.center_y IS NOT NULL
+                RETURN DISTINCT elementId(o) AS eid, labels(o) AS labels,
+                       properties(o) AS props,
+                       toFloat(o.center_x) AS cx, toFloat(o.center_y) AS cy
+            """).data()
+            ok = 0
+            for r in rows:
+                is_poi = "OsmPOI" in r["labels"]
+                nodes.append({"eid": r["eid"], "labels": r["labels"], "props": r["props"],
+                              "cx": r["cx"], "cy": r["cy"], "cz": 0.0,
+                              "jitter": is_poi, "alt_extra": 10.0 if is_poi else 24.0})
+                ok += 1
+            print(f"  {ok:>6} OSM enrichment       ({time.perf_counter()-t0:.2f}s)", flush=True)
+            if not ok:
+                print("  Note: no matched OsmFeature nodes found — run ingest_osm.py "
+                      "first if OSM enrichment is expected.", flush=True)
 
         # 9–13. Aggregate-positioned nodes
         for label, match_cypher, alt_extra in [
@@ -1103,6 +1139,10 @@ def main():
                     help="Max quadtree depth (default: 8)")
     ap.add_argument("--geo-error-scale", type=float, default=20.0,
                     help="geometricError = tile_diagonal_m / scale (default: 20)")
+    ap.add_argument("--osm-enrichment", action="store_true",
+                    help="Add matched OSM buildings + attached POIs as an explicit "
+                         "enrichment layer (ENRICHED_BY / HAS_POI edges) and suppress "
+                         "the raw OSM geometry chain so the graph stays building-centric")
     args = ap.parse_args()
 
     out_dir = Path(args.output)
@@ -1115,7 +1155,11 @@ def main():
     driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
     try:
         crs, sx, sy, sz = fetch_dataset(driver)
-        raw_nodes        = fetch_all_nodes(driver)
+        raw_nodes        = fetch_all_nodes(
+            driver,
+            exclude_osm_geometry=args.osm_enrichment,
+            include_osm_enrichment=args.osm_enrichment,
+        )
         raw_edges        = fetch_all_edges(driver)
     finally:
         driver.close()
