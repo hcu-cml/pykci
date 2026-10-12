@@ -132,6 +132,145 @@ MATERIALS_GLTF = [
 _N_MATS = len(MATERIALS_GLTF)
 
 # ---------------------------------------------------------------------------
+# Attribute-driven ("thematic") building colouring
+# ---------------------------------------------------------------------------
+# Colours a building by its ML-predicted roof material, keeping the buildings
+# translucent so the aligned knowledge graph reads through them, and lifts the
+# LoD3-reconstructed building to an opaque gold accent so the multi-source
+# enrichment story is legible at a glance.  Roofs are drawn a touch more opaque
+# than walls because the teaser is viewed obliquely from above.
+
+# Categorical, harmonised for the CARTO Voyager (warm cream) basemap.
+# 'soft': muted tones tuned for the translucent overlay teaser.
+# 'vivid': basic main colours (blue / green / red / sand / graphite) — clearly
+#          distinguishable classes for fully opaque renders; kept pastel-creamy
+#          so they still sit softly on the basemap.
+ROOFMAT_PALETTES = {
+    "soft": {
+        "metal":      (0.36, 0.56, 0.71),   # steel blue
+        "concrete":   (0.60, 0.56, 0.50),   # warm grey
+        "tar_paper":  (0.40, 0.42, 0.50),   # slate blue-grey
+        "glass":      (0.34, 0.74, 0.74),   # teal
+        "roof_tiles": (0.85, 0.50, 0.36),   # terracotta
+    },
+    "vivid": {
+        "metal":      (0.22, 0.42, 0.78),   # true blue
+        "concrete":   (0.83, 0.72, 0.52),   # sand
+        "tar_paper":  (0.32, 0.34, 0.42),   # graphite
+        "glass":      (0.24, 0.63, 0.42),   # green
+        "roof_tiles": (0.82, 0.32, 0.24),   # red
+    },
+}
+ROOFMAT_COLORS = ROOFMAT_PALETTES["soft"]   # default palette
+ROOFMAT_ORDER = ["metal", "concrete", "tar_paper", "glass", "roof_tiles"]
+LOD3_COLOR    = (0.91, 0.70, 0.29)      # gold accent — reconstructed building
+DEFAULT_MAT   = (0.72, 0.68, 0.62)      # warm neutral — no prediction
+
+# Per-role alpha + brightness (viewed obliquely: walls semi-transparent so the
+# graph shows through, roofs a bit more present, LoD3 nearly opaque to "pop").
+_ROLE_STYLE = {   # role: (alpha, lighten toward white)
+    "wall":   (0.60, 0.15),
+    "roof":   (0.80, 0.00),
+    "ground": (0.35, 0.00),
+}
+_LOD3_ROLE_STYLE = {
+    "wall":   (0.86, 0.10),
+    "roof":   (0.94, 0.00),
+    "ground": (0.60, 0.00),
+}
+
+
+def _mix_white(rgb, t):
+    return tuple(c + (1.0 - c) * t for c in rgb)
+
+
+def _surface_role(surface_type: str) -> str:
+    if surface_type == "RoofSurface":
+        return "roof"
+    if surface_type == "GroundSurface":
+        return "ground"
+    return "wall"
+
+
+# Building boundary-surface types; every other FEATURE_MATERIAL key belongs to
+# a non-building city object (Road, WaterBody, Bridge, …) which keeps its
+# standard per-type colour even in thematic mode.
+_BLDG_SURFACE_TYPES = frozenset(
+    {"WallSurface", "ClosureSurface", "RoofSurface", "GroundSurface"})
+
+
+def build_thematic_materials(building_attrs: dict, palette: str = "soft",
+                             opacity: float | None = None):
+    """Return (materials_list, index_fn) for roof-material building colouring.
+
+    building_attrs : {building_id -> {"roofmat": str|None, "is_lod3": bool}}
+    palette        : key into ROOFMAT_PALETTES ('soft' | 'vivid')
+    opacity        : if given, overrides every per-role alpha (1.0 = fully
+                     opaque; materials then render on the opaque pass and a
+                     viewer can still fade them at runtime via a style alpha)
+    index_fn(building_id, surface_type) -> material index into materials_list
+
+    Degrades gracefully: buildings without a prediction (or graphs where the
+    attribute does not exist at all) use the neutral default coat, and
+    non-building city objects fall back to the standard per-type palette.
+    """
+    colors = ROOFMAT_PALETTES[palette]
+    materials: list = []
+    key_to_idx: dict = {}
+
+    def _ensure(key: str, rgb, role: str, lod3: bool):
+        if key in key_to_idx:
+            return key_to_idx[key]
+        alpha, lighten = (_LOD3_ROLE_STYLE if lod3 else _ROLE_STYLE)[role]
+        if opacity is not None:
+            alpha = opacity
+        col = _mix_white(rgb, lighten)
+        materials.append({"name": key, "color": [col[0], col[1], col[2], alpha]})
+        key_to_idx[key] = len(materials) - 1
+        return key_to_idx[key]
+
+    # Pre-register a stable palette so the legend order is deterministic.
+    for rm in ROOFMAT_ORDER:
+        for role in ("wall", "roof", "ground"):
+            _ensure(f"{rm}_{role}", colors[rm], role, False)
+    for role in ("wall", "roof", "ground"):
+        _ensure(f"lod3_{role}", LOD3_COLOR, role, True)
+        _ensure(f"default_{role}", DEFAULT_MAT, role, False)
+
+    # Standard per-type palette appended for non-building city objects
+    # (Road, WaterBody, Bridge, …) so mixed-module datasets stay readable.
+    type_offset = len(materials)
+    materials.extend(MATERIALS_GLTF)
+
+    def index_fn(building_id: str, surface_type: str) -> int:
+        if surface_type in FEATURE_MATERIAL and surface_type not in _BLDG_SURFACE_TYPES:
+            return type_offset + FEATURE_MATERIAL[surface_type]
+        role = _surface_role(surface_type)
+        info = building_attrs.get(building_id or "", None)
+        if info and info.get("is_lod3"):
+            return key_to_idx[f"lod3_{role}"]
+        rm = (info or {}).get("roofmat")
+        if rm in colors:
+            return key_to_idx[f"{rm}_{role}"]
+        return key_to_idx[f"default_{role}"]
+
+    return materials, index_fn
+
+
+def fetch_building_attrs(sess, source: str) -> dict:
+    """{building_id -> {roofmat, is_lod3}} for thematic colouring."""
+    attrs: dict = {}
+    for row in sess.run("""
+        MATCH (b:Building)-[:PART_OF]->(d:Dataset {source: $src})
+        RETURN b.id AS id,
+               b.predictedroofmaterial AS roofmat,
+               coalesce(b.lod3_enriched, false) AS is_lod3
+    """, src=source):
+        attrs[row["id"]] = {"roofmat": row["roofmat"], "is_lod3": bool(row["is_lod3"])}
+    return attrs
+
+
+# ---------------------------------------------------------------------------
 # Coordinate helpers
 # ---------------------------------------------------------------------------
 
@@ -533,7 +672,7 @@ def _apply_implicit_transform(pts: np.ndarray, matrix_str: str, ref_str: str) ->
 # ---------------------------------------------------------------------------
 
 def pack_glb(mat_positions, mat_normals, mat_indices,
-             mat_fids=None, n_features=0) -> bytes:
+             mat_fids=None, n_features=0, materials=None) -> bytes:
     """
     Pack N sets of (positions, normals, indices) into a binary GLB 2.0 file.
     mat_positions[i] : list of [x, y, z] float  (glTF Y-up local frame)
@@ -643,16 +782,21 @@ def pack_glb(mat_positions, mat_normals, mat_indices,
         primitives.append(prim)
 
     gltf_mats = []
-    for m in MATERIALS_GLTF:
-        gltf_mats.append({
+    for m in (materials if materials is not None else MATERIALS_GLTF):
+        col = m["color"]
+        alpha = col[3] if len(col) > 3 else 1.0
+        gmat = {
             "name": m["name"],
             "pbrMetallicRoughness": {
-                "baseColorFactor": m["color"],
+                "baseColorFactor": [col[0], col[1], col[2], alpha],
                 "metallicFactor": 0.0,
                 "roughnessFactor": 0.85,
             },
             "doubleSided": True,
-        })
+        }
+        if alpha < 1.0:
+            gmat["alphaMode"] = "BLEND"
+        gltf_mats.append(gmat)
 
     gltf: dict = {
         "asset": {"version": "2.0"},
@@ -693,7 +837,8 @@ def pack_glb(mat_positions, mat_normals, mat_indices,
 # Main pipeline
 # ---------------------------------------------------------------------------
 
-def build_3dtiles(source: str, out_dir: Path):
+def build_3dtiles(source: str, out_dir: Path, color_by: str = "type",
+                  palette: str = "soft", opacity: float | None = None):
     # ---- 1. Read CRS and bbox from the Dataset node in Neo4j ---------------
     driver = _connect()
     print("Connected to Neo4j.")
@@ -703,6 +848,27 @@ def build_3dtiles(source: str, out_dir: Path):
             print(f"ERROR: no Dataset with source='{source}' found in graph.", file=sys.stderr)
             driver.close()
             sys.exit(1)
+
+        # ---- Choose material palette + per-surface material selector -------
+        if color_by == "roofmat":
+            b_attrs = fetch_building_attrs(sess, source)
+            materials, _mat_index = build_thematic_materials(b_attrs, palette, opacity)
+            n_pred  = sum(1 for v in b_attrs.values() if v.get("roofmat") in ROOFMAT_COLORS)
+            n_lod3  = sum(1 for v in b_attrs.values() if v.get("is_lod3"))
+            unknown = sorted({v["roofmat"] for v in b_attrs.values()
+                              if v.get("roofmat") and v["roofmat"] not in ROOFMAT_COLORS})
+            print(f"  Colouring by roof material: {n_pred}/{len(b_attrs)} buildings "
+                  f"predicted, {n_lod3} LoD3 highlighted "
+                  f"(palette={palette}, opacity={'baked per-role' if opacity is None else opacity})")
+            if not n_pred:
+                print("  Note: no 'predictedroofmaterial' values in this dataset — "
+                      "all buildings use the neutral default coat.")
+            if unknown:
+                print(f"  Note: unmapped roof-material values (default coat): {unknown}")
+        else:
+            materials  = MATERIALS_GLTF
+            _mat_index = lambda bid, stype: FEATURE_MATERIAL.get(stype, 0)
+        n_mats = len(materials)
 
         srs_name   = ds.get("crs", "")
         lc_str     = ds.get("bbox_lower_corner", "")
@@ -806,16 +972,16 @@ def build_3dtiles(source: str, out_dir: Path):
 
     # ---- 4. Triangulate in local ENU, accumulate per-material geometry --
     print("Triangulating polygons …")
-    mat_pos  = [[] for _ in range(_N_MATS)]
-    mat_nor  = [[] for _ in range(_N_MATS)]
-    mat_idx  = [[] for _ in range(_N_MATS)]
-    mat_fids = [[] for _ in range(_N_MATS)]
+    mat_pos  = [[] for _ in range(n_mats)]
+    mat_nor  = [[] for _ in range(n_mats)]
+    mat_idx  = [[] for _ in range(n_mats)]
+    mat_fids = [[] for _ in range(n_mats)]
     building_registry: dict = {}   # building_id str → feature index int
     skipped = 0
 
     for s in surface_list:
-        mi  = FEATURE_MATERIAL.get(s["type"], 0)
         bid = s.get("building_id") or ""
+        mi  = _mat_index(bid, s["type"])
         if bid not in building_registry:
             building_registry[bid] = len(building_registry)
         bidx = building_registry[bid]
@@ -847,19 +1013,20 @@ def build_3dtiles(source: str, out_dir: Path):
         for idx in tri_idx:
             mat_idx[mi].append(int(idx) + voffset)
 
-    total_verts = sum(len(mat_pos[i]) for i in range(_N_MATS))
-    total_tris  = sum(len(mat_idx[i]) // 3 for i in range(_N_MATS))
+    total_verts = sum(len(mat_pos[i]) for i in range(n_mats))
+    total_tris  = sum(len(mat_idx[i]) // 3 for i in range(n_mats))
     print(f"  Triangulated: {total_tris:,} triangles, {total_verts:,} vertices"
           f"  (skipped degenerate polygons: {skipped})")
-    for i in range(_N_MATS):
+    for i in range(n_mats):
         if mat_pos[i]:
-            print(f"    {MATERIALS_GLTF[i]['name']}: "
+            print(f"    {materials[i]['name']}: "
                   f"{len(mat_idx[i]) // 3:,} tri / {len(mat_pos[i]):,} vert")
 
     # ---- 5. Pack GLB -------------------------------------------------------
     n_features = len(building_registry)
     print(f"Packing GLB … ({n_features} building features)")
-    glb_bytes = pack_glb(mat_pos, mat_nor, mat_idx, mat_fids, n_features)
+    glb_bytes = pack_glb(mat_pos, mat_nor, mat_idx, mat_fids, n_features,
+                         materials=materials)
 
     # ---- 6. Bounding region (radians + ellipsoidal metres) -----------------
     all_lons = np.concatenate([s["lons"] for s in surface_list])
@@ -924,6 +1091,19 @@ if __name__ == "__main__":
                          "exactly one dataset in the graph.")
     ap.add_argument("--out", default="output/3dtiles",
                     help="Output directory (default: output/3dtiles)")
+    ap.add_argument("--color-by", choices=["type", "roofmat"], default="type",
+                    dest="color_by",
+                    help="Building colouring: 'type' (per-surface-type, default) or "
+                         "'roofmat' (ML-predicted roof material as translucent base "
+                         "coat + gold accent for LoD3-reconstructed buildings)")
+    ap.add_argument("--palette", choices=sorted(ROOFMAT_PALETTES), default="soft",
+                    help="Roof-material palette (roofmat mode): 'soft' muted tones "
+                         "for translucent overlays (default), 'vivid' basic main "
+                         "colours for opaque renders")
+    ap.add_argument("--opacity", type=float, default=None,
+                    help="Override the baked per-role alphas (roofmat mode), e.g. "
+                         "1.0 for fully opaque buildings; a viewer can still fade "
+                         "opaque tiles at runtime")
     args = ap.parse_args()
 
     # Resolve dataset from graph if not given
@@ -944,7 +1124,8 @@ if __name__ == "__main__":
             sys.exit(1)
         source = sources[0]
 
-    result = build_3dtiles(source, Path(args.out))
+    result = build_3dtiles(source, Path(args.out), color_by=args.color_by,
+                           palette=args.palette, opacity=args.opacity)
     if result is None or result[0] is None:
         print("No output generated (no surface polygons found).")
         sys.exit(1)
