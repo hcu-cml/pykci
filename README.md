@@ -394,6 +394,26 @@ cd output/3dtiles && python serve.py             # buildings at :8080 (optional 
 # then open http://localhost:8081/viewer.html
 ```
 
+### 4e · 2D footprint map coloured by predicted roof material
+
+```bash
+python export_roofmat_footprints.py
+python export_roofmat_footprints.py --dataset <file.gml>
+python export_roofmat_footprints.py --basemap osm
+python export_roofmat_footprints.py --output output/html/my_roofmap.html
+```
+
+Reads each building's `GroundSurface` footprint and its ML-predicted `predictedroofmaterial` straight from Neo4j (no GML needed), reprojects the footprints to WGS84 (CRS derived from the dataset's `srsName`), and writes a **self-contained Leaflet HTML map** with polygons coloured by roof material, an interactive legend with per-class counts, and per-building popups (id, predicted roof, height). The palette matches `build_3dtiles.py --color-by roofmat` (the `soft` teaser palette) so the 2D map and the 3D teaser read as one system. Provenance-aware: the popup labels the material as *predicted*, and buildings without a prediction get a neutral "no prediction" coat rather than being dropped. Omit `--dataset` when the graph holds a single dataset.
+
+| Flag | Default | Effect |
+| ---- | ------- | ------ |
+| `--dataset <name>` | the only dataset present | Which dataset's buildings to map |
+| `--output <path>` | `output/html/roofmat_footprints.html` | Output HTML path |
+| `--basemap <voyager\|osm>` | `voyager` | Basemap tiles |
+| `--source-crs <EPSG:N>` | derived from `Dataset.crs` | Override footprint CRS |
+
+Output: `output/html/roofmat_footprints.html` - open directly in a browser (everything except the basemap tiles is inlined).
+
 ### 5 · Natural-language queries
 
 ```bash
@@ -414,6 +434,24 @@ python db-llm/query_ollama_min.py --ctx 16384 --summarize
 ```
 
 `query_ollama_min.py` is a lean alternative tuned for small open models on a laptop with no GPU (e.g. Apple Silicon). Instead of injecting all of `GRAPH.md` + `CYPHER.md` (~24k tokens) every call, it embeds a hand-distilled ~850-token schema + Cypher cheat-sheet (`MINIMAL_CONTEXT`) directly in the script, so the context window (`--ctx`, default 8192) stays small and the KV cache fits in RAM - no swapping, much faster. It makes one LLM call per question (add `--summarize` for a plain-English answer), and strips `<think>…</think>` blocks and ``` fences before running the query. Prefer a tool/code model such as `qwen2.5-coder:7b`; `deepseek-r1` adds `<think>` overhead and weaker current-Cypher accuracy.
+
+---
+
+## Tools
+
+The `tools/` directory holds standalone utilities that are handy alongside pykci but are **not** part of the core ingest → graph → export pipeline (they don't touch Neo4j).
+
+### CityGML → GeoJSON building footprints
+
+```bash
+py tools/extract_citygml_building_footprints.py input/citygml/FZK-Haus/FZK-Haus-LoD2-KIT-IAI-KHH-B36-V1.gml
+py tools/extract_citygml_building_footprints.py input/citygml/nyc          # a whole folder, recursively
+py tools/extract_citygml_building_footprints.py input/citygml/hamburg --keep-source-crs
+```
+
+Extracts one ground-level footprint polygon per building and writes a single GeoJSON `FeatureCollection` to `output/geojson/`, with each building's `gml:id` in `properties.gml_id`. The footprint is taken from `bldg:lod0FootPrint`, else `bldg:GroundSurface`, else the lowest near-horizontal polygon (an LoD1 extruded-block fallback). Element matching is by local name, so **CityGML 1.0 / 2.0 / 3.0** all work with one code path, and it **streams** (`lxml.iterparse`) so multi-GB city files parse in bounded memory.
+
+By default every footprint is **reprojected to WGS84** so datasets from different cities line up in one file — GML axis order is normalised and non-metric heights (e.g. NYC's EPSG:2263 feet) are scaled to metres, reusing the same `srsName` resolution as `ingest_citygml.py`. The resolved `source_crs` and `target_crs` are recorded as top-level members of the GeoJSON. Use `--keep-source-crs` for raw source coordinates or `--target-crs EPSG:N` to pick another target. See **[`tools/CITYGML_BUILDING_FOOTPRINT_EXTRACTION.md`](tools/CITYGML_BUILDING_FOOTPRINT_EXTRACTION.md)** for the full rationale.
 
 ---
 
@@ -443,6 +481,8 @@ CityGML 2.0 defines 14 modules. 10 are ingested; the remaining 4 are not stored 
 All concrete feature types (`Building` + all `CityObject` subtypes) that carry a `gml:boundedBy` envelope are registered in the **Neo4j Spatial R-tree** (layer `features`) after ingestion, enabling `spatial.bbox`, `spatial.intersects`, and `spatial.withinDistance` queries across the entire dataset.
 
 **OpenStreetMap enrichment (optional).** After CityGML ingestion, [`ingest_osm.py`](ingest_osm.py) adds `(:OsmFeature)` nodes linked to pykci features via `ENRICHED_BY` (and `HAS_POI` for point POIs), with OSM-derived attributes kept under an `osm_` prefix so authoritative CityGML/ALKIS values are never overwritten. OSM features are indexed in a separate `osm_features` R-tree layer. See [OSM_INTEGRATION.md](OSM_INTEGRATION.md).
+
+**Multi-source & provenance (design principle).** pykci is a *multi-source* graph spanning a spectrum of trust levels — authoritative CityGML/ALKIS, crowd-sourced OSM, ML-predicted (e.g. roof materials), and reconstructed (LoD3). The origin and reliability of every fact stays explicit and queryable: every node/edge carries a `source`, derived values are namespaced (never overwriting authoritative keys), predictions and fusion links carry confidence, and partial coverage is flagged so *absence* is distinguishable from a *negative*. Any new mapping function must decide and store provenance before writing — see the *Provenance & Multi-Source Design Principle* in [GRAPH.md](GRAPH.md).
 
 ### Schema
 
@@ -615,11 +655,15 @@ pykci/
 │   ├── citygml/          ← exported GML files
 │   ├── 3dtiles/          ← tileset.json, tiles/city.glb, serve.py
 │   ├── graph_tiles/      ← graph point-cloud tileset + viewer.html, serve.py
+│   ├── geojson/          ← exported GeoJSON (e.g. building footprints from tools/)
 │   ├── html/             ← standalone HTML exports (maps, viewers, reports)
 │   └── stats/            ← census JSON + round-trip summaries
 ├── db-llm/               ← LangChain + Ollama query interface
 │   ├── query_ollama_full.py  ← full-context NL→Cypher (GraphCypherQAChain)
 │   └── query_ollama_min.py   ← minimal-context NL→Cypher for small/laptop models
+├── tools/                ← miscellaneous standalone utilities (not part of the core pipeline)
+│   ├── extract_citygml_building_footprints.py  ← CityGML → GeoJSON building footprints
+│   └── CITYGML_BUILDING_FOOTPRINT_EXTRACTION.md ← its design rationale
 ├── docker/               ← Docker Compose for Neo4j + Ollama + query container
 │   └── Dockerfile.ingest ← containerized pykci ingest (used by the benchmark)
 ├── eval/                 ← QA harness: round-trip fidelity + GML inventory
@@ -630,6 +674,7 @@ pykci/
 ├── export_citygml.py     ← Neo4j → CityGML
 ├── build_3dtiles.py      ← CityGML → 3D Tiles
 ├── build_graph_pointcloud.py  ← Neo4j graph → 3D Tiles point-cloud
+├── export_roofmat_footprints.py  ← Neo4j → 2D footprint map (predicted roof material)
 ├── GRAPH.md              ← Full graph schema, Cypher rules, ALKIS codes
 ├── OSM_INTEGRATION.md    ← OSM enrichment concept, matching & schema
 ├── CYPHER.md             ← Cypher 25 + Neo4j Spatial reference
@@ -645,6 +690,7 @@ pykci/
 | [`GRAPH.md`](GRAPH.md) | Agents / developers | Full graph schema, ingestion rules, ALKIS codes, Cypher examples |
 | [`OSM_INTEGRATION.md`](OSM_INTEGRATION.md) | Agents / developers | OSM enrichment: data model, semantic mapping, 1:1/1:n/n:1/n:m footprint matching, provenance schema, `ingest_osm.py` code map |
 | [`CYPHER.md`](CYPHER.md) | Agents / LLM (injected) | Cypher 25 + Neo4j Spatial plugin reference |
+| [`tools/CITYGML_BUILDING_FOOTPRINT_EXTRACTION.md`](tools/CITYGML_BUILDING_FOOTPRINT_EXTRACTION.md) | Developers | Footprint → GeoJSON tool: footprint-selection priority, CRS/axis-order handling, version-agnostic parsing, streaming |
 | [`eval/tool_comparison/comparison_2026-06-19.md`](eval/tool_comparison/comparison_2026-06-19.md) | Developers / reviewers | Mapping-time & database benchmark: pykci vs 3DCityKG vs 3DCityDB v5. Reproduce with [`run_benchmark.sh`](eval/tool_comparison/run_benchmark.sh) |
 
 ---
