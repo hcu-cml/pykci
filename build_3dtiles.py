@@ -21,22 +21,33 @@ Usage (from project root):
   python build_3dtiles.py                          # first dataset in graph
   python build_3dtiles.py --source <filename.gml>  # specific dataset by source name
   python build_3dtiles.py --out <output_dir>        # custom output directory
+  python build_3dtiles.py --tiled --workers 8       # whole city: streamable quadtree
 
 Output: output/3dtiles/tileset.json + output/3dtiles/tiles/city.glb
+        (--tiled: tileset.json + feature_schema.json + tiles/r*.glb, one GLB per
+        quadtree tile, each with per-feature attributes as EXT_structural_metadata)
 """
 
 import argparse
+import hashlib
 import json
 import math
+import os
 import re
 import struct
 import sys
+import time
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import mapbox_earcut as earcut_lib
 import numpy as np
+from lxml import etree
 from neo4j import GraphDatabase
 from pyproj import Transformer
+
+from pykci_provenance import AUTHORITATIVE, DERIVED, LAYERS, property_provenance
+from pykci_runtime import neo4j_auth, neo4j_uri, progress
 
 # Optional: shapely lets us union overlapping window/door openings before
 # cutting them as holes. earcut cannot bridge overlapping holes (it silently
@@ -535,14 +546,16 @@ def triangulate_polygon_enu(verts_enu: np.ndarray, holes_enu=None):
 # Neo4j surface fetcher
 # ---------------------------------------------------------------------------
 
-_NEO4J_URI  = "bolt://localhost:7687"
-_NEO4J_AUTH = ("neo4j", "neo4jneo4j")
+_NEO4J_URI  = neo4j_uri()
+_NEO4J_AUTH = neo4j_auth()
 
 
 def _connect():
     driver = GraphDatabase.driver(
         _NEO4J_URI, auth=_NEO4J_AUTH,
-        notifications_disabled_categories={"DEPRECATION"},
+        # UNRECOGNIZED: the tiled queries probe optional properties (is_implicit,
+        # lod3_enriched, …) that a given city may not have
+        notifications_disabled_classifications={"DEPRECATION", "UNRECOGNIZED"},
     )
     driver.verify_connectivity()
     return driver
@@ -1079,6 +1092,1034 @@ def build_3dtiles(source: str, out_dir: Path, color_by: str = "type",
 
 
 # ---------------------------------------------------------------------------
+# Tiled output: quadtree of small GLBs + per-feature semantic metadata
+# ---------------------------------------------------------------------------
+# The single-GLB path above suits a district (HafenCity) or a teaser render, but
+# for a whole city it produces one file a browser cannot stream (Hamburg:
+# 1.5 GB). --tiled writes a 3D Tiles 1.1 quadtree instead:
+#
+#   * leaf tiles hold the full geometry of at most --max-features top-level
+#     features (a Building together with all its BuildingParts, or a CityObject);
+#   * coarser tiles hold LoD1 blocks (footprint extruded to the building's
+#     height) of the --overview-features most prominent buildings below them, so
+#     the whole city stays visible from afar (REPLACE refinement);
+#   * every tile carries EXT_mesh_features feature ids and an
+#     EXT_structural_metadata property table with each feature's semantic
+#     attributes, so a viewer can show or style a clicked building without a
+#     database round-trip. Property names keep their namespace (osm_*,
+#     predicted_*, …) and each schema property records its provenance layer
+#     (pykci_provenance), mirrored in feature_schema.json next to tileset.json.
+#
+# All tiles share ONE local ENU frame at the dataset centre (a single root
+# transform): per-tile transforms would be inherited by child tiles. Positions
+# stay within a few tens of km of the origin, i.e. millimetre float32 precision.
+
+_F64_NODATA = -1.7976931348623157e308   # "absent" marker for FLOAT64 properties
+_META_EXCLUDE = frozenset({
+    "bbox", "bbox_wkt", "bbox_lower_corner", "bbox_upper_corner", "location",
+    "has_bbox_envelope", "gtype", "composite_surface_id", "multi_surface_id",
+})
+_LOD0_ROLES = ("lod0FootPrint", "lod0RoofEdge")
+
+# Openings of a reconstructed LoD3 facade (bldg:Window / bldg:Door) get their own
+# materials in the tiled output, after the per-type or thematic palette: glass
+# reads darker and glossier than the wall it sits in.
+_OPENING_TYPES = ("Window", "Door")
+_OPENING_MATERIALS = [
+    {"name": "window", "color": [0.30, 0.39, 0.47, 1.0], "roughness": 0.35},
+    {"name": "door",   "color": [0.42, 0.30, 0.21, 1.0]},
+]
+
+# (id, type, provenance, description): added by the tiler next to the native
+# node properties. District / function / roof-type names are decoded from the
+# authoritative hubs; the address is parsed from the authoritative bldg:address.
+_DERIVED_PROPS = [
+    ("feature_type", "STRING", AUTHORITATIVE,
+     "CityGML feature type (Building, Road, WaterBody, …)"),
+    ("district", "STRING", AUTHORITATIVE, "District the feature is LOCATED_IN"),
+    ("function_name", "STRING", AUTHORITATIVE, "Decoded building function (BuildingFunction)"),
+    ("roof_type_name", "STRING", AUTHORITATIVE, "Decoded roof type (RoofType)"),
+    ("address_street", "STRING", AUTHORITATIVE, "Street of the first bldg:address (xAL)"),
+    ("address_house_number", "STRING", AUTHORITATIVE, "House number of the first bldg:address"),
+    ("address_postcode", "STRING", AUTHORITATIVE, "Postcode of the first bldg:address"),
+    ("address_locality", "STRING", AUTHORITATIVE, "Locality of the first bldg:address"),
+    ("address_count", "FLOAT64", AUTHORITATIVE, "Number of bldg:address entries"),
+    ("geometric_height", "FLOAT64", DERIVED,
+     "bbox_max_z − bbox_min_z of the feature geometry (CRS units)"),
+    ("footprint_area", "FLOAT64", DERIVED, "Area of the ground footprint (CRS units²)"),
+    ("geometry_lod", "FLOAT64", DERIVED,
+     "LoD of the geometry drawn in the tile (3: the reconstructed LoD3 facade, see lod3_*)"),
+    ("longitude", "FLOAT64", DERIVED, "WGS84 longitude of the feature centre"),
+    ("latitude", "FLOAT64", DERIVED, "WGS84 latitude of the feature centre"),
+]
+# Attributes kept on the LoD1 blocks of overview tiles (identification only).
+_OVERVIEW_PROPS = frozenset({
+    "id", "name", "gml_name", "feature_type", "district", "function_name",
+    "measured_height", "geometric_height", "storeys_above_ground",
+    "address_street", "address_house_number", "address_postcode", "address_locality",
+    "osm_name", "osm_height", "predictedroofmaterial", "longitude", "latitude",
+})
+_XAL_FIELDS = {
+    "ThoroughfareName": "address_street",
+    "ThoroughfareNumber": "address_house_number",
+    "PostalCodeNumber": "address_postcode",
+    "LocalityName": "address_locality",
+}
+
+
+def _lonlat_to_ecef_np(lon_deg, lat_deg, h):
+    """Vectorised lonlat_to_ecef for (N,) arrays → (N, 3)."""
+    lon = np.radians(lon_deg)
+    lat = np.radians(lat_deg)
+    sin_lat = np.sin(lat)
+    n = WGS84_A / np.sqrt(1.0 - WGS84_E2 * sin_lat ** 2)
+    return np.column_stack([
+        (n + h) * np.cos(lat) * np.cos(lon),
+        (n + h) * np.cos(lat) * np.sin(lon),
+        (n * (1.0 - WGS84_E2) + h) * sin_lat,
+    ])
+
+
+def _lod_num(lod) -> int:
+    m = re.search(r"\d", str(lod or ""))
+    return int(m.group(0)) if m else 0
+
+
+def _meta_id(key: str, used: set) -> str:
+    """3D Metadata property ids must match ^[a-zA-Z_][a-zA-Z0-9_]*$. Keys that
+    are mostly non-ASCII (Tokyo's Japanese PLATEAU keys) get a stable hashed id;
+    the original key is kept as the property's display name."""
+    pid = re.sub(r"[^A-Za-z0-9_]", "_", key)
+    if not pid or pid[0].isdigit():
+        pid = "_" + pid
+    if pid != key and pid.count("_") > len(pid) / 2:
+        pid = "p_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
+    base, i = pid, 2
+    while pid in used:
+        pid, i = f"{base}_{i}", i + 1
+    used.add(pid)
+    return pid
+
+
+def discover_feature_schema(sess, source: str) -> list[dict]:
+    """Schema of the per-feature property table: every scalar property found on
+    the dataset's Buildings/CityObjects (numbers → FLOAT64, everything else →
+    STRING) plus the derived properties. Geometry anchors and verbatim XML
+    subtrees are left out."""
+    rows = sess.run("""
+        MATCH (n)-[:PART_OF]->(:Dataset {source: $src})
+        WHERE n:Building OR n:CityObject
+        UNWIND keys(n) AS k
+        WITH k, valueType(n[k]) AS t
+        RETURN k, collect(DISTINCT t) AS types, count(*) AS n
+        ORDER BY k
+    """, src=source).data()
+    used: set = set()
+    props = []
+    for r in rows:
+        key = r["k"]
+        if (key in _META_EXCLUDE or key.startswith(("_", "embedding"))
+                or key.endswith("_xml")):
+            continue
+        base_types = {t.split(" NOT NULL")[0] for t in r["types"]}
+        if base_types & {"POINT", "MAP"}:
+            continue
+        mtype = "FLOAT64" if base_types <= {"INTEGER", "FLOAT"} else "STRING"
+        pid = _meta_id(key, used)
+        props.append({"id": pid, "name": key, "type": mtype, "derived": False,
+                      "provenance": property_provenance(key), "count": r["n"]})
+    native = {p["name"] for p in props}
+    for pid, mtype, prov, desc in _DERIVED_PROPS:
+        if pid in native:          # a native property of that name wins
+            continue
+        props.append({"id": _meta_id(pid, used), "name": pid, "type": mtype,
+                      "derived": True, "provenance": prov, "description": desc})
+    return props
+
+
+def _schema_json(props: list[dict]) -> dict:
+    """EXT_structural_metadata schema (embedded in every tile)."""
+    out = {}
+    for p in props:
+        d = {"name": p["name"], "extras": {"provenance": p["provenance"]}}
+        if p.get("description"):
+            d["description"] = p["description"]
+        if p["type"] == "FLOAT64":
+            d.update({"type": "SCALAR", "componentType": "FLOAT64", "noData": _F64_NODATA})
+        else:
+            d.update({"type": "STRING", "noData": ""})
+        if p["name"] == "id":
+            d["semantic"] = "ID"
+        elif p["name"] == "name":
+            d["semantic"] = "NAME"
+        out[p["id"]] = d
+    return {"id": "pykci_features", "classes": {"feature": {
+        "name": "City feature",
+        "description": "Top-level CityGML feature (Building incl. BuildingParts, or CityObject)",
+        "properties": out}}}
+
+
+def _parse_xal(address_xml) -> dict:
+    """Street / number / postcode / locality from the first bldg:address
+    (address_xml holds the verbatim xAL subtree(s), a JSON list for
+    multi-address buildings)."""
+    if not address_xml:
+        return {}
+    try:
+        items = json.loads(address_xml)
+        items = items if isinstance(items, list) else [items]
+    except (ValueError, TypeError):
+        items = [address_xml]
+    out = {"address_count": float(len(items))}
+    if not items or not isinstance(items[0], str):
+        return out
+    try:
+        root = etree.fromstring(items[0].encode("utf-8"),
+                                parser=etree.XMLParser(recover=True))
+    except Exception:
+        return out
+    if root is None:
+        return out
+    for el in root.iter():
+        if not isinstance(el.tag, str):
+            continue
+        local = el.tag.rsplit("}", 1)[-1].rsplit(":", 1)[-1]
+        field = _XAL_FIELDS.get(local)
+        if field and field not in out and el.text and el.text.strip():
+            out[field] = el.text.strip()
+    return out
+
+
+def _coerce(value, mtype):
+    if value is None:
+        return None
+    if mtype == "FLOAT64":
+        try:
+            v = float(value)
+        except (TypeError, ValueError):
+            return None
+        return v if math.isfinite(v) else None
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (list, dict)):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    return str(value)
+
+
+# ---- per-process context (workers re-create it after spawn) ----------------
+
+_CTX: dict = {}
+
+
+def _tile_ctx_init(ctx: dict):
+    """Pool initializer: one driver + CRS transformer per worker process."""
+    _CTX.clear()
+    _CTX.update(ctx)
+    _CTX["to_wgs84"] = Transformer.from_crs(ctx["horiz_epsg"], "EPSG:4326", always_xy=True)
+    _CTX["center_ecef"] = np.array(ctx["center_ecef"])
+    _CTX["basis"] = np.array(ctx["basis"])          # rows: east, north, up
+    _CTX["driver"] = None
+
+
+def _ctx_driver():
+    if _CTX.get("driver") is None:
+        _CTX["driver"] = _connect()
+    return _CTX["driver"]
+
+
+def _to_enu(pts: np.ndarray) -> np.ndarray:
+    """(N,3) dataset-CRS points → (N,3) ENU metres in the shared tileset frame."""
+    lon, lat = _CTX["to_wgs84"].transform(pts[:, 0], pts[:, 1])
+    ecef = _lonlat_to_ecef_np(np.asarray(lon), np.asarray(lat), pts[:, 2] + _CTX["geoid_m"])
+    return (ecef - _CTX["center_ecef"]) @ _CTX["basis"].T
+
+
+# ---- graph reads ------------------------------------------------------------
+
+_GEOM_HOLES = ("OPTIONAL MATCH (p)-[:HAS_INTERIOR_RING]->(ri:GeometryRing) "
+               "WITH * ORDER BY ri.ring_index ")
+_Q_BOUNDARY = """
+    UNWIND $ids AS fid
+    MATCH (f:Entity {id: fid})-[:HAS_BUILDING_PART*0..]->(g)
+    MATCH (g)-[:HAS_BOUNDARY]->(bs:BoundarySurface)-[:HAS_POLYGON]->(p:GeometryPolygon)
+          -[:HAS_EXTERIOR_RING]->(r:GeometryRing)
+    WHERE r.pos_list IS NOT NULL AND r.pos_list <> ''
+    """ + _GEOM_HOLES + """
+    WITH fid, g.id AS owner, bs.lod AS lod, bs.surface_type AS stype, p.id AS pid,
+         r.pos_list AS ext, [x IN collect(ri.pos_list) WHERE x IS NOT NULL AND x <> ''] AS holes
+    RETURN fid, owner, 'boundary' AS kind, lod, stype, '' AS role, pid, ext, holes,
+           false AS impl, '' AS tm, '' AS ref
+"""
+_Q_SOLID = """
+    UNWIND $ids AS fid
+    MATCH (f:Entity {id: fid})-[:HAS_BUILDING_PART*0..]->(g)
+    MATCH (g)-[:HAS_LOD_SOLID]->(s:GeometrySolid)-[:HAS_SURFACE_MEMBER*1..2]->(p:GeometryPolygon)
+          -[:HAS_EXTERIOR_RING]->(r:GeometryRing)
+    WHERE r.pos_list IS NOT NULL AND r.pos_list <> ''
+    """ + _GEOM_HOLES + """
+    WITH fid, g.id AS owner, s.lod AS lod, p.id AS pid,
+         r.pos_list AS ext, [x IN collect(ri.pos_list) WHERE x IS NOT NULL AND x <> ''] AS holes
+    RETURN fid, owner, 'solid' AS kind, lod, null AS stype, '' AS role, pid, ext, holes,
+           false AS impl, '' AS tm, '' AS ref
+"""
+_Q_MULTISURFACE = """
+    UNWIND $ids AS fid
+    MATCH (f:Entity {id: fid})-[:HAS_BUILDING_PART*0..]->(g)
+    MATCH (g)-[hs:HAS_LOD_SURFACE]->(ms:GeometryMultiSurface)-[:HAS_SURFACE_MEMBER]->(p:GeometryPolygon)
+          -[:HAS_EXTERIOR_RING]->(r:GeometryRing)
+    WHERE r.pos_list IS NOT NULL AND r.pos_list <> ''
+    """ + _GEOM_HOLES + """
+    WITH fid, g.id AS owner, coalesce(ms.lod, hs.lod) AS lod, coalesce(hs.role, '') AS role,
+         p.id AS pid, r.pos_list AS ext,
+         [x IN collect(ri.pos_list) WHERE x IS NOT NULL AND x <> ''] AS holes,
+         coalesce(ms.is_implicit, false) AS impl,
+         coalesce(ms.transformation_matrix, '') AS tm, coalesce(ms.reference_point, '') AS ref
+    RETURN fid, owner, 'ms' AS kind, lod, null AS stype, role, pid, ext, holes, impl, tm, ref
+"""
+# Reconstructed LoD3 facades (enrich_lod3_facades.py): an additive overlay reached
+# via HAS_LOD3_FACADE. Its wall polygons carry the window/door holes, and the
+# bldg:opening polygons fill them. Where present it is drawn instead of the
+# authoritative LoD2 shell (see _select_representation; --no-lod3 keeps LoD2).
+_Q_LOD3 = """
+    UNWIND $ids AS fid
+    MATCH (f:Entity {id: fid})-[:HAS_BUILDING_PART*0..]->(g)
+    MATCH (g)-[:HAS_LOD3_FACADE]->(bs:BoundarySurface)
+    CALL (bs) {
+        MATCH (bs)-[:HAS_POLYGON]->(p:GeometryPolygon)
+        RETURN bs.surface_type AS stype, p
+      UNION ALL
+        MATCH (bs)-[:HAS_OPENING]->(o:Opening)-[:HAS_LOD_SURFACE]->(:GeometryMultiSurface)
+              -[:HAS_SURFACE_MEMBER]->(p:GeometryPolygon)
+        RETURN o.opening_type AS stype, p
+    }
+    MATCH (p)-[:HAS_EXTERIOR_RING]->(r:GeometryRing)
+    WHERE r.pos_list IS NOT NULL AND r.pos_list <> ''
+    """ + _GEOM_HOLES + """
+    WITH fid, g.id AS owner, stype, p.id AS pid,
+         r.pos_list AS ext, [x IN collect(ri.pos_list) WHERE x IS NOT NULL AND x <> ''] AS holes
+    RETURN fid, owner, 'lod3' AS kind, '3' AS lod, stype, '' AS role, pid, ext, holes,
+           false AS impl, '' AS tm, '' AS ref
+"""
+_Q_ATTRS = """
+    UNWIND $ids AS fid
+    MATCH (n:Entity {id: fid})
+    OPTIONAL MATCH (n)-[:LOCATED_IN]->(d:District)
+    OPTIONAL MATCH (n)-[:HAS_FUNCTION]->(bf:BuildingFunction)
+    OPTIONAL MATCH (n)-[:HAS_ROOF_TYPE]->(rt:RoofType)
+    WITH fid, n, collect(DISTINCT d.name) AS districts,
+         collect(DISTINCT bf.name) AS functions, collect(DISTINCT rt.name) AS roof_types
+    RETURN fid, properties(n) AS props,
+           CASE WHEN n:Building THEN 'Building' ELSE coalesce(n.feature_type, 'CityObject') END AS ft,
+           districts, functions, roof_types
+"""
+
+
+def fetch_feature_index(sess, source: str) -> list[dict]:
+    """Every top-level feature of the dataset with a planar position + bbox.
+    Features lacking centre and bbox (e.g. a CityObject before OSM fusion
+    back-filled its bbox) are positioned at the first vertex of their geometry."""
+    feats = sess.run("""
+        MATCH (n)-[:PART_OF]->(:Dataset {source: $src})
+        WHERE n:Building OR n:CityObject
+        RETURN n.id AS id, n:Building AS is_bldg,
+               n.center_x AS cx, n.center_y AS cy,
+               n.bbox_min_x AS x0, n.bbox_min_y AS y0, n.bbox_min_z AS z0,
+               n.bbox_max_x AS x1, n.bbox_max_y AS y1, n.bbox_max_z AS z1
+    """, src=source).data()
+    missing = []
+    for f in feats:
+        if f["cx"] is None or f["cy"] is None:
+            if None not in (f["x0"], f["y0"], f["x1"], f["y1"]):
+                f["cx"], f["cy"] = (f["x0"] + f["x1"]) / 2, (f["y0"] + f["y1"]) / 2
+            else:
+                missing.append(f["id"])
+    if missing:
+        found = {}
+        for i in range(0, len(missing), 2000):
+            for r in sess.run("""
+                UNWIND $ids AS fid
+                MATCH (n:Entity {id: fid})
+                CALL (n) {
+                    OPTIONAL MATCH (n)-[:HAS_BUILDING_PART*0..]->()
+                          -[:HAS_BOUNDARY|HAS_LOD_SURFACE|HAS_LOD_SOLID]->(c)
+                          -[:HAS_POLYGON|HAS_SURFACE_MEMBER*1..2]->(:GeometryPolygon)
+                          -[:HAS_EXTERIOR_RING]->(r:GeometryRing)
+                    RETURN r.pos_list AS pl, c.reference_point AS ref,
+                           coalesce(c.is_implicit, false) AS impl
+                    LIMIT 1
+                }
+                RETURN fid, pl, ref, impl
+            """, ids=missing[i:i + 2000]):
+                src_str = r["ref"] if r["impl"] and r["ref"] else r["pl"]
+                if src_str:
+                    v = [float(t) for t in src_str.split()[:3]]
+                    if len(v) >= 2:
+                        found[r["fid"]] = v
+        for f in feats:
+            if f["id"] in found:
+                v = found[f["id"]]
+                f["cx"], f["cy"] = v[0], v[1]
+                f["z0"] = f["z0"] if f["z0"] is not None else (v[2] if len(v) > 2 else 0.0)
+    kept = [f for f in feats if f["cx"] is not None and f["cy"] is not None]
+    if len(kept) < len(feats):
+        print(f"  Note: {len(feats) - len(kept)} feature(s) without any geometry skipped.")
+    return kept
+
+
+def _select_representation(polys: list[dict]) -> list[dict]:
+    """Pick ONE geometry representation per owner (a Building, BuildingPart or
+    CityObject) so the same surface is not drawn twice: a reconstructed LoD3
+    facade, else boundary surfaces, else the highest-LoD solid, else the
+    highest-LoD multi-surface (lod0 footprint / roof edge only when nothing else
+    exists). Polygons shared by xlink are de-duplicated."""
+    by_kind: dict = {}
+    for p in polys:
+        by_kind.setdefault(p["kind"], []).append(p)
+    if "lod3" in by_kind:
+        cand = by_kind["lod3"]
+    elif "boundary" in by_kind:
+        cand = by_kind["boundary"]
+    elif "solid" in by_kind:
+        cand = by_kind["solid"]
+    else:
+        cand = by_kind.get("ms", [])
+        upper = [p for p in cand if p["role"] not in _LOD0_ROLES]
+        cand = upper or cand
+    if not cand:
+        return []
+    top = max(_lod_num(p["lod"]) for p in cand)
+    seen, out = set(), []
+    for p in cand:
+        if _lod_num(p["lod"]) != top:
+            continue
+        key = (p["pid"], p["tm"], p["ref"])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(p)
+    return out
+
+
+# ---- per-feature geometry → triangles ----------------------------------------
+
+def _material_type(ft: str, poly: dict, normal_up: float) -> str:
+    """Surface type used for the material: the boundary surface type for
+    buildings (solid / multi-surface faces classified by their normal), the
+    module feature type for every other CityObject."""
+    if ft != "Building":
+        return ft
+    if poly["stype"]:
+        return poly["stype"]
+    if normal_up > 0.7:
+        return "RoofSurface"
+    if normal_up < -0.7:
+        return "GroundSurface"
+    return "WallSurface"
+
+
+def _feature_mesh(ft: str, polys: list[dict]):
+    """Triangulate one feature. Returns (parts, info): parts is a list of
+    (surface_type, verts_enu (N,3), normal_enu (3,), tri_idx (M,)); info holds
+    the planar footprint material for overview tiles and the area attribute."""
+    parts = []
+    ground_rings, all_xy = [], []
+    zmin, zmax = math.inf, -math.inf
+    for p in polys:
+        ext = pos_str_to_pts(p["ext"])
+        if len(ext) < 3:
+            continue
+        holes = [pos_str_to_pts(h) for h in (p["holes"] or [])]
+        if p["impl"] and p["tm"]:
+            ext = _apply_implicit_transform(ext, p["tm"], p["ref"])
+            holes = [_apply_implicit_transform(h, p["tm"], p["ref"]) for h in holes]
+        zmin, zmax = min(zmin, float(ext[:, 2].min())), max(zmax, float(ext[:, 2].max()))
+        all_xy.append(ext[:, :2])
+        if p["stype"] == "GroundSurface":
+            ground_rings.append(ext[:, :2])
+        res = triangulate_polygon_enu(_to_enu(ext), [_to_enu(h) for h in holes if len(h) >= 3])
+        if res is None:
+            continue
+        verts, normal, tri = res
+        parts.append((_material_type(ft, p, float(normal[2])), verts, normal, tri))
+
+    info = {"zmin": zmin, "zmax": zmax, "footprint": None, "area": None, "xy": None}
+    if all_xy:
+        xy = np.vstack(all_xy)
+        info["xy"] = (*xy.min(axis=0).tolist(), *xy.max(axis=0).tolist())
+    if not all_xy or ft != "Building":
+        return parts, info
+    foot = None
+    if _HAVE_SHAPELY:
+        try:
+            from shapely.geometry import MultiPoint
+            if ground_rings:
+                foot = _sh_unary_union([_ShPolygon(r).buffer(0) for r in ground_rings
+                                        if len(r) >= 3])
+            if foot is None or foot.is_empty:
+                foot = MultiPoint(np.vstack(all_xy)).convex_hull
+            info["area"] = float(foot.area)
+            simple = foot.simplify(0.5, preserve_topology=True)
+            if simple.geom_type == "MultiPolygon":
+                simple = max(simple.geoms, key=lambda g: g.area)
+            if simple.geom_type == "Polygon" and not simple.is_empty:
+                info["footprint"] = np.asarray(simple.exterior.coords)[:-1, :2]
+        except Exception:
+            foot = None
+    if info["footprint"] is None:                      # bbox fallback
+        x0, y0, x1, y1 = info["xy"]
+        info["footprint"] = np.array([[x0, y0], [x1, y0], [x1, y1], [x0, y1]])
+        info["area"] = info["area"] if info["area"] is not None else float((x1 - x0) * (y1 - y0))
+    return parts, info
+
+
+def _attribute_row(rec: dict, schema: list[dict]) -> dict:
+    props = rec["props"]
+    derived = {
+        "feature_type": rec["ft"],
+        "district": "; ".join(sorted(x for x in rec["districts"] if x)) or None,
+        "function_name": "; ".join(sorted(x for x in rec["functions"] if x)) or None,
+        "roof_type_name": "; ".join(sorted(x for x in rec["roof_types"] if x)) or None,
+        **_parse_xal(props.get("address_xml")),
+    }
+    if props.get("bbox_max_z") is not None and props.get("bbox_min_z") is not None:
+        derived["geometric_height"] = props["bbox_max_z"] - props["bbox_min_z"]
+    cx, cy = props.get("center_x"), props.get("center_y")
+    if cx is None and props.get("bbox_min_x") is not None:
+        cx = (props["bbox_min_x"] + props["bbox_max_x"]) / 2
+        cy = (props["bbox_min_y"] + props["bbox_max_y"]) / 2
+    if cx is not None and cy is not None:
+        lon, lat = _CTX["to_wgs84"].transform(cx, cy)
+        derived["longitude"], derived["latitude"] = float(lon), float(lat)
+    row = {}
+    for p in schema:
+        v = derived.get(p["name"]) if p["derived"] else props.get(p["name"])
+        if v is None:
+            # a native key of a derived name (CityObjects store feature_type,
+            # Buildings do not) still gets the derived value where it is absent
+            v = derived.get(p["name"])
+        row[p["id"]] = _coerce(v, p["type"])
+    return row
+
+
+# ---- GLB packing with feature ids + property table -----------------------------
+
+class _GlbWriter:
+    def __init__(self):
+        self.buf = bytearray()
+        self.views: list = []
+        self.accessors: list = []
+
+    def view(self, data: bytes, target=None, align: int = 4) -> int:
+        while len(self.buf) % align:
+            self.buf.append(0)
+        v = {"buffer": 0, "byteOffset": len(self.buf), "byteLength": len(data)}
+        if target is not None:
+            v["target"] = target
+        self.buf.extend(data)
+        self.views.append(v)
+        return len(self.views) - 1
+
+    def accessor(self, arr: np.ndarray, component_type: int, type_: str, target, minmax=False) -> int:
+        acc = {"bufferView": self.view(arr.tobytes(), target), "byteOffset": 0,
+               "componentType": component_type, "count": int(len(arr)), "type": type_}
+        if minmax:
+            acc["min"] = arr.min(axis=0).tolist()
+            acc["max"] = arr.max(axis=0).tolist()
+        self.accessors.append(acc)
+        return len(self.accessors) - 1
+
+    def glb(self, gltf: dict) -> bytes:
+        gltf["bufferViews"] = self.views
+        gltf["accessors"] = self.accessors
+        while len(self.buf) % 4:
+            self.buf.append(0)
+        gltf["buffers"] = [{"byteLength": len(self.buf)}]
+        js = json.dumps(gltf, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        js += b" " * (-len(js) % 4)
+        total = 12 + 8 + len(js) + 8 + len(self.buf)
+        return (struct.pack("<III", 0x46546C67, 2, total)
+                + struct.pack("<II", len(js), 0x4E4F534A) + js
+                + struct.pack("<II", len(self.buf), 0x004E4942) + bytes(self.buf))
+
+
+def _property_table(w: _GlbWriter, schema: list[dict], rows: list[dict]) -> dict:
+    """Encode rows as one EXT_structural_metadata property table. Properties
+    that are absent on every feature of this tile are omitted (a viewer then
+    reports them as undefined, which is what 'not covered' means)."""
+    props = {}
+    for p in schema:
+        vals = [r.get(p["id"]) for r in rows]
+        if all(v is None for v in vals):
+            continue
+        if p["type"] == "FLOAT64":
+            arr = np.array([_F64_NODATA if v is None else v for v in vals], dtype="<f8")
+            props[p["id"]] = {"values": w.view(arr.tobytes(), align=8)}
+        else:
+            enc = [("" if v is None else v).encode("utf-8") for v in vals]
+            offsets = np.zeros(len(enc) + 1, dtype="<u4")
+            offsets[1:] = np.cumsum([len(e) for e in enc], dtype=np.uint64)
+            data = b"".join(enc) or b" "      # a bufferView must not be empty
+            props[p["id"]] = {"values": w.view(data, align=8),
+                              "stringOffsets": w.view(offsets.tobytes(), align=8),
+                              "stringOffsetType": "UINT32"}
+    return {"name": "features", "class": "feature", "count": len(rows), "properties": props}
+
+
+def _pack_tile(mesh_parts, materials, mat_index, rows, schema) -> bytes:
+    """mesh_parts: list of (feature_index, feature_id, surface_type, verts, normal, tri).
+    schema: feature properties to embed (None → feature ids without metadata).
+    Each tile embeds a schema listing only the properties present in its table;
+    feature_schema.json holds the full list."""
+    n_mats = len(materials)
+    buckets = [[] for _ in range(n_mats)]
+    for fidx, fid, stype, verts, normal, tri in mesh_parts:
+        buckets[mat_index(fid, stype)].append((fidx, verts, normal, tri))
+
+    w = _GlbWriter()
+    prims = []
+    for mi, items in enumerate(buckets):
+        if not items:
+            continue
+        pos, nor, ids, idx, off = [], [], [], [], 0
+        for fidx, verts, normal, tri in items:
+            n = len(verts)
+            pos.append(verts)
+            nor.append(np.repeat(np.asarray(normal, dtype=np.float64)[None, :], n, axis=0))
+            ids.append(np.full(n, fidx, dtype=np.float32))
+            idx.append(np.asarray(tri, dtype=np.int64) + off)
+            off += n
+        p = np.vstack(pos)
+        nn = np.vstack(nor)
+        # ENU (x=east, y=north, z=up) → glTF y-up: (east, up, −north)
+        p_gl = np.column_stack([p[:, 0], p[:, 2], -p[:, 1]]).astype(np.float32)
+        n_gl = np.column_stack([nn[:, 0], nn[:, 2], -nn[:, 1]]).astype(np.float32)
+        prim = {
+            "attributes": {
+                "POSITION": w.accessor(p_gl, 5126, "VEC3", 34962, minmax=True),
+                "NORMAL": w.accessor(n_gl, 5126, "VEC3", 34962),
+                "_FEATURE_ID_0": w.accessor(np.concatenate(ids), 5126, "SCALAR", 34962),
+            },
+            "indices": w.accessor(np.concatenate(idx).astype(np.uint32), 5125, "SCALAR", 34963),
+            "material": mi,
+            "mode": 4,
+        }
+        fid_set = {"featureCount": len(rows), "attribute": 0}
+        if schema is not None:
+            fid_set["propertyTable"] = 0
+        prim["extensions"] = {"EXT_mesh_features": {"featureIds": [fid_set]}}
+        prims.append(prim)
+
+    gltf = {
+        "asset": {"version": "2.0", "generator": "pykci build_3dtiles.py --tiled"},
+        "scene": 0, "scenes": [{"nodes": [0]}],
+        "nodes": [{"mesh": 0}],
+        "meshes": [{"primitives": prims}],
+        "materials": [_gltf_material(m) for m in materials],
+        "extensionsUsed": ["EXT_mesh_features"],
+    }
+    if schema is not None:
+        table = _property_table(w, schema, rows)
+        present = [p for p in schema if p["id"] in table["properties"]]
+        gltf["extensionsUsed"].append("EXT_structural_metadata")
+        gltf["extensions"] = {"EXT_structural_metadata": {
+            "schema": _schema_json(present), "propertyTables": [table]}}
+    return w.glb(gltf)
+
+
+def _gltf_material(m: dict) -> dict:
+    col = m["color"]
+    alpha = col[3] if len(col) > 3 else 1.0
+    mat = {"name": m["name"],
+           "pbrMetallicRoughness": {"baseColorFactor": [col[0], col[1], col[2], alpha],
+                                    "metallicFactor": 0.0,
+                                    "roughnessFactor": m.get("roughness", 0.85)},
+           "doubleSided": True}
+    if alpha < 1.0:
+        mat["alphaMode"] = "BLEND"
+    return mat
+
+
+def _materials_for(ctx: dict, attrs_by_id: dict):
+    """(materials, index_fn), with the same palettes as the single-GLB path plus
+    the LoD3 opening materials (windows, doors) appended."""
+    if ctx["color_by"] == "roofmat":
+        b_attrs = {fid: {"roofmat": a["props"].get("predictedroofmaterial"),
+                         "is_lod3": bool(a["props"].get("lod3_enriched"))}
+                   for fid, a in attrs_by_id.items() if a["ft"] == "Building"}
+        materials, index_fn = build_thematic_materials(b_attrs, ctx["palette"], ctx["opacity"])
+    else:
+        materials, index_fn = MATERIALS_GLTF, (lambda fid, stype: FEATURE_MATERIAL.get(stype, 0))
+    base = len(materials)
+
+    def with_openings(fid: str, stype: str) -> int:
+        if stype in _OPENING_TYPES:
+            return base + _OPENING_TYPES.index(stype)
+        return index_fn(fid, stype)
+
+    return [*materials, *_OPENING_MATERIALS], with_openings
+
+
+# ---- leaf worker ------------------------------------------------------------------
+
+def _build_leaf_tile(job: dict) -> dict:
+    """Fetch, triangulate and write one leaf tile. Returns tile statistics and
+    the overview candidates (the most prominent buildings, as footprints)."""
+    ids, out_path = job["ids"], Path(job["out"])
+    ctx = _CTX
+    with _ctx_driver().session(database="neo4j") as sess:
+        attrs = {r["fid"]: r for r in sess.run(_Q_ATTRS, ids=ids).data()}
+        geom: dict = {}
+        queries = (_Q_BOUNDARY, _Q_SOLID, _Q_MULTISURFACE) + ((_Q_LOD3,) if ctx["lod3"] else ())
+        for q in queries:
+            for r in sess.run(q, ids=ids):
+                geom.setdefault(r["fid"], {}).setdefault(r["owner"], []).append(dict(r))
+
+    materials, mat_index = _materials_for(ctx, attrs)
+    schema = ctx["schema"]
+    area_id = next((p["id"] for p in schema if p["name"] == "footprint_area"), None)
+    lod_id = next((p["id"] for p in schema if p["name"] == "geometry_lod"), None)
+    overview_ids = {p["id"] for p in schema if p["name"] in _OVERVIEW_PROPS}
+    mesh_parts, rows, cands = [], [], []
+    zmin, zmax, n_tri, n_lod3 = math.inf, -math.inf, 0, 0
+    bx0 = by0 = math.inf
+    bx1 = by1 = -math.inf
+    for fid in ids:
+        owners = geom.get(fid)
+        rec = attrs.get(fid)
+        if not owners or rec is None:
+            continue
+        polys = [p for owner_polys in owners.values()
+                 for p in _select_representation(owner_polys)]
+        parts, info = _feature_mesh(rec["ft"], polys)
+        if not parts:
+            continue
+        fidx = len(rows)
+        for stype, verts, normal, tri in parts:
+            mesh_parts.append((fidx, fid, stype, verts, normal, tri))
+            n_tri += len(tri) // 3
+        row = _attribute_row(rec, schema) if ctx["attributes"] else {}
+        if area_id and info["area"] is not None:
+            row[area_id] = info["area"]
+        geometry_lod = max(_lod_num(p["lod"]) for p in polys)
+        n_lod3 += any(p["kind"] == "lod3" for p in polys)
+        if lod_id and geometry_lod:
+            row[lod_id] = float(geometry_lod)
+        rows.append(row)
+        zmin, zmax = min(zmin, info["zmin"]), max(zmax, info["zmax"])
+        if info["xy"]:
+            bx0, by0 = min(bx0, info["xy"][0]), min(by0, info["xy"][1])
+            bx1, by1 = max(bx1, info["xy"][2]), max(by1, info["xy"][3])
+        if rec["ft"] == "Building" and info["footprint"] is not None:
+            height = max(info["zmax"] - info["zmin"], 1.0)
+            cands.append({"id": fid, "prominence": (info["area"] or 0.0) * height,
+                          "footprint": info["footprint"].tolist(),
+                          "z0": info["zmin"], "z1": info["zmax"],
+                          # overview tiles carry the identifying subset only; the
+                          # full record is one click away in the leaf tile / graph
+                          "row": {k: v for k, v in row.items() if k in overview_ids},
+                          "roofmat": rec["props"].get("predictedroofmaterial"),
+                          "is_lod3": bool(rec["props"].get("lod3_enriched"))})
+    if not rows:
+        return {"path": job["path"], "features": 0}
+    glb = _pack_tile(mesh_parts, materials, mat_index, rows,
+                     schema if ctx["attributes"] else None)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_bytes(glb)
+    cands.sort(key=lambda c: c["prominence"], reverse=True)
+    # A parent merges up to four children, so each leaf offers a quarter of the
+    # overview budget: bounded memory, and the overview stays spread across space.
+    keep = max(1, ctx["overview_features"] // 4) if ctx["overview_features"] else 0
+    return {"path": job["path"], "features": len(rows), "triangles": n_tri, "lod3": n_lod3,
+            "bytes": len(glb), "zmin": zmin, "zmax": zmax,
+            "bounds": (bx0, by0, bx1, by1), "candidates": cands[:keep]}
+
+
+def _build_overview_tile(cands: list[dict], out_path: Path) -> dict:
+    """LoD1 blocks (footprint extruded from z0 to z1) for a coarse tile."""
+    ctx = _CTX
+    b_attrs = {c["id"]: {"roofmat": c["roofmat"], "is_lod3": c["is_lod3"]} for c in cands}
+    if ctx["color_by"] == "roofmat":
+        materials, mat_index = build_thematic_materials(b_attrs, ctx["palette"], ctx["opacity"])
+    else:
+        materials, mat_index = MATERIALS_GLTF, (lambda fid, stype: FEATURE_MATERIAL.get(stype, 0))
+    mesh_parts, rows = [], []
+    for c in cands:
+        fp = np.asarray(c["footprint"], dtype=np.float64)
+        if len(fp) < 3:
+            continue
+        fidx = len(rows)
+        roof = _to_enu(np.column_stack([fp, np.full(len(fp), c["z1"])]))
+        base = _to_enu(np.column_stack([fp, np.full(len(fp), c["z0"])]))
+        res = triangulate_polygon_enu(roof)
+        if res is not None:
+            verts, normal, tri = res
+            if normal[2] < 0:                       # keep roofs facing up
+                normal, tri = -normal, tri.reshape(-1, 3)[:, ::-1].ravel()
+            mesh_parts.append((fidx, c["id"], "RoofSurface", verts, normal, tri))
+        n = len(fp)
+        for i in range(n):
+            j = (i + 1) % n
+            quad = np.array([base[i], base[j], roof[j], roof[i]])
+            nrm = np.cross(quad[1] - quad[0], quad[3] - quad[0])
+            ln = np.linalg.norm(nrm)
+            if ln < 1e-9:
+                continue
+            mesh_parts.append((fidx, c["id"], "WallSurface", quad, nrm / ln,
+                               np.array([0, 1, 2, 0, 2, 3], dtype=np.int32)))
+        rows.append(c["row"])
+    if not rows:
+        return {"features": 0}
+    glb = _pack_tile(mesh_parts, materials, mat_index, rows,
+                     ctx["schema"] if ctx["attributes"] else None)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_bytes(glb)
+    return {"features": len(rows), "bytes": len(glb)}
+
+
+# ---- quadtree + tileset assembly --------------------------------------------------
+
+def _quadtree(feats: list[dict], max_features: int, max_depth: int = 16) -> dict:
+    """Split features (by centre) into a quadtree; leaves hold <= max_features."""
+    def bounds_of(items):
+        xs0 = [f["x0"] if f["x0"] is not None else f["cx"] for f in items]
+        ys0 = [f["y0"] if f["y0"] is not None else f["cy"] for f in items]
+        xs1 = [f["x1"] if f["x1"] is not None else f["cx"] for f in items]
+        ys1 = [f["y1"] if f["y1"] is not None else f["cy"] for f in items]
+        return min(xs0), min(ys0), max(xs1), max(ys1)
+
+    def build(items, rect, path, depth):
+        node = {"path": path, "bounds": bounds_of(items)}
+        x0, y0, x1, y1 = rect
+        if len(items) <= max_features or depth >= max_depth or (x1 - x0) < 1.0:
+            node["ids"] = [f["id"] for f in items]
+            node["z"] = _z_range(items)
+            return node
+        mx, my = (x0 + x1) / 2, (y0 + y1) / 2
+        quads = [[], [], [], []]
+        for f in items:
+            quads[(f["cx"] >= mx) + 2 * (f["cy"] >= my)].append(f)
+        rects = [(x0, y0, mx, my), (mx, y0, x1, my), (x0, my, mx, y1), (mx, my, x1, y1)]
+        node["children"] = [build(q, rects[k], f"{path}{k}", depth + 1)
+                            for k, q in enumerate(quads) if q]
+        node["z"] = _z_range(items)
+        return node
+
+    xs = [f["cx"] for f in feats]
+    ys = [f["cy"] for f in feats]
+    side = max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
+    return build(feats, (min(xs), min(ys), min(xs) + side, min(ys) + side), "r", 0)
+
+
+def _z_range(items):
+    z0 = [f["z0"] for f in items if f["z0"] is not None]
+    z1 = [f["z1"] for f in items if f["z1"] is not None]
+    lo = min(z0) if z0 else 0.0
+    return lo, (max(z1) if z1 else lo)
+
+
+def _region(bounds, z, to_wgs84, geoid_m) -> list:
+    x0, y0, x1, y1 = bounds
+    xs = [x0, x1, x1, x0, (x0 + x1) / 2, (x0 + x1) / 2, x0, x1]
+    ys = [y0, y0, y1, y1, y0, y1, (y0 + y1) / 2, (y0 + y1) / 2]
+    lon, lat = to_wgs84.transform(xs, ys)
+    eps = 1e-7
+    return [math.radians(min(lon)) - eps, math.radians(min(lat)) - eps,
+            math.radians(max(lon)) + eps, math.radians(max(lat)) + eps,
+            float(z[0] + geoid_m) - 1.0, float(z[1] + geoid_m) + 1.0]
+
+
+def build_3dtiles_tiled(source: str, out_dir: Path, color_by: str = "type",
+                        palette: str = "soft", opacity: float | None = None,
+                        max_features: int = 1500, overview_features: int = 1500,
+                        attributes: bool = True, workers: int = 1, lod3: bool = True):
+    t_start = time.perf_counter()
+    driver = _connect()
+    print("Connected to Neo4j.")
+    with driver.session(database="neo4j") as sess:
+        ds = fetch_dataset(sess, source)
+        if not ds:
+            driver.close()
+            raise SystemExit(f"ERROR: no Dataset with source='{source}' found in graph.")
+        srs_name = ds.get("crs", "")
+        horiz_epsg = _horiz_epsg_from_srs(srs_name)
+        print(f"  Dataset     : {source}\n  srsName     : {srs_name}\n  Horiz. CRS  : {horiz_epsg}")
+        progress("tiles.index", message="reading feature index")
+        feats = fetch_feature_index(sess, source)
+        if attributes:
+            progress("tiles.schema", message="discovering feature attributes")
+            schema = discover_feature_schema(sess, source)
+        else:
+            schema = []
+    driver.close()
+    if not feats:
+        print("WARNING: no top-level features with geometry; nothing to tile.")
+        return None
+    print(f"  {len(feats):,} top-level features"
+          + (f", {len(schema)} attribute(s) per feature" if attributes else ""))
+
+    to_wgs84 = Transformer.from_crs(horiz_epsg, "EPSG:4326", always_xy=True)
+    xs = np.array([f["cx"] for f in feats])
+    ys = np.array([f["cy"] for f in feats])
+    z0s = np.array([f["z0"] for f in feats if f["z0"] is not None] or [0.0])
+    mid_x, mid_y, mid_z = float((xs.min() + xs.max()) / 2), float((ys.min() + ys.max()) / 2), \
+        float(np.median(z0s))
+    geoid_m = _geoid_m(srs_name, mid_x, mid_y, mid_z)
+    print(f"  Geoid offset: {geoid_m:+.2f} m")
+    c_lon, c_lat = to_wgs84.transform(mid_x, mid_y)
+    center_ecef = np.array(lonlat_to_ecef(c_lon, c_lat, mid_z + geoid_m))
+    east_v, north_v, up_v = enu_basis(c_lon, c_lat)
+
+    ctx = {
+        "horiz_epsg": horiz_epsg, "geoid_m": geoid_m,
+        "center_ecef": center_ecef.tolist(),
+        "basis": [east_v.tolist(), north_v.tolist(), up_v.tolist()],
+        "color_by": color_by, "palette": palette, "opacity": opacity,
+        "attributes": attributes, "overview_features": overview_features,
+        "schema": schema, "lod3": lod3,
+    }
+    _tile_ctx_init(ctx)
+
+    tree = _quadtree(feats, max_features)
+    leaves, stack = [], [tree]
+    while stack:
+        nd = stack.pop()
+        if "ids" in nd:
+            leaves.append(nd)
+        else:
+            stack.extend(nd["children"])
+    print(f"  Quadtree: {len(leaves)} leaf tile(s), <= {max_features} features each")
+
+    tiles_dir = out_dir / "tiles"
+    jobs = [{"ids": lf["ids"], "path": lf["path"], "out": str(tiles_dir / f"{lf['path']}.glb")}
+            for lf in leaves]
+    results: dict = {}
+    progress("tiles.leaf", done=0, total=len(jobs), unit="tiles")
+    if workers > 1:
+        with ProcessPoolExecutor(max_workers=workers, initializer=_tile_ctx_init,
+                                 initargs=(ctx,)) as pool:
+            futs = [pool.submit(_build_leaf_tile, j) for j in jobs]
+            for fut in as_completed(futs):
+                r = fut.result()
+                results[r["path"]] = r
+                progress("tiles.leaf", done=len(results), total=len(jobs), unit="tiles")
+    else:
+        for j in jobs:
+            r = _build_leaf_tile(j)
+            results[r["path"]] = r
+            progress("tiles.leaf", done=len(results), total=len(jobs), unit="tiles")
+            if len(results) % 25 == 0:
+                print(f"  leaf tiles {len(results)}/{len(jobs)}", flush=True)
+    if _CTX.get("driver") is not None:
+        _CTX["driver"].close()
+        _CTX["driver"] = None
+
+    # ---- bottom-up: overview content + tileset JSON -----------------------------
+    n_internal = sum(1 for _ in _iter_internal(tree))
+    done_internal = [0]
+
+    def assemble(nd):
+        """Returns (tile_json | None, candidates, z_range, xy_bounds). Bounding
+        volumes come from the triangulated geometry, not the stored bboxes, so
+        BuildingParts or features without a bbox can never fall outside them."""
+        if "ids" in nd:
+            r = results.get(nd["path"], {})
+            if not r.get("features"):
+                return None, [], None, None
+            z, b = (r["zmin"], r["zmax"]), r["bounds"]
+            tile = {"boundingVolume": {"region": _region(b, z, to_wgs84, geoid_m)},
+                    "geometricError": 0.0,
+                    "content": {"uri": f"tiles/{nd['path']}.glb"}}
+            return tile, r["candidates"], z, b
+        children, cands, zs, bs = [], [], [], []
+        for ch in nd["children"]:
+            t, c, z, b = assemble(ch)
+            if t is not None:
+                children.append(t)
+                cands.extend(c)
+                zs.append(z)
+                bs.append(b)
+        if not children:
+            return None, [], None, None
+        z = (min(a for a, _ in zs), max(b for _, b in zs))
+        b = (min(v[0] for v in bs), min(v[1] for v in bs),
+             max(v[2] for v in bs), max(v[3] for v in bs))
+        diag = math.hypot(b[2] - b[0], b[3] - b[1])
+        tile = {"boundingVolume": {"region": _region(b, z, to_wgs84, geoid_m)},
+                "geometricError": round(max(diag / 20.0, 5.0), 2),
+                "children": children}
+        cands.sort(key=lambda c: c["prominence"], reverse=True)
+        cands = cands[:overview_features]
+        if overview_features > 0 and cands:
+            ov = _build_overview_tile(cands, tiles_dir / f"{nd['path']}.glb")
+            if ov.get("features"):
+                tile["content"] = {"uri": f"tiles/{nd['path']}.glb"}
+        done_internal[0] += 1
+        progress("tiles.overview", done=done_internal[0], total=n_internal, unit="tiles")
+        return tile, cands, z, b
+
+    root, _, _, _ = assemble(tree)
+    if root is None:
+        print("WARNING: no geometry could be triangulated; nothing written.")
+        return None
+
+    root["transform"] = [
+        float(east_v[0]), float(east_v[1]), float(east_v[2]), 0.0,
+        float(north_v[0]), float(north_v[1]), float(north_v[2]), 0.0,
+        float(up_v[0]), float(up_v[1]), float(up_v[2]), 0.0,
+        float(center_ecef[0]), float(center_ecef[1]), float(center_ecef[2]), 1.0,
+    ]
+    root["refine"] = "REPLACE"
+    if "children" not in root:          # whole dataset fits in one leaf
+        root["geometricError"] = 0.0
+    n_feat = sum(r.get("features", 0) for r in results.values())
+    n_lod3 = sum(r.get("lod3", 0) for r in results.values())
+    tileset = {
+        "asset": {"version": "1.1", "generator": "pykci build_3dtiles.py --tiled"},
+        "geometricError": round(max(root["geometricError"] * 2, 50.0), 2),
+        "root": root,
+        "extras": {"pykci": {
+            "dataset": source, "crs": srs_name, "horizontal_crs": horiz_epsg,
+            "source_crs": ds.get("source_crs"),
+            "geoid_offset_m": round(geoid_m, 3),
+            "center": {"longitude": c_lon, "latitude": c_lat,
+                       "height": round(mid_z + geoid_m, 3)},
+            "ground_height_median": round(mid_z + geoid_m, 3),
+            "features": n_feat, "lod3_features": n_lod3, "leaf_tiles": len(leaves),
+            "color_by": color_by, "attributes": bool(attributes),
+            "feature_schema": "feature_schema.json" if attributes else None,
+            "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }},
+    }
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "tileset.json").write_text(json.dumps(tileset, indent=1), encoding="utf-8")
+    if attributes:
+        (out_dir / "feature_schema.json").write_text(json.dumps({
+            "class": "feature",
+            "provenance_layers": LAYERS,
+            "properties": schema,
+        }, indent=1, ensure_ascii=False), encoding="utf-8")
+
+    total_bytes = sum(r.get("bytes", 0) for r in results.values())
+    n_tri = sum(r.get("triangles", 0) for r in results.values())
+    elapsed = time.perf_counter() - t_start
+    print(f"  {n_feat:,} features, {n_tri:,} triangles in {len(leaves)} leaf tiles "
+          f"({total_bytes / 1e6:,.1f} MB) + {n_internal} overview tiles  [{elapsed:.0f} s]")
+    if n_lod3:
+        print(f"  {n_lod3:,} building(s) drawn with their reconstructed LoD3 facade")
+    print(f"  tileset.json : {out_dir / 'tileset.json'}")
+    progress("tiles.done", done=len(leaves), total=len(leaves), unit="tiles",
+             features=n_feat, triangles=n_tri, bytes=total_bytes, out=str(out_dir))
+    return c_lon, c_lat
+
+
+def _iter_internal(nd):
+    if "children" in nd:
+        yield nd
+        for ch in nd["children"]:
+            yield from _iter_internal(ch)
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
@@ -1104,6 +2145,24 @@ if __name__ == "__main__":
                     help="Override the baked per-role alphas (roofmat mode), e.g. "
                          "1.0 for fully opaque buildings; a viewer can still fade "
                          "opaque tiles at runtime")
+    ap.add_argument("--tiled", action="store_true",
+                    help="Write a streamable quadtree tileset (many small GLBs, LoD1 "
+                         "overview tiles, per-feature semantic attributes) instead of "
+                         "one GLB; use for whole cities")
+    ap.add_argument("--max-features", type=int, default=1500,
+                    help="--tiled: max top-level features per leaf tile (default 1500)")
+    ap.add_argument("--overview-features", type=int, default=1500,
+                    help="--tiled: buildings shown as LoD1 blocks in each coarser tile "
+                         "(default 1500; 0 = no overview tiles)")
+    ap.add_argument("--attributes", choices=["all", "none"], default="all",
+                    help="--tiled: embed every scalar feature attribute as "
+                         "EXT_structural_metadata (default 'all')")
+    ap.add_argument("--workers", type=int, default=1,
+                    help="--tiled: parallel worker processes for the leaf tiles "
+                         f"(default 1; this machine has {os.cpu_count()} CPUs)")
+    ap.add_argument("--no-lod3", action="store_false", dest="lod3",
+                    help="--tiled: draw the authoritative LoD2 shell even where a "
+                         "reconstructed LoD3 facade (HAS_LOD3_FACADE) exists")
     args = ap.parse_args()
 
     # Resolve dataset from graph if not given
@@ -1124,8 +2183,16 @@ if __name__ == "__main__":
             sys.exit(1)
         source = sources[0]
 
-    result = build_3dtiles(source, Path(args.out), color_by=args.color_by,
-                           palette=args.palette, opacity=args.opacity)
+    if args.tiled:
+        result = build_3dtiles_tiled(source, Path(args.out), color_by=args.color_by,
+                                     palette=args.palette, opacity=args.opacity,
+                                     max_features=args.max_features,
+                                     overview_features=args.overview_features,
+                                     attributes=args.attributes == "all",
+                                     workers=args.workers, lod3=args.lod3)
+    else:
+        result = build_3dtiles(source, Path(args.out), color_by=args.color_by,
+                               palette=args.palette, opacity=args.opacity)
     if result is None or result[0] is None:
         print("No output generated (no surface polygons found).")
         sys.exit(1)

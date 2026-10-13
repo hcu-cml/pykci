@@ -52,8 +52,10 @@ from pathlib import Path
 
 from neo4j import GraphDatabase
 
-NEO4J_URI = "bolt://localhost:7687"
-NEO4J_AUTH = ("neo4j", "neo4jneo4j")
+from pykci_runtime import neo4j_auth, neo4j_uri
+
+NEO4J_URI = neo4j_uri()
+NEO4J_AUTH = neo4j_auth()
 
 # Bounded set of prediction keys to clear for idempotency: at most one index per
 # roof-material class, so <material-class-count> indices is a safe upper bound.

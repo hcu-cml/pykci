@@ -80,6 +80,8 @@ from lxml import etree
 from neo4j import GraphDatabase
 from neo4j.exceptions import TransientError
 
+from pykci_runtime import neo4j_auth, neo4j_uri, progress
+
 # ---------------------------------------------------------------------------
 # Namespaces
 # ---------------------------------------------------------------------------
@@ -3010,6 +3012,8 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
                     f"  Queued: {buildings_ingested + objects_ingested} top-level features …",
                     flush=True,
                 )
+                progress("ingest.parse", done=buildings_ingested + objects_ingested,
+                         unit="features", file=source, buildings=buildings_ingested)
                 batch = _new_batch()
 
             el.clear()
@@ -3034,6 +3038,9 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
         for _ft, _n in sorted(all_type_counts.items()):
             if _n > 0:
                 print(f"    {_ft}: {_n}")
+        progress("ingest.parsed", done=buildings_ingested + objects_ingested,
+                 total=buildings_ingested + objects_ingested, unit="features",
+                 file=source, by_type=all_type_counts, message="post-processing")
 
         # ── Resolve xlink:href implicit geometry prototypes ───────────────────
         rows_proto = sess.run(
@@ -3182,6 +3189,7 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
             print("  Spatial R-tree indexing deferred to the final pass (tiled mode).")
         else:
             print("  Populating spatial R-tree index on bounding boxes …")
+            progress("ingest.spatial_index", file=source, message="building spatial R-tree")
             spatial_ok = _ensure_spatial_layer(sess)
             if spatial_ok:
                 # NB: CityObject footprints are intentionally NOT indexed here.
@@ -3356,8 +3364,8 @@ if __name__ == "__main__":
 
     print("Connecting to Neo4j …")
     driver = GraphDatabase.driver(
-        "bolt://localhost:7687",
-        auth=("neo4j", "neo4jneo4j"),
+        neo4j_uri(),
+        auth=neo4j_auth(),
         max_connection_pool_size=pool_size,
         notifications_disabled_classifications={"DEPRECATION", "UNRECOGNIZED"},
     )
@@ -3383,12 +3391,15 @@ if __name__ == "__main__":
 
         def _ingest_tile(f):
             print(f"Ingesting {f} -> dataset '{args.dataset_name}' ...")
-            return ingest(f, driver, num_writers=writers_per,
-                          nearby_edges=do_nearby_edges,
-                          dataset_id=shared_id, dataset_name=args.dataset_name,
-                          target_crs=args.target_crs, source_crs=args.source_crs,
-                          id_registry=shared_registry, skip_spatial_index=True,
-                          defer_code_hubs=True)
+            res = ingest(f, driver, num_writers=writers_per,
+                         nearby_edges=do_nearby_edges,
+                         dataset_id=shared_id, dataset_name=args.dataset_name,
+                         target_crs=args.target_crs, source_crs=args.source_crs,
+                         id_registry=shared_registry, skip_spatial_index=True,
+                         defer_code_hubs=True)
+            progress("ingest.file", done=len(results) + 1, total=len(candidates),
+                     unit="files", file=f.name)
+            return res
 
         if parse_workers == 1:
             for f in candidates:
@@ -3415,6 +3426,7 @@ if __name__ == "__main__":
         # is ever touched by the parallel writers).
         with driver.session(database="neo4j") as sess:
             print("Populating spatial R-tree index on bounding boxes (final pass) …")
+            progress("ingest.spatial_index", message="building spatial R-tree (final pass)")
             if _ensure_spatial_layer(sess):
                 # CityObject footprints are added to the R-tree AFTER OSM fusion,
                 # not here — see the note at the single-file call site above and
@@ -3444,7 +3456,15 @@ if __name__ == "__main__":
                 except Exception as exc:
                     print(f"ERROR ingesting {gml_f}: {exc}")
                     results[gml_f.name] = {"error": str(exc)}
+                progress("ingest.file", done=len(results), total=len(candidates),
+                         unit="files", file=gml_f.name)
 
     driver.close()
     print("Done.")
     print(json.dumps(results, indent=2))
+    failed = sorted(k for k, v in results.items() if isinstance(v, dict) and "error" in v)
+    progress("ingest.done", message="failed" if failed else "ok", failed=failed)
+    # A non-zero exit lets callers (pykci_cli, the web client) detect a failed file
+    # instead of parsing the log; manual runs still see the same printed summary.
+    if failed:
+        sys.exit(1)
