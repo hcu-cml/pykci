@@ -14,6 +14,9 @@ pyproj
 mapbox-earcut
 numpy
 
+# Street-tree textures (build_tree_tiles.py)
+pillow
+
 # Required for OSM enrichment (ingest_osm.py, eval/osm_ingestion_census.py);
 # also unions window/door openings in 3D Tiles wall geometry (optional there)
 shapely

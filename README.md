@@ -214,6 +214,16 @@ Enriches the graph with OpenStreetMap data over the same area. Reads the target 
 
 Output: `OsmFeature` nodes + `ENRICHED_BY`/`HAS_POI` edges in Neo4j + `output/<stem>_osm_summary.md`
 
+### 1c · Add street trees (optional)
+
+```bash
+python enrich_street_trees.py input/citygml/Strassenbaumkataster_20210901_Sommerbaeume.gml
+python build_tree_tiles.py --out ../pykci-client/data/tiles/hamburg/trees \
+    --texture-root input/citygml --align ../pykci-client/data/tiles/hamburg/tileset.json
+```
+
+Adds a street-tree cadastre (CityGML `SolitaryVegetationObject` with implicit geometry; Hamburg: 224,185 trees) as authoritative `CityObject`s. Each of the ~115 shared tree shapes is stored once as a `(:GeometryPrototype)` with its texture, and every tree's implicit geometry links to it with `HAS_PROTOTYPE` instead of copying ~615 triangles per tree. Trees get positions, crown bounding boxes and entries in the `features` R-tree; every step is idempotent. `build_tree_tiles.py` rebuilds the textured trees from the graph alone as GPU-instanced 3D Tiles 1.1, aligned with the city tileset. See **[STREET_TREES.md](STREET_TREES.md)**.
+
 ### 2 · Export Neo4j → CityGML
 
 ```bash
@@ -671,12 +681,15 @@ pykci/
 ├── resources/            ← project logo and brand assets
 ├── ingest_citygml.py     ← CityGML → Neo4j
 ├── ingest_osm.py         ← OpenStreetMap → Neo4j enrichment
+├── enrich_street_trees.py ← street-tree cadastre → Neo4j (implicit geometry, prototypes)
+├── build_tree_tiles.py   ← street trees in Neo4j → instanced, textured 3D Tiles
 ├── export_citygml.py     ← Neo4j → CityGML
 ├── build_3dtiles.py      ← CityGML → 3D Tiles
 ├── build_graph_pointcloud.py  ← Neo4j graph → 3D Tiles point-cloud
 ├── export_roofmat_footprints.py  ← Neo4j → 2D footprint map (predicted roof material)
 ├── GRAPH.md              ← Full graph schema, Cypher rules, ALKIS codes
 ├── OSM_INTEGRATION.md    ← OSM enrichment concept, matching & schema
+├── STREET_TREES.md       ← street trees: input, graph model, tiles
 ├── CYPHER.md             ← Cypher 25 + Neo4j Spatial reference
 └── README.md
 ```
@@ -689,6 +702,7 @@ pykci/
 | ---- | -------- | -------- |
 | [`GRAPH.md`](GRAPH.md) | Agents / developers | Full graph schema, ingestion rules, ALKIS codes, Cypher examples |
 | [`OSM_INTEGRATION.md`](OSM_INTEGRATION.md) | Agents / developers | OSM enrichment: data model, semantic mapping, 1:1/1:n/n:1/n:m footprint matching, provenance schema, `ingest_osm.py` code map |
+| [`STREET_TREES.md`](STREET_TREES.md) | Agents / developers | Street trees: CityGML implicit geometry, prototype storage, graph model, Cypher, instanced 3D Tiles |
 | [`CYPHER.md`](CYPHER.md) | Agents / LLM (injected) | Cypher 25 + Neo4j Spatial plugin reference |
 | [`tools/CITYGML_BUILDING_FOOTPRINT_EXTRACTION.md`](tools/CITYGML_BUILDING_FOOTPRINT_EXTRACTION.md) | Developers | Footprint → GeoJSON tool: footprint-selection priority, CRS/axis-order handling, version-agnostic parsing, streaming |
 | [`eval/tool_comparison/comparison_2026-06-19.md`](eval/tool_comparison/comparison_2026-06-19.md) | Developers / reviewers | Mapping-time & database benchmark: pykci vs 3DCityKG vs 3DCityDB v5. Reproduce with [`run_benchmark.sh`](eval/tool_comparison/run_benchmark.sh) |
