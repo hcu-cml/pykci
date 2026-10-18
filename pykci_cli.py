@@ -278,7 +278,7 @@ def main(argv=None) -> int:
     commands = "\n".join(f"  {c}" for c in [*COMMANDS, *BUILTINS])
     ap = argparse.ArgumentParser(
         prog="pykci", formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="pykci: CityGML ⇄ Neo4j knowledge graph pipeline.",
+        description="pykci: CityGML <-> Neo4j knowledge graph pipeline.",
         epilog=f"commands:\n{commands}\n\n`pykci <command> --help` shows the command's options.")
     ap.add_argument("--neo4j-uri", help="Bolt URI (env NEO4J_URI; default bolt://localhost:7687)")
     ap.add_argument("--neo4j-user", help="Neo4j user (env NEO4J_USER; default neo4j)")

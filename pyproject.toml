@@ -12,7 +12,7 @@ license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "lxml",
-    "neo4j>=5.20",
+    "neo4j>=5.28",
     "pyproj",
     "mapbox-earcut",
     "numpy",
