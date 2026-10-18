@@ -55,8 +55,10 @@ from shapely.ops import unary_union
 from shapely.prepared import prep
 from shapely.strtree import STRtree
 
-NEO4J_URI = "bolt://localhost:7687"
-NEO4J_AUTH = ("neo4j", "neo4jneo4j")
+from pykci_runtime import neo4j_auth, neo4j_uri, progress
+
+NEO4J_URI = neo4j_uri()
+NEO4J_AUTH = neo4j_auth()
 BATCH_SIZE = 1000
 # Parallel write/read sessions. The neo4j Driver object is thread-safe; Sessions are NOT,
 # so each worker opens its own session per chunk. Writes on disjoint id ranges commit
@@ -971,7 +973,8 @@ def main():
         # ── read + classify OSM features ──────────────────────────────────────
         tmp = Path(tempfile.mkdtemp(prefix="osm_"))
         all_features = []
-        for layer in ("multipolygons", "points", "lines"):
+        for i, layer in enumerate(("multipolygons", "points", "lines")):
+            progress("osm.extract", done=i, total=3, unit="layers", layer=layer)
             feats = extract_layer(pbf, layer, tmp / f"{layer}.geojson", crs, spat)
             print(f"  ogr2ogr {layer}: {len(feats)} features")
             all_features += [(layer, f) for f in feats]
@@ -1027,6 +1030,8 @@ def main():
 
         # ── write OsmFeature nodes + geometry ─────────────────────────────────
         t0 = time.perf_counter()
+        progress("osm.write", total=len(nodes), unit="features", by_kind=dict(kind_counts),
+                 message="writing OSM features + geometry")
         print(f"  Writing OsmFeature nodes + geometry ({WORKERS} parallel sessions) …")
         write_osm_nodes(driver, sess, nodes, polys, rings, foot_rels, ext_rels, int_rels,
                         lines, line_rels, dataset_id, district_id)
@@ -1043,7 +1048,9 @@ def main():
         buildings_enriched = 0
         building_footprints = None  # cached Building footprints, reused by the POI phase
         empty_targets = set()      # (target_label, target_ft) with no pykci footprints in area
-        for (target_label, target_ft), osm_geoms in area_geoms.items():
+        for i_target, ((target_label, target_ft), osm_geoms) in enumerate(area_geoms.items()):
+            progress("osm.match", done=i_target, total=len(area_geoms), unit="target types",
+                     target=f"{target_label}/{target_ft}")
             t0 = time.perf_counter()
             pykci_polys = fetch_pykci_footprints(driver, target_ft if target_ft else target_label,
                                                  match_bbox)
@@ -1070,6 +1077,8 @@ def main():
         # ── POIs: point-in-footprint (vectorized bulk containment) ────────────
         pois_attached = 0
         if point_pois:
+            progress("osm.pois", total=len(point_pois), unit="points",
+                     message="attaching POIs to buildings")
             t0 = time.perf_counter()
             bld = (building_footprints if building_footprints
                    else fetch_pykci_footprints(driver, "Building", match_bbox))
@@ -1151,6 +1160,7 @@ def main():
                    + json.dumps(summary, indent=2, ensure_ascii=False) + "\n```\n", encoding="utf-8")
     print("Done.")
     print(json.dumps(summary, indent=2, ensure_ascii=False))
+    progress("osm.done", message="ok", summary=summary)
 
 
 if __name__ == "__main__":

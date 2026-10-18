@@ -1,0 +1,75 @@
+{
+  "timestamp": "20260717_071730",
+  "pbf": "input\\osm\\kanto-260703.osm.pbf",
+  "dataset": "tokyo",
+  "crs": "EPSG:6677",
+  "buffer_m": 10.0,
+  "city_bbox_wgs84": [
+    139.29506597436463,
+    35.51200556831734,
+    139.92198425263356,
+    35.824308558794975
+  ],
+  "source": {
+    "layer_admitted": {
+      "multipolygons": 2666774,
+      "points": 520560,
+      "lines": 643074
+    },
+    "kind_counts": {
+      "water": 3470,
+      "road": 836785,
+      "poi": 263523,
+      "vegetation": 26127,
+      "landuse": 49378,
+      "other": 100936,
+      "building": 2484449,
+      "furniture": 65740
+    },
+    "geometry_skipped": 0,
+    "duplicate_ids": 0,
+    "expected_nodes": 3830408
+  },
+  "graph": {
+    "osm_feature_nodes": 3830408,
+    "kind_counts": {
+      "road": 836785,
+      "poi": 263523,
+      "vegetation": 26127,
+      "landuse": 49378,
+      "other": 100936,
+      "building": 2484449,
+      "furniture": 65740,
+      "water": 3470
+    },
+    "matched_split": {
+      "False": 2595055,
+      "True": 1235353
+    }
+  },
+  "scope_unfiltered": {
+    "points": 520560,
+    "lines": 713076,
+    "multipolygons": 2666774,
+    "multilinestrings": 4141,
+    "other_relations": 7823
+  },
+  "per_feature_findings": {},
+  "global_checks": {
+    "flag_null": 0,
+    "matched_without_anchor": 0,
+    "orphan_with_anchor": 0,
+    "orphan_without_reason": 0,
+    "missing_provenance": 0,
+    "missing_part_of": 0,
+    "missing_rtree": 0,
+    "missing_bbox_wkt": 0,
+    "enriched_by_bad_props": 0,
+    "has_poi_bad_props": 0,
+    "bad_anchor_labels": 0,
+    "anchor_namespace_violations": 0
+  },
+  "global_failures": {},
+  "passed": true,
+  "city": "tokyo"
+}

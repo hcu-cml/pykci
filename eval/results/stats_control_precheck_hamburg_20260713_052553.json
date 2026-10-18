@@ -1,0 +1,302 @@
+{
+  "phase": "precheck",
+  "city": "hamburg",
+  "generated": "20260713_052430",
+  "citygml": {
+    "files": 1,
+    "buildings_total": 388267,
+    "distinct_gml_ids": 388267,
+    "per_file": {
+      "hamburg_citygml2_lod2_2025_roofmats.gml": {
+        "buildings": 388267,
+        "srs": "urn:adv:crs:ETRS89_UTM32*DE_DHHN2016_NH"
+      }
+    },
+    "srs_seen": {
+      "urn:adv:crs:ETRS89_UTM32*DE_DHHN2016_NH": 1
+    },
+    "dominant_srs": "urn:adv:crs:ETRS89_UTM32*DE_DHHN2016_NH",
+    "dominant_epsg": "EPSG:25832",
+    "duplicate_ids": {
+      "colliding_id_count": 0,
+      "buildings_involved": 0,
+      "top": []
+    },
+    "placeholder_ids": {
+      "id_count": 0,
+      "buildings_involved": 0,
+      "values": []
+    },
+    "missing_id": 0,
+    "no_geometry": 0,
+    "degenerate_rings": 0,
+    "nonfinite_coords": 0,
+    "unclosed_rings": 0,
+    "height": {
+      "n": 388267,
+      "min": 0.737,
+      "max": 158.47,
+      "mean": 7.7479,
+      "median": 7.528,
+      "p90": 13.8894,
+      "p99": 24.4553,
+      "stdev": 5.1083
+    },
+    "height_sentinels": 0,
+    "vertex_count": {
+      "n": 388267,
+      "min": 23.0,
+      "max": 4071.0,
+      "mean": 69.0784,
+      "median": 44.0,
+      "p90": 126.0,
+      "p99": 380.0,
+      "stdev": 77.8838
+    },
+    "vertex_outliers": {
+      "threshold": 20000,
+      "count": 0
+    },
+    "spatial_outliers": 92,
+    "crs_range_issue": null,
+    "functions_top": [
+      [
+        "31001_1010",
+        207236
+      ],
+      [
+        "31001_2460",
+        58501
+      ],
+      [
+        "31001_1310",
+        32681
+      ],
+      [
+        "31001_1120",
+        9878
+      ],
+      [
+        "31001_1313",
+        8879
+      ],
+      [
+        "51009_1610",
+        8027
+      ],
+      [
+        "31001_2010",
+        7568
+      ],
+      [
+        "31001_1100",
+        6867
+      ],
+      [
+        "31001_2140",
+        6253
+      ],
+      [
+        "31001_2100",
+        5279
+      ],
+      [
+        "31001_2700",
+        3276
+      ],
+      [
+        "31001_2463",
+        3020
+      ],
+      [
+        "31001_2500",
+        2860
+      ],
+      [
+        "31001_2740",
+        2821
+      ],
+      [
+        "31001_3020",
+        2591
+      ]
+    ],
+    "roof_types_top": [
+      [
+        "1000",
+        169964
+      ],
+      [
+        "3100",
+        162368
+      ],
+      [
+        "3200",
+        29990
+      ],
+      [
+        "2100",
+        21202
+      ],
+      [
+        "3500",
+        4054
+      ],
+      [
+        "4000",
+        596
+      ],
+      [
+        "9999",
+        93
+      ]
+    ],
+    "roofmat": {
+      "buildings_with_prediction": 194799,
+      "coverage": 0.5017,
+      "class_histogram": {
+        "roof_tiles": 108659,
+        "tar_paper": 51435,
+        "concrete": 22923,
+        "metal": 8550,
+        "glass": 3232
+      }
+    },
+    "examples": {
+      "missing_id": [],
+      "no_geom": [],
+      "degenerate": [],
+      "nonfinite": [],
+      "unclosed": [],
+      "placeholder": []
+    }
+  },
+  "lod3": {
+    "files": 1,
+    "buildings_total": 17,
+    "distinct_gml_ids": 17,
+    "per_file": {
+      "hamburg_citygml2_lod3_facades_holes_export.gml": {
+        "buildings": 17,
+        "srs": "urn:adv:crs:ETRS89_UTM32*DE_DHHN2016_NH"
+      }
+    },
+    "srs_seen": {
+      "urn:adv:crs:ETRS89_UTM32*DE_DHHN2016_NH": 1
+    },
+    "dominant_srs": "urn:adv:crs:ETRS89_UTM32*DE_DHHN2016_NH",
+    "dominant_epsg": "EPSG:25832",
+    "duplicate_ids": {
+      "colliding_id_count": 0,
+      "buildings_involved": 0,
+      "top": []
+    },
+    "placeholder_ids": {
+      "id_count": 0,
+      "buildings_involved": 0,
+      "values": []
+    },
+    "missing_id": 0,
+    "no_geometry": 0,
+    "degenerate_rings": 0,
+    "nonfinite_coords": 0,
+    "unclosed_rings": 0,
+    "height": {
+      "n": 17,
+      "min": 11.287,
+      "max": 32.082,
+      "mean": 18.1594,
+      "median": 15.168,
+      "p90": 27.4052,
+      "p99": 31.9287,
+      "stdev": 6.5338
+    },
+    "height_sentinels": 0,
+    "vertex_count": {
+      "n": 17,
+      "min": 151.0,
+      "max": 962.0,
+      "mean": 403.1176,
+      "median": 394.0,
+      "p90": 598.6,
+      "p99": 913.84,
+      "stdev": 192.4437
+    },
+    "vertex_outliers": {
+      "threshold": 20000,
+      "count": 0
+    },
+    "spatial_outliers": 7,
+    "crs_range_issue": null,
+    "functions_top": [
+      [
+        "31001_1010",
+        12
+      ],
+      [
+        "31001_1120",
+        2
+      ],
+      [
+        "31001_2010",
+        2
+      ],
+      [
+        "31001_2310",
+        1
+      ]
+    ],
+    "roof_types_top": [
+      [
+        "1000",
+        7
+      ],
+      [
+        "3500",
+        4
+      ],
+      [
+        "3100",
+        3
+      ],
+      [
+        "4000",
+        2
+      ],
+      [
+        "3200",
+        1
+      ]
+    ],
+    "roofmat": {
+      "buildings_with_prediction": 17,
+      "coverage": 1.0,
+      "class_histogram": {
+        "roof_tiles": 11,
+        "tar_paper": 5,
+        "concrete": 1
+      }
+    },
+    "examples": {
+      "missing_id": [],
+      "no_geom": [],
+      "degenerate": [],
+      "nonfinite": [],
+      "unclosed": [],
+      "placeholder": []
+    }
+  },
+  "osm": {
+    "pbf": "hamburg-260629.osm.pbf",
+    "size_bytes": 53306464,
+    "ogrinfo_available": true,
+    "layer_feature_counts": {
+      "points": null,
+      "lines": null,
+      "multipolygons": null,
+      "multilinestrings": null,
+      "other_relations": null
+    },
+    "note": "Lossless per-feature OSM verification is eval/osm_ingestion_census.py (run it after fusion). This is a pre-ingest sanity count only."
+  }
+}

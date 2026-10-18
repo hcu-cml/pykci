@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.."
 LODS=("$@"); [ ${#LODS[@]} -eq 0 ] && LODS=(0 1 2 3 4)
 
 for L in "${LODS[@]}"; do
-  F="input/citygml/FZKHaus/FZK-Haus-LoD${L}-KIT-IAI-KHH-B36-V1.gml"
+  F="input/citygml/FZK-Haus/FZK-Haus-LoD${L}-KIT-IAI-KHH-B36-V1.gml"
   E="output/citygml/FZK-Haus-LoD${L}-KIT-IAI-KHH-B36-V1_export.gml"
   echo "############################## LoD${L} ##############################"
   bash eval/reset_neo4j.sh >/dev/null 2>&1

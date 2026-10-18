@@ -1,0 +1,570 @@
+{
+  "city": "nyc",
+  "generated": "20260716_201036",
+  "precheck_file": "stats_control_precheck_nyc_20260716_182921.json",
+  "postcheck_file": "stats_control_postcheck_nyc_20260716_201002.json",
+  "precheck": {
+    "phase": "precheck",
+    "city": "nyc",
+    "generated": "20260716_182337",
+    "citygml": {
+      "files": 20,
+      "buildings_total": 1083437,
+      "distinct_gml_ids": 1083437,
+      "per_file": {
+        "DA10_3D_Buildings_Merged.gml": {
+          "buildings": 49847,
+          "srs": "EPSG:2263"
+        },
+        "DA11_3D_Buildings_Merged.gml": {
+          "buildings": 59675,
+          "srs": "EPSG:2263"
+        },
+        "DA12_3D_Buildings_Merged.gml": {
+          "buildings": 24038,
+          "srs": "EPSG:2263"
+        },
+        "DA13_3D_Buildings_Merged.gml": {
+          "buildings": 23777,
+          "srs": "EPSG:2263"
+        },
+        "DA14_3D_Buildings_Merged.gml": {
+          "buildings": 37521,
+          "srs": "EPSG:2263"
+        },
+        "DA15_3D_Buildings_Merged.gml": {
+          "buildings": 66596,
+          "srs": "EPSG:2263"
+        },
+        "DA16_3D_Buildings_Merged.gml": {
+          "buildings": 68256,
+          "srs": "EPSG:2263"
+        },
+        "DA17_3D_Buildings_Merged.gml": {
+          "buildings": 72124,
+          "srs": "EPSG:2263"
+        },
+        "DA18_3D_Buildings_Merged.gml": {
+          "buildings": 105486,
+          "srs": "EPSG:2263"
+        },
+        "DA19_3D_Buildings_Merged.gml": {
+          "buildings": 105569,
+          "srs": "EPSG:2263"
+        },
+        "DA1_3D_Buildings_Merged.gml": {
+          "buildings": 19408,
+          "srs": "EPSG:2263"
+        },
+        "DA20_3D_Buildings_Merged.gml": {
+          "buildings": 106165,
+          "srs": "EPSG:2263"
+        },
+        "DA2_3D_Buildings_Merged.gml": {
+          "buildings": 23348,
+          "srs": "EPSG:2263"
+        },
+        "DA3_3D_Buildings_Merged.gml": {
+          "buildings": 20918,
+          "srs": "EPSG:2263"
+        },
+        "DA4_3D_Buildings_Merged.gml": {
+          "buildings": 16665,
+          "srs": "EPSG:2263"
+        },
+        "DA5_3D_Buildings_Merged.gml": {
+          "buildings": 34082,
+          "srs": "EPSG:2263"
+        },
+        "DA6_3D_Buildings_Merged.gml": {
+          "buildings": 53073,
+          "srs": "EPSG:2263"
+        },
+        "DA7_3D_Buildings_Merged.gml": {
+          "buildings": 71378,
+          "srs": "EPSG:2263"
+        },
+        "DA8_3D_Buildings_Merged.gml": {
+          "buildings": 66277,
+          "srs": "EPSG:2263"
+        },
+        "DA9_3D_Buildings_Merged.gml": {
+          "buildings": 59234,
+          "srs": "EPSG:2263"
+        }
+      },
+      "srs_seen": {
+        "EPSG:2263": 20
+      },
+      "dominant_srs": "EPSG:2263",
+      "dominant_epsg": "EPSG:2263",
+      "duplicate_ids": {
+        "colliding_id_count": 0,
+        "buildings_involved": 0,
+        "top": []
+      },
+      "placeholder_ids": {
+        "id_count": 0,
+        "buildings_involved": 0,
+        "values": []
+      },
+      "missing_id": 0,
+      "no_geometry": 0,
+      "degenerate_rings": 0,
+      "nonfinite_coords": 0,
+      "unclosed_rings": 0,
+      "height": {
+        "n": 0
+      },
+      "height_sentinels": 0,
+      "vertex_count": {
+        "n": 1083437,
+        "min": 5.0,
+        "max": 18151.0,
+        "mean": 69.0093,
+        "median": 52.0,
+        "p90": 114.0,
+        "p99": 338.0,
+        "stdev": 83.8188
+      },
+      "vertex_outliers": {
+        "threshold": 20000,
+        "count": 0
+      },
+      "spatial_outliers": 0,
+      "crs_range_issue": null,
+      "functions_top": [],
+      "roof_types_top": [],
+      "roofmat": {
+        "buildings_with_prediction": 0,
+        "coverage": 0.0,
+        "class_histogram": {}
+      },
+      "examples": {
+        "missing_id": [],
+        "no_geom": [],
+        "degenerate": [],
+        "nonfinite": [],
+        "unclosed": [],
+        "placeholder": []
+      }
+    },
+    "osm": {
+      "pbf": "new-york-260703.osm.pbf",
+      "size_bytes": 492681832,
+      "ogrinfo_available": true,
+      "layer_feature_counts": {
+        "points": null,
+        "lines": null,
+        "multipolygons": null,
+        "multilinestrings": null,
+        "other_relations": null
+      },
+      "note": "Lossless per-feature OSM verification is eval/osm_ingestion_census.py (run it after fusion). This is a pre-ingest sanity count only."
+    }
+  },
+  "postcheck": {
+    "phase": "postcheck",
+    "city": "nyc",
+    "generated": "20260716_201002",
+    "dataset": "nyc",
+    "deep": true,
+    "orphans_scanned": true,
+    "datasets": [
+      {
+        "name": "nyc",
+        "crs": "EPSG:32618",
+        "minx": 563089.3750754362,
+        "miny": 4483353.736483538,
+        "maxx": 609735.9362610596,
+        "maxy": 4530035.038391606
+      }
+    ],
+    "label_counts": {
+      "BoundarySurface": 12965943,
+      "Building": 1083437,
+      "BuildingFunction": 0,
+      "BuildingPart": 0,
+      "City": 20,
+      "CityObject": 0,
+      "Dataset": 1,
+      "District": 20,
+      "Entity": 30946553,
+      "GeometryLineString": 445957,
+      "GeometryMultiSurface": 0,
+      "GeometryPolygon": 14341705,
+      "GeometryRing": 14351004,
+      "GeometrySolid": 0,
+      "OsmBuilding": 1166948,
+      "OsmFeature": 2555468,
+      "OsmFurniture": 209666,
+      "OsmLandUse": 23488,
+      "OsmPOI": 201840,
+      "OsmRoad": 659851,
+      "OsmVegetation": 7312,
+      "OsmWater": 1471,
+      "RoofType": 0,
+      "SpatialLayer": 2,
+      "TerrainIntersection": 0
+    },
+    "relationship_counts": {
+      "COVERS": 20,
+      "ENRICHED_BY": 1078893,
+      "HAS_BOUNDARY": 12965943,
+      "HAS_EXTERIOR_RING": 14341705,
+      "HAS_FOOTPRINT": 1376102,
+      "HAS_INTERIOR_RING": 9299,
+      "HAS_LOD_SURFACE": 445957,
+      "HAS_POI": 52449,
+      "HAS_POLYGON": 12965603,
+      "LOCATED_IN": 3638905,
+      "PART_OF": 3638925,
+      "RTREE_CHILD": 54424,
+      "RTREE_METADATA": 2,
+      "RTREE_REFERENCE": 3638905,
+      "RTREE_ROOT": 2
+    },
+    "totals": {
+      "nodes": 45797985,
+      "relationships": 54207134
+    },
+    "id_synthesized_count": 0,
+    "building_count": 1083437,
+    "boundaries_per_building": {
+      "n": 1083437,
+      "min": 1.0,
+      "max": 3433.0,
+      "mean": 11.9674,
+      "median": 10.0,
+      "p90": 19.0,
+      "p99": 53.0,
+      "stdev": 12.9509
+    },
+    "parts_per_building": {
+      "n": 1083437,
+      "min": 0.0,
+      "max": 0.0,
+      "mean": 0.0,
+      "median": 0.0,
+      "p90": 0.0,
+      "p99": 0.0,
+      "stdev": 0.0
+    },
+    "collapse_suspects": {
+      "boundary_threshold": 500.0,
+      "count": 51,
+      "top": [
+        {
+          "id": "gml_M9FS9LLDSTSU2YWX5Y3NCDFP3R1X1FWZN4CY",
+          "source": "DA19_3D_Buildings_Merged.gml",
+          "boundaries": 3433,
+          "parts": 0
+        },
+        {
+          "id": "gml_0IM21KU31QXXTFUH830AT38ZCH5DO0XMCCG9",
+          "source": "DA9_3D_Buildings_Merged.gml",
+          "boundaries": 2576,
+          "parts": 0
+        },
+        {
+          "id": "gml_WZRCFXJ47Y0M4YI4WSC5MC80C5KN0XMGTS0E",
+          "source": "DA14_3D_Buildings_Merged.gml",
+          "boundaries": 1835,
+          "parts": 0
+        },
+        {
+          "id": "gml_R4WTHFSFI78FI0DSV3IIYXL49Q7BO7AZQASB",
+          "source": "DA2_3D_Buildings_Merged.gml",
+          "boundaries": 1658,
+          "parts": 0
+        },
+        {
+          "id": "gml_ROFDPYF6SEUVXKSOEPW0V8GJJD4OXOAZTE6B",
+          "source": "DA13_3D_Buildings_Merged.gml",
+          "boundaries": 1633,
+          "parts": 0
+        },
+        {
+          "id": "gml_GUF715BE9IUGYG5378045522GVRDWCSGO74U",
+          "source": "DA13_3D_Buildings_Merged.gml",
+          "boundaries": 1425,
+          "parts": 0
+        },
+        {
+          "id": "gml_VC72724C4A282LJZSECTSOWPT1B392TD674U",
+          "source": "DA19_3D_Buildings_Merged.gml",
+          "boundaries": 1211,
+          "parts": 0
+        },
+        {
+          "id": "gml_NRV6RE5HQO9KK40VMTY1SBDGC3FZR9HNI39X",
+          "source": "DA12_3D_Buildings_Merged.gml",
+          "boundaries": 1126,
+          "parts": 0
+        },
+        {
+          "id": "gml_8Y34IU53O18M03NUPKHSZT4TZ974WI34LZ5A",
+          "source": "DA9_3D_Buildings_Merged.gml",
+          "boundaries": 1029,
+          "parts": 0
+        },
+        {
+          "id": "gml_CWC2GGWQ4OOFU8XOF27B5SDBCOAQ0MFL2DZM",
+          "source": "DA11_3D_Buildings_Merged.gml",
+          "boundaries": 991,
+          "parts": 0
+        },
+        {
+          "id": "gml_6TKJTASPODV2N4QKVBMTV27ISHKELV13BFCC",
+          "source": "DA9_3D_Buildings_Merged.gml",
+          "boundaries": 973,
+          "parts": 0
+        },
+        {
+          "id": "gml_0WKCAGVTAQNS7C804RWRHVAD196W0ZSDOWXC",
+          "source": "DA12_3D_Buildings_Merged.gml",
+          "boundaries": 962,
+          "parts": 0
+        },
+        {
+          "id": "gml_843MTO4EPIOJ4AISCL1C93O35W10HFHVNDJF",
+          "source": "DA12_3D_Buildings_Merged.gml",
+          "boundaries": 955,
+          "parts": 0
+        },
+        {
+          "id": "gml_0NJG9R96HI72WDUWQ7Q0A9ITEQRLCS4F1RQG",
+          "source": "DA13_3D_Buildings_Merged.gml",
+          "boundaries": 940,
+          "parts": 0
+        },
+        {
+          "id": "gml_VVJNPWKAA4JHS3JIWB83UAZNC90DMS82JI2S",
+          "source": "DA3_3D_Buildings_Merged.gml",
+          "boundaries": 902,
+          "parts": 0
+        },
+        {
+          "id": "gml_YWCZOSSCJEZTP9O5D03WA620TE5X27BULA37",
+          "source": "DA14_3D_Buildings_Merged.gml",
+          "boundaries": 899,
+          "parts": 0
+        },
+        {
+          "id": "gml_OQ093TB0EPWXQFZO7IJ6UZ22VQIKCIA5YX17",
+          "source": "DA9_3D_Buildings_Merged.gml",
+          "boundaries": 844,
+          "parts": 0
+        },
+        {
+          "id": "gml_JH5UK5N4HFFH9RTJ6ZT96DKW5G3HADAQAQRB",
+          "source": "DA13_3D_Buildings_Merged.gml",
+          "boundaries": 829,
+          "parts": 0
+        },
+        {
+          "id": "gml_C965XRU72KE1OFY60VTG6X5DGL1D8TOW3UG3",
+          "source": "DA14_3D_Buildings_Merged.gml",
+          "boundaries": 805,
+          "parts": 0
+        },
+        {
+          "id": "gml_T9ELO1V87ZJC8ARVAJ9RSPUZJJL8FRRDSH4M",
+          "source": "DA12_3D_Buildings_Merged.gml",
+          "boundaries": 782,
+          "parts": 0
+        }
+      ]
+    },
+    "buildings_per_source_top": [
+      {
+        "source": "DA20_3D_Buildings_Merged.gml",
+        "nodes": 106165
+      },
+      {
+        "source": "DA19_3D_Buildings_Merged.gml",
+        "nodes": 105569
+      },
+      {
+        "source": "DA18_3D_Buildings_Merged.gml",
+        "nodes": 105486
+      },
+      {
+        "source": "DA17_3D_Buildings_Merged.gml",
+        "nodes": 72124
+      },
+      {
+        "source": "DA7_3D_Buildings_Merged.gml",
+        "nodes": 71378
+      },
+      {
+        "source": "DA16_3D_Buildings_Merged.gml",
+        "nodes": 68256
+      },
+      {
+        "source": "DA15_3D_Buildings_Merged.gml",
+        "nodes": 66596
+      },
+      {
+        "source": "DA8_3D_Buildings_Merged.gml",
+        "nodes": 66277
+      },
+      {
+        "source": "DA11_3D_Buildings_Merged.gml",
+        "nodes": 59675
+      },
+      {
+        "source": "DA9_3D_Buildings_Merged.gml",
+        "nodes": 59234
+      },
+      {
+        "source": "DA6_3D_Buildings_Merged.gml",
+        "nodes": 53073
+      },
+      {
+        "source": "DA10_3D_Buildings_Merged.gml",
+        "nodes": 49847
+      },
+      {
+        "source": "DA14_3D_Buildings_Merged.gml",
+        "nodes": 37521
+      },
+      {
+        "source": "DA5_3D_Buildings_Merged.gml",
+        "nodes": 34082
+      },
+      {
+        "source": "DA12_3D_Buildings_Merged.gml",
+        "nodes": 24038
+      }
+    ],
+    "osm": {
+      "osm_feature_nodes": 2555468,
+      "by_kind": {
+        "building": 1166948,
+        "road": 659851,
+        "other": 284892,
+        "furniture": 209666,
+        "poi": 201840,
+        "landuse": 23488,
+        "vegetation": 7312,
+        "water": 1471
+      },
+      "matched": 1121901,
+      "orphan": 1433567,
+      "orphan_rate": 0.561,
+      "orphan_reasons": {
+        "no_pykci_type": 1186680,
+        "no_containing_building": 147181,
+        "no_overlap": 99706
+      },
+      "enriched_buildings": 1070177,
+      "pois": 52449,
+      "dup_osm_id": 0
+    },
+    "roofmat": {
+      "total_buildings": 1083437,
+      "with_prediction": 0,
+      "coverage": 0.0
+    },
+    "lod3": {
+      "enriched_buildings": 0,
+      "facade_edges": 0
+    },
+    "measured_height": {
+      "n": 0
+    },
+    "measured_height_sentinels": 0,
+    "missing_source": {
+      "buildings": 0,
+      "osm": 0
+    },
+    "nodes_per_building": {
+      "min": 4,
+      "max": 9620,
+      "avg": 36.9016297209719,
+      "p50": 31,
+      "p90": 58.0,
+      "p99": 160.0,
+      "buildings": 1083437
+    },
+    "geoms_per_building": {
+      "min": 1,
+      "max": 3093,
+      "avg": 11.967103763301784,
+      "p50": 10,
+      "p90": 19.0,
+      "p99": 53.0,
+      "buildings": 1083437,
+      "unit": "GeometryPolygon nodes in the building's CityGML subtree"
+    },
+    "attrs_per_building": {
+      "min": 7,
+      "max": 7,
+      "avg": 7.0,
+      "p50": 7,
+      "p90": 7.0,
+      "p99": 7.0,
+      "buildings": 1083437,
+      "unit": "thematic property keys on the Building node (identity/bbox/spatial-plugin/OSM/LoD3/ML keys excluded)"
+    },
+    "buildings_no_geometry": 0,
+    "orphan_nodes": 0
+  },
+  "anomalies": [
+    {
+      "code": "ID_COLLAPSE",
+      "severity": "critical",
+      "scope": "graph",
+      "count": 51,
+      "message": "51 Building node(s) have anomalous fan-out (boundaries > 500 or > 20 building parts), the signature of many source buildings collapsed onto one gml:id.",
+      "examples": [
+        "gml_M9FS9LLDSTSU2YWX5Y3NCDFP3R1X1FWZN4CY (src=DA19_3D_Buildings_Merged.gml, 3433 boundaries, 0 parts)",
+        "gml_0IM21KU31QXXTFUH830AT38ZCH5DO0XMCCG9 (src=DA9_3D_Buildings_Merged.gml, 2576 boundaries, 0 parts)",
+        "gml_WZRCFXJ47Y0M4YI4WSC5MC80C5KN0XMGTS0E (src=DA14_3D_Buildings_Merged.gml, 1835 boundaries, 0 parts)",
+        "gml_R4WTHFSFI78FI0DSV3IIYXL49Q7BO7AZQASB (src=DA2_3D_Buildings_Merged.gml, 1658 boundaries, 0 parts)",
+        "gml_ROFDPYF6SEUVXKSOEPW0V8GJJD4OXOAZTE6B (src=DA13_3D_Buildings_Merged.gml, 1633 boundaries, 0 parts)",
+        "gml_GUF715BE9IUGYG5378045522GVRDWCSGO74U (src=DA13_3D_Buildings_Merged.gml, 1425 boundaries, 0 parts)",
+        "gml_VC72724C4A282LJZSECTSOWPT1B392TD674U (src=DA19_3D_Buildings_Merged.gml, 1211 boundaries, 0 parts)",
+        "gml_NRV6RE5HQO9KK40VMTY1SBDGC3FZR9HNI39X (src=DA12_3D_Buildings_Merged.gml, 1126 boundaries, 0 parts)",
+        "gml_8Y34IU53O18M03NUPKHSZT4TZ974WI34LZ5A (src=DA9_3D_Buildings_Merged.gml, 1029 boundaries, 0 parts)",
+        "gml_CWC2GGWQ4OOFU8XOF27B5SDBCOAQ0MFL2DZM (src=DA11_3D_Buildings_Merged.gml, 991 boundaries, 0 parts)"
+      ],
+      "recommendation": "Re-ingest the affected source with unique-id synthesis; these super-nodes distort every per-building statistic.",
+      "needs_decision": true
+    },
+    {
+      "code": "OGRINFO_FAILED",
+      "severity": "info",
+      "scope": "input",
+      "count": null,
+      "message": "ogrinfo is on PATH but returned no feature counts for any layer (likely a GDAL/PROJ environment conflict, not an empty file).",
+      "examples": [],
+      "recommendation": "Fix the GDAL/PROJ PATH (e.g. QGIS's ogrinfo needs its own PROJ); OSM completeness is gated post-fusion by eval/osm_ingestion_census.py regardless.",
+      "needs_decision": false
+    }
+  ],
+  "decisions_needed": [
+    {
+      "code": "ID_COLLAPSE",
+      "severity": "critical",
+      "scope": "graph",
+      "count": 51,
+      "message": "51 Building node(s) have anomalous fan-out (boundaries > 500 or > 20 building parts), the signature of many source buildings collapsed onto one gml:id.",
+      "examples": [
+        "gml_M9FS9LLDSTSU2YWX5Y3NCDFP3R1X1FWZN4CY (src=DA19_3D_Buildings_Merged.gml, 3433 boundaries, 0 parts)",
+        "gml_0IM21KU31QXXTFUH830AT38ZCH5DO0XMCCG9 (src=DA9_3D_Buildings_Merged.gml, 2576 boundaries, 0 parts)",
+        "gml_WZRCFXJ47Y0M4YI4WSC5MC80C5KN0XMGTS0E (src=DA14_3D_Buildings_Merged.gml, 1835 boundaries, 0 parts)",
+        "gml_R4WTHFSFI78FI0DSV3IIYXL49Q7BO7AZQASB (src=DA2_3D_Buildings_Merged.gml, 1658 boundaries, 0 parts)",
+        "gml_ROFDPYF6SEUVXKSOEPW0V8GJJD4OXOAZTE6B (src=DA13_3D_Buildings_Merged.gml, 1633 boundaries, 0 parts)",
+        "gml_GUF715BE9IUGYG5378045522GVRDWCSGO74U (src=DA13_3D_Buildings_Merged.gml, 1425 boundaries, 0 parts)",
+        "gml_VC72724C4A282LJZSECTSOWPT1B392TD674U (src=DA19_3D_Buildings_Merged.gml, 1211 boundaries, 0 parts)",
+        "gml_NRV6RE5HQO9KK40VMTY1SBDGC3FZR9HNI39X (src=DA12_3D_Buildings_Merged.gml, 1126 boundaries, 0 parts)",
+        "gml_8Y34IU53O18M03NUPKHSZT4TZ974WI34LZ5A (src=DA9_3D_Buildings_Merged.gml, 1029 boundaries, 0 parts)",
+        "gml_CWC2GGWQ4OOFU8XOF27B5SDBCOAQ0MFL2DZM (src=DA11_3D_Buildings_Merged.gml, 991 boundaries, 0 parts)"
+      ],
+      "recommendation": "Re-ingest the affected source with unique-id synthesis; these super-nodes distort every per-building statistic.",
+      "needs_decision": true
+    }
+  ]
+}

@@ -41,12 +41,16 @@ Lossless round-trip of all data written by ingest_citygml.py:
 Output: output/citygml/<dataset-stem>_export.gml
 """
 
+import argparse
 import json
+import sys
 import uuid
 from pathlib import Path
 
 from lxml import etree
 from neo4j import GraphDatabase
+
+from pykci_runtime import neo4j_auth, neo4j_uri, progress
 
 # ---------------------------------------------------------------------------
 # Namespace declarations
@@ -574,9 +578,61 @@ def _process_surface_rows(rows, id_key):
 # Building graph queries
 # ---------------------------------------------------------------------------
 
-def query_dataset(sess):
+def query_dataset(sess, dataset=None, feature_ids=None):
+    """The Dataset to export from: by id/name/source when given, else the
+    Dataset of the first selected feature, else the first Dataset (historical
+    behaviour for a single-dataset graph)."""
+    if dataset:
+        row = sess.run(
+            "MATCH (d:Dataset) WHERE d.id = $ds OR d.name = $ds OR d.source = $ds "
+            "RETURN d LIMIT 1", ds=dataset,
+        ).single()
+        return dict(row["d"]) if row else {}
+    if feature_ids:
+        row = sess.run(
+            "UNWIND $ids AS fid MATCH (n:Entity {id: fid})-[:PART_OF]->(d:Dataset) "
+            "RETURN d LIMIT 1", ids=list(feature_ids),
+        ).single()
+        if row:
+            return dict(row["d"])
     row = sess.run("MATCH (d:Dataset) RETURN d LIMIT 1").single()
     return dict(row["d"]) if row else {}
+
+
+def split_feature_ids(sess, ids):
+    """Partition requested ids into (building_ids, city_object_ids, missing),
+    keeping the caller's order. BuildingParts are exported through their parent
+    Building, so a part id is reported as missing rather than exported alone."""
+    rows = sess.run(
+        "UNWIND $ids AS fid "
+        "OPTIONAL MATCH (b:Building {id: fid}) "
+        "OPTIONAL MATCH (c:CityObject {id: fid}) "
+        "RETURN fid, b IS NOT NULL AS is_bldg, c IS NOT NULL AS is_co",
+        ids=list(ids),
+    )
+    kind = {r["fid"]: ("b" if r["is_bldg"] else "c" if r["is_co"] else None) for r in rows}
+    bldg = [i for i in ids if kind.get(i) == "b"]
+    cos = [i for i in ids if kind.get(i) == "c"]
+    missing = [i for i in ids if kind.get(i) is None]
+    return bldg, cos, missing
+
+
+def query_selection_envelope(sess, ids, srs_dim):
+    """Tight (lower, upper) corner strings around the selected features, or None
+    when any of them lacks bbox scalars (caller then keeps the Dataset envelope)."""
+    row = sess.run(
+        "UNWIND $ids AS fid MATCH (n:Entity {id: fid}) "
+        "RETURN count(n) AS n, count(n.bbox_min_x) AS with_bbox, "
+        "min(n.bbox_min_x) AS x0, min(n.bbox_min_y) AS y0, min(n.bbox_min_z) AS z0, "
+        "max(n.bbox_max_x) AS x1, max(n.bbox_max_y) AS y1, max(n.bbox_max_z) AS z1",
+        ids=list(ids),
+    ).single()
+    if not row or not row["n"] or row["with_bbox"] != row["n"]:
+        return None
+    if srs_dim == 2 or row["z0"] is None or row["z1"] is None:
+        return f"{row['x0']!r} {row['y0']!r}", f"{row['x1']!r} {row['y1']!r}"
+    return (f"{row['x0']!r} {row['y0']!r} {row['z0']!r}",
+            f"{row['x1']!r} {row['y1']!r} {row['z1']!r}")
 
 
 def query_all_building_ids(sess, source, bbox_wkt=None):
@@ -1587,11 +1643,22 @@ def build_city_object_element(co_id, core, ms_list, surfaces, crs, srs_dim):
 # Export entry point
 # ---------------------------------------------------------------------------
 
-def export(out_path, bbox_wkt=None):
+def export(out_path, bbox_wkt=None, dataset=None, ids=None):
+    """Write the graph back to CityGML 2.0.
+
+    out_path : target .gml file
+    bbox_wkt : optional WKT polygon (dataset CRS): Buildings intersecting it
+    dataset  : optional Dataset id/name/source (default: the only/first Dataset)
+    ids      : optional list of top-level feature ids (Building / CityObject
+               gml:ids as stored in the graph); exports exactly those features,
+               with a tight envelope around them; overrides bbox_wkt
+    """
     driver = GraphDatabase.driver(
-        "bolt://localhost:7687",
-        auth=("neo4j", "neo4jneo4j"),
-        notifications_disabled_categories={"DEPRECATION"},
+        neo4j_uri(),
+        auth=neo4j_auth(),
+        # UNRECOGNIZED: the queries probe optional structure (Opening, BuildingPart,
+        # orientation, …) that a given city may not have
+        notifications_disabled_classifications={"DEPRECATION", "UNRECOGNIZED"},
     )
     driver.verify_connectivity()
     print("Connected to Neo4j.")
@@ -1599,7 +1666,10 @@ def export(out_path, bbox_wkt=None):
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     with driver.session(database="neo4j") as sess:
-        ds      = query_dataset(sess)
+        ds      = query_dataset(sess, dataset=dataset, feature_ids=ids)
+        if not ds:
+            driver.close()
+            raise SystemExit(f"ERROR: no Dataset found{f' matching {dataset!r}' if dataset else ''}.")
         crs     = ds.get("crs")
         srs_dim = int(ds.get("srs_dimension", 3))
         source  = ds.get("source") or ds.get("name", "")
@@ -1612,21 +1682,36 @@ def export(out_path, bbox_wkt=None):
             f"LOD: {ds.get('lod', 'unknown')}"
         )
 
-        use_spatial = _spatial_ok(sess)
-        if bbox_wkt and not use_spatial:
-            print("WARNING: Neo4j Spatial unavailable — falling back to full scan.")
-        if bbox_wkt:
-            print(f"Spatial filter active: {bbox_wkt}")
+        lc_str = ds.get("bbox_lower_corner")
+        uc_str = ds.get("bbox_upper_corner")
 
-        bldg_ids = query_all_building_ids(sess, source, bbox_wkt=bbox_wkt)
-        co_ids   = query_all_city_object_ids(sess, source)
+        if ids:
+            bldg_ids, co_ids, missing = split_feature_ids(sess, ids)
+            print(f"Selection: {len(bldg_ids)} buildings, {len(co_ids)} city objects"
+                  + (f", {len(missing)} id(s) not found" if missing else ""))
+            if missing:
+                print(f"  not found / not top-level: {missing[:10]}"
+                      + (" …" if len(missing) > 10 else ""))
+            env = query_selection_envelope(sess, bldg_ids + co_ids, srs_dim)
+            if env:
+                lc_str, uc_str = env
+        else:
+            use_spatial = _spatial_ok(sess)
+            if bbox_wkt and not use_spatial:
+                print("WARNING: Neo4j Spatial unavailable, falling back to full scan.")
+            if bbox_wkt:
+                print(f"Spatial filter active: {bbox_wkt}")
+
+            bldg_ids = query_all_building_ids(sess, source, bbox_wkt=bbox_wkt)
+            # With a bbox filter only the intersecting Buildings are exported (as
+            # before); CityObjects are not bbox-filtered, so they would otherwise
+            # bring in the whole city around a small spatial selection.
+            co_ids   = [] if bbox_wkt else query_all_city_object_ids(sess, source)
 
         total_bldg = len(bldg_ids)
         total_co   = len(co_ids)
         print(f"Exporting {total_bldg + total_co} top-level features …")
-
-        lc_str = ds.get("bbox_lower_corner")
-        uc_str = ds.get("bbox_upper_corner")
+        progress("export.start", done=0, total=total_bldg + total_co, unit="features")
 
         exported_bldg  = 0
         exported_co    = 0
@@ -1661,6 +1746,8 @@ def export(out_path, bbox_wkt=None):
                 exported_bldg += 1
 
             print(f"  buildings {exported_bldg}/{total_bldg}", flush=True)
+            progress("export.features", done=exported_bldg + exported_co,
+                     total=total_bldg + total_co, unit="features")
 
         # ── City objects (all other modules) ──────────────────────────────────
         for batch_start in range(0, total_co, EXPORT_BATCH_SIZE):
@@ -1701,6 +1788,8 @@ def export(out_path, bbox_wkt=None):
                     co_type_counts[ft] = co_type_counts.get(ft, 0) + 1
 
             print(f"  city objects {exported_co}/{total_co}", flush=True)
+            progress("export.features", done=exported_bldg + exported_co,
+                     total=total_bldg + total_co, unit="features")
 
         etree.indent(root_el, space="  ")
         out_path.write_bytes(
@@ -1717,27 +1806,76 @@ def export(out_path, bbox_wkt=None):
     for _ft, _n in sorted(all_type_counts.items()):
         if _n > 0:
             print(f"    {_ft}: {_n}")
+    progress("export.done", done=exported_bldg + exported_co,
+             total=exported_bldg + exported_co, unit="features",
+             out=str(out_path), by_type=all_type_counts)
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
+_ID_HEADERS = {"id", "gml_id", "building_id", "feature_id"}
+
+
+def _read_ids_file(path: Path) -> list[str]:
+    """Ids from a .json list, or one per line (first column of a CSV/TSV;
+    a header row named id/gml_id/building_id/feature_id is skipped)."""
+    text = path.read_text(encoding="utf-8-sig")
+    if path.suffix.lower() == ".json":
+        return [str(x) for x in json.loads(text)]
+    ids = []
+    for line in text.splitlines():
+        field = line.replace(";", ",").replace("\t", ",").split(",")[0].strip().strip('"')
+        if field and field.lower() not in _ID_HEADERS:
+            ids.append(field)
+    return ids
+
+
+def _bbox_to_wkt(bbox: str) -> str:
+    minx, miny, maxx, maxy = (float(v) for v in bbox.split(","))
+    return (f"POLYGON(({minx} {miny}, {maxx} {miny}, {maxx} {maxy}, "
+            f"{minx} {maxy}, {minx} {miny}))")
+
+
 if __name__ == "__main__":
-    drv = GraphDatabase.driver(
-        "bolt://localhost:7687",
-        auth=("neo4j", "neo4jneo4j"),
-    )
-    drv.verify_connectivity()
+    ap = argparse.ArgumentParser(
+        description="Export the Neo4j graph (or a selection of it) back to CityGML 2.0.")
+    ap.add_argument("--out", default=None,
+                    help="Output .gml path (default: output/citygml/<dataset-stem>_export.gml)")
+    ap.add_argument("--dataset", default=None,
+                    help="Dataset id/name/source to export (default: the only/first Dataset, "
+                         "or the Dataset of the selected --ids)")
+    ap.add_argument("--ids", default=None,
+                    help="Comma-separated top-level feature ids (Building/CityObject); "
+                         "export exactly these features")
+    ap.add_argument("--ids-file", default=None,
+                    help="File with feature ids: .json list, or one per line / first CSV column")
+    ap.add_argument("--bbox", default=None,
+                    help="minx,miny,maxx,maxy in the dataset CRS; export the Buildings "
+                         "intersecting this box (needs Neo4j Spatial)")
+    args = ap.parse_args()
 
-    with drv.session(database="neo4j") as sess:
-        row = sess.run(
-            "MATCH (d:Dataset) RETURN coalesce(d.source, d.name) AS src LIMIT 1"
-        ).single()
-        src = (row["src"] if row and row["src"] else "dataset")
+    sel_ids = []
+    if args.ids:
+        sel_ids += [i.strip() for i in args.ids.split(",") if i.strip()]
+    if args.ids_file:
+        sel_ids += _read_ids_file(Path(args.ids_file))
+    sel_ids = list(dict.fromkeys(sel_ids))          # de-duplicate, keep order
+    if (args.ids or args.ids_file) and not sel_ids:
+        sys.exit("ERROR: --ids/--ids-file given but no ids found.")
 
-    drv.close()
+    out = Path(args.out) if args.out else None
+    if out is None:
+        drv = GraphDatabase.driver(neo4j_uri(), auth=neo4j_auth())
+        drv.verify_connectivity()
+        with drv.session(database="neo4j") as sess:
+            ds = query_dataset(sess, dataset=args.dataset, feature_ids=sel_ids or None)
+        drv.close()
+        src = ds.get("source") or ds.get("name") or "dataset"
+        suffix = "_selection_export.gml" if (sel_ids or args.bbox) else "_export.gml"
+        out = Path("output/citygml") / (Path(src).stem + suffix)
 
-    out = Path("output/citygml") / (Path(src).stem + "_export.gml")
-    export(out)
+    export(out, bbox_wkt=_bbox_to_wkt(args.bbox) if args.bbox else None,
+           dataset=args.dataset, ids=sel_ids or None)
     print("Done.")

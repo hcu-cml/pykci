@@ -1,0 +1,559 @@
+{
+  "city": "helsinki",
+  "generated": "20260716_165221",
+  "precheck_file": "stats_control_precheck_helsinki_20260716_164730.json",
+  "postcheck_file": "stats_control_postcheck_helsinki_20260716_165155.json",
+  "precheck": {
+    "phase": "precheck",
+    "city": "helsinki",
+    "generated": "20260716_164726",
+    "citygml": {
+      "files": 1,
+      "buildings_total": 2980,
+      "distinct_gml_ids": 2919,
+      "per_file": {
+        "helsinki_citygml2_lod2_2019.gml": {
+          "buildings": 2980,
+          "srs": "urn:ogc:drf:crs:EPSG::3879"
+        }
+      },
+      "srs_seen": {
+        "urn:ogc:drf:crs:EPSG::3879": 1
+      },
+      "dominant_srs": "urn:ogc:drf:crs:EPSG::3879",
+      "dominant_epsg": "EPSG:3879",
+      "duplicate_ids": {
+        "colliding_id_count": 61,
+        "buildings_involved": 122,
+        "top": [
+          [
+            "BID_dfe55944-74c6-44b2-82ff-1820eeee2713",
+            2
+          ],
+          [
+            "BID_ce1bcfa8-a9e4-43e3-b27b-e772975077ac",
+            2
+          ],
+          [
+            "BID_c268d168-ddd0-44dd-a19b-b327940454b9",
+            2
+          ],
+          [
+            "BID_c4874819-3333-4829-a178-11b0d33f7900",
+            2
+          ],
+          [
+            "BID_3eb2b5dc-7420-426e-8462-0c6db92e0823",
+            2
+          ],
+          [
+            "BID_a8385f58-4d43-4a5f-b8a4-821573950f81",
+            2
+          ],
+          [
+            "BID_61fc6e9a-3347-4a73-bd26-3d4a06362e45",
+            2
+          ],
+          [
+            "BID_1b431d54-c7e5-4ed8-aa6a-fab0dfc9dd54",
+            2
+          ],
+          [
+            "BID_af955f0d-d963-41e3-a563-9dee154dfddf",
+            2
+          ],
+          [
+            "BID_f2b6e1f2-9a20-45ee-8e84-ac1a457470ed",
+            2
+          ],
+          [
+            "BID_5e10e2e5-9b57-4911-aed5-a9e9c998c485",
+            2
+          ],
+          [
+            "BID_7b481eea-a20a-4b3d-bf1d-c7a31503812d",
+            2
+          ],
+          [
+            "BID_29d5c8c9-a6e1-439b-ad4e-cceab20d9f9e",
+            2
+          ],
+          [
+            "BID_36219417-7791-4bee-b6ad-c73cf558f365",
+            2
+          ],
+          [
+            "BID_1ff0fc11-a905-4a99-8de6-5f7747ff9f26",
+            2
+          ],
+          [
+            "BID_508bfef0-6aaf-476b-8daa-1669665405c0",
+            2
+          ],
+          [
+            "BID_84d96d04-e1d4-4a42-a2a7-b9a9397c86b7",
+            2
+          ],
+          [
+            "BID_7c1ce529-f780-46c3-9aa8-440af70ddc7a",
+            2
+          ],
+          [
+            "BID_25d4f21c-7975-4acb-8e32-45af0e46783e",
+            2
+          ],
+          [
+            "BID_099c2f64-8d58-4823-bfa9-b8a7630c04a6",
+            2
+          ]
+        ]
+      },
+      "placeholder_ids": {
+        "id_count": 0,
+        "buildings_involved": 0,
+        "values": []
+      },
+      "missing_id": 0,
+      "no_geometry": 0,
+      "degenerate_rings": 0,
+      "nonfinite_coords": 0,
+      "unclosed_rings": 0,
+      "height": {
+        "n": 2972,
+        "min": 0.26,
+        "max": 135.0,
+        "mean": 13.5935,
+        "median": 10.11,
+        "p90": 26.71,
+        "p99": 46.358,
+        "stdev": 11.5186
+      },
+      "height_sentinels": 0,
+      "vertex_count": {
+        "n": 2980,
+        "min": 23.0,
+        "max": 5663.0,
+        "mean": 283.5174,
+        "median": 116.0,
+        "p90": 720.8,
+        "p99": 2176.47,
+        "stdev": 455.2468
+      },
+      "vertex_outliers": {
+        "threshold": 20000,
+        "count": 0
+      },
+      "spatial_outliers": 0,
+      "crs_range_issue": null,
+      "functions_top": [
+        [
+          "151",
+          18
+        ],
+        [
+          "039",
+          14
+        ],
+        [
+          "011",
+          10
+        ],
+        [
+          "719",
+          8
+        ],
+        [
+          "141",
+          8
+        ],
+        [
+          "511",
+          6
+        ],
+        [
+          "941",
+          4
+        ],
+        [
+          "012",
+          4
+        ],
+        [
+          "162",
+          2
+        ],
+        [
+          "692",
+          2
+        ],
+        [
+          "312",
+          2
+        ],
+        [
+          "531",
+          2
+        ],
+        [
+          "112",
+          2
+        ],
+        [
+          "169",
+          2
+        ],
+        [
+          "119",
+          2
+        ]
+      ],
+      "roof_types_top": [
+        [
+          "1000",
+          2917
+        ],
+        [
+          "3500",
+          17
+        ],
+        [
+          "1000;2100",
+          9
+        ],
+        [
+          "2100",
+          6
+        ],
+        [
+          "3200",
+          4
+        ],
+        [
+          "2100;1000",
+          3
+        ],
+        [
+          "2100;1000;2100",
+          2
+        ],
+        [
+          "2100;2100;2100",
+          2
+        ],
+        [
+          "2100;2100;1000",
+          1
+        ],
+        [
+          "2100;2100;2100;1000",
+          1
+        ],
+        [
+          "1000;3500;2100;3500;3109;2100",
+          1
+        ],
+        [
+          "2100;3500;2100;2100;2100;1000",
+          1
+        ],
+        [
+          "2100;1000;3500;2100;3200;2100",
+          1
+        ],
+        [
+          "3200;2100",
+          1
+        ],
+        [
+          "3500;3500",
+          1
+        ]
+      ],
+      "roofmat": {
+        "buildings_with_prediction": 0,
+        "coverage": 0.0,
+        "class_histogram": {}
+      },
+      "examples": {
+        "missing_id": [],
+        "no_geom": [],
+        "degenerate": [],
+        "nonfinite": [],
+        "unclosed": [],
+        "placeholder": []
+      }
+    },
+    "osm": {
+      "pbf": "finland-260704.osm.pbf",
+      "size_bytes": 727008250,
+      "ogrinfo_available": true,
+      "layer_feature_counts": {
+        "points": null,
+        "lines": null,
+        "multipolygons": null,
+        "multilinestrings": null,
+        "other_relations": null
+      },
+      "note": "Lossless per-feature OSM verification is eval/osm_ingestion_census.py (run it after fusion). This is a pre-ingest sanity count only."
+    }
+  },
+  "postcheck": {
+    "phase": "postcheck",
+    "city": "helsinki",
+    "generated": "20260716_165155",
+    "dataset": "helsinki_citygml2_lod2_2019.gml",
+    "deep": true,
+    "orphans_scanned": true,
+    "datasets": [
+      {
+        "name": "helsinki_citygml2_lod2_2019.gml",
+        "crs": "urn:ogc:drf:crs:EPSG::3879",
+        "minx": 25497748.5,
+        "miny": 6676278.095,
+        "maxx": 25497754.549,
+        "maxy": 6676286.565
+      }
+    ],
+    "label_counts": {
+      "BoundarySurface": 50620,
+      "Bridge": 31,
+      "Building": 2980,
+      "BuildingFunction": 19,
+      "BuildingPart": 0,
+      "City": 1,
+      "CityObject": 31,
+      "Dataset": 1,
+      "District": 1,
+      "Entity": 256292,
+      "GeometryLineString": 15180,
+      "GeometryMultiSurface": 31,
+      "GeometryPolygon": 141076,
+      "GeometryRing": 142094,
+      "GeometrySolid": 5585,
+      "OsmBuilding": 3157,
+      "OsmFeature": 55930,
+      "OsmFurniture": 10533,
+      "OsmLandUse": 1958,
+      "OsmPOI": 4942,
+      "OsmRoad": 20666,
+      "OsmVegetation": 1264,
+      "OsmWater": 45,
+      "RoofType": 20,
+      "SpatialLayer": 2,
+      "TerrainIntersection": 0
+    },
+    "relationship_counts": {
+      "COVERS": 1,
+      "ENRICHED_BY": 3011,
+      "HAS_BOUNDARY": 50620,
+      "HAS_EXTERIOR_RING": 141076,
+      "HAS_FOOTPRINT": 8385,
+      "HAS_FUNCTION": 94,
+      "HAS_INTERIOR_RING": 1018,
+      "HAS_LOD_SOLID": 5585,
+      "HAS_LOD_SURFACE": 15211,
+      "HAS_POI": 1797,
+      "HAS_POLYGON": 79822,
+      "HAS_ROOF_TYPE": 2972,
+      "HAS_SURFACE_MEMBER": 132691,
+      "LOCATED_IN": 58910,
+      "PART_OF": 58942,
+      "RTREE_CHILD": 884,
+      "RTREE_METADATA": 2,
+      "RTREE_REFERENCE": 58941,
+      "RTREE_ROOT": 2
+    },
+    "totals": {
+      "nodes": 414459,
+      "relationships": 619964
+    },
+    "id_synthesized_count": 61,
+    "building_count": 2980,
+    "boundaries_per_building": {
+      "n": 2980,
+      "min": 0.0,
+      "max": 245.0,
+      "mean": 16.9866,
+      "median": 10.0,
+      "p90": 37.0,
+      "p99": 83.63,
+      "stdev": 18.5667
+    },
+    "parts_per_building": {
+      "n": 2980,
+      "min": 0.0,
+      "max": 0.0,
+      "mean": 0.0,
+      "median": 0.0,
+      "p90": 0.0,
+      "p99": 0.0,
+      "stdev": 0.0
+    },
+    "collapse_suspects": {
+      "boundary_threshold": 669.04,
+      "count": 0,
+      "top": []
+    },
+    "buildings_per_source_top": [
+      {
+        "source": "helsinki_citygml2_lod2_2019.gml",
+        "nodes": 2980
+      }
+    ],
+    "osm": {
+      "osm_feature_nodes": 55930,
+      "by_kind": {
+        "road": 20666,
+        "other": 13365,
+        "furniture": 10533,
+        "poi": 4942,
+        "building": 3157,
+        "landuse": 1958,
+        "vegetation": 1264,
+        "water": 45
+      },
+      "matched": 4281,
+      "orphan": 51649,
+      "orphan_rate": 0.9235,
+      "orphan_reasons": {
+        "no_pykci_type": 47831,
+        "no_containing_building": 3055,
+        "no_overlap": 763
+      },
+      "enriched_buildings": 2476,
+      "pois": 1797,
+      "dup_osm_id": 0
+    },
+    "roofmat": {
+      "total_buildings": 2980,
+      "with_prediction": 0,
+      "coverage": 0.0
+    },
+    "lod3": {
+      "enriched_buildings": 0,
+      "facade_edges": 0
+    },
+    "measured_height": {
+      "n": 2972,
+      "min": 0.26,
+      "max": 135.0,
+      "mean": 13.5935,
+      "median": 10.11,
+      "p90": 26.71,
+      "p99": 46.358,
+      "stdev": 11.5186
+    },
+    "measured_height_sentinels": 0,
+    "missing_source": {
+      "buildings": 0,
+      "osm": 0
+    },
+    "nodes_per_building": {
+      "min": 15,
+      "max": 1697,
+      "avg": 107.43825503355684,
+      "p50": 54.0,
+      "p90": 251.0999999999999,
+      "p99": 683.4700000000003,
+      "buildings": 2980
+    },
+    "geoms_per_building": {
+      "min": 5,
+      "max": 817,
+      "avg": 43.179530201342324,
+      "p50": 20.0,
+      "p90": 104.0,
+      "p99": 311.6300000000001,
+      "buildings": 2980,
+      "unit": "GeometryPolygon nodes in the building's CityGML subtree"
+    },
+    "attrs_per_building": {
+      "min": 4,
+      "max": 43,
+      "avg": 37.05973154362415,
+      "p50": 43.0,
+      "p90": 43.0,
+      "p99": 43.0,
+      "buildings": 2980,
+      "unit": "thematic property keys on the Building node (identity/bbox/spatial-plugin/OSM/LoD3/ML keys excluded)"
+    },
+    "buildings_no_geometry": 0,
+    "orphan_nodes": 0
+  },
+  "anomalies": [
+    {
+      "code": "DUPLICATE_GML_ID",
+      "severity": "critical",
+      "scope": "input",
+      "count": 122,
+      "message": "61 gml:id value(s) are shared by 122 buildings. MERGE (b:Building {id}) collapses each group into ONE node, losing 61 buildings.",
+      "examples": [
+        "BID_dfe55944-74c6-44b2-82ff-1820eeee2713 x2",
+        "BID_ce1bcfa8-a9e4-43e3-b27b-e772975077ac x2",
+        "BID_c268d168-ddd0-44dd-a19b-b327940454b9 x2",
+        "BID_c4874819-3333-4829-a178-11b0d33f7900 x2",
+        "BID_3eb2b5dc-7420-426e-8462-0c6db92e0823 x2",
+        "BID_a8385f58-4d43-4a5f-b8a4-821573950f81 x2",
+        "BID_61fc6e9a-3347-4a73-bd26-3d4a06362e45 x2",
+        "BID_1b431d54-c7e5-4ed8-aa6a-fab0dfc9dd54 x2",
+        "BID_af955f0d-d963-41e3-a563-9dee154dfddf x2",
+        "BID_f2b6e1f2-9a20-45ee-8e84-ac1a457470ed x2"
+      ],
+      "recommendation": "Synthesize a unique id at ingest for these sources (e.g. source-file + gml:id + ordinal, or a geometry hash).",
+      "needs_decision": true
+    },
+    {
+      "code": "OSM_HIGH_ORPHAN_RATE",
+      "severity": "low",
+      "scope": "graph",
+      "count": 51649,
+      "message": "92.3% of OSM features are unmatched orphans (expected for city-wide extracts: roads, natural areas, POIs outside building footprints). Informational.",
+      "examples": [],
+      "recommendation": "Expected; confirm buffer/threshold if it looks too high.",
+      "needs_decision": false
+    },
+    {
+      "code": "ID_COLLISIONS_RESOLVED",
+      "severity": "info",
+      "scope": "cross",
+      "count": 61,
+      "message": "61 duplicate-id occurrence(s) in the source were resolved at ingest: 61 split onto synthesized ids (source_gml_id preserved), 0 deduplicated as identical content/geometry.",
+      "examples": [],
+      "recommendation": "None; intended behaviour of the id resolution.",
+      "needs_decision": false
+    },
+    {
+      "code": "OGRINFO_FAILED",
+      "severity": "info",
+      "scope": "input",
+      "count": null,
+      "message": "ogrinfo is on PATH but returned no feature counts for any layer (likely a GDAL/PROJ environment conflict, not an empty file).",
+      "examples": [],
+      "recommendation": "Fix the GDAL/PROJ PATH (e.g. QGIS's ogrinfo needs its own PROJ); OSM completeness is gated post-fusion by eval/osm_ingestion_census.py regardless.",
+      "needs_decision": false
+    }
+  ],
+  "decisions_needed": [
+    {
+      "code": "DUPLICATE_GML_ID",
+      "severity": "critical",
+      "scope": "input",
+      "count": 122,
+      "message": "61 gml:id value(s) are shared by 122 buildings. MERGE (b:Building {id}) collapses each group into ONE node, losing 61 buildings.",
+      "examples": [
+        "BID_dfe55944-74c6-44b2-82ff-1820eeee2713 x2",
+        "BID_ce1bcfa8-a9e4-43e3-b27b-e772975077ac x2",
+        "BID_c268d168-ddd0-44dd-a19b-b327940454b9 x2",
+        "BID_c4874819-3333-4829-a178-11b0d33f7900 x2",
+        "BID_3eb2b5dc-7420-426e-8462-0c6db92e0823 x2",
+        "BID_a8385f58-4d43-4a5f-b8a4-821573950f81 x2",
+        "BID_61fc6e9a-3347-4a73-bd26-3d4a06362e45 x2",
+        "BID_1b431d54-c7e5-4ed8-aa6a-fab0dfc9dd54 x2",
+        "BID_af955f0d-d963-41e3-a563-9dee154dfddf x2",
+        "BID_f2b6e1f2-9a20-45ee-8e84-ac1a457470ed x2"
+      ],
+      "recommendation": "Synthesize a unique id at ingest for these sources (e.g. source-file + gml:id + ordinal, or a geometry hash).",
+      "needs_decision": true
+    }
+  ]
+}

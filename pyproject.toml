@@ -1,0 +1,58 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pykci"
+version = "0.1.0"
+description = "Python Knowledge Graph for Cities: CityGML <-> Neo4j, OSM fusion, 3D Tiles"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = [
+    "lxml",
+    "neo4j>=5.20",
+    "pyproj",
+    "mapbox-earcut",
+    "numpy",
+    "shapely",          # OSM footprint matching; 3D Tiles opening cut-outs + footprints
+]
+
+[project.optional-dependencies]
+llm = [
+    "langchain",
+    "langchain-community",
+    "langchain-ollama",
+    "langchain-neo4j",
+    "langchain-anthropic",
+]
+capture = ["playwright"]
+
+[project.urls]
+Repository = "https://github.com/hcu-cml/pykci"
+
+[project.scripts]
+pykci = "pykci_cli:main"
+
+# The pipeline scripts stay standalone files at the repo root (run them directly
+# as before); packaging installs them as top-level modules behind the `pykci`
+# command. tools/ and eval/ are only reachable from a source checkout, so
+# install editable (`pip install -e .`) to use footprints / inventory / stats.
+[tool.setuptools]
+py-modules = [
+    "pykci_cli",
+    "pykci_runtime",
+    "pykci_provenance",
+    "ingest_citygml",
+    "ingest_osm",
+    "ingest_roof_materials",
+    "enrich_lod3_facades",
+    "export_citygml",
+    "build_3dtiles",
+    "build_graph_pointcloud",
+    "export_graph_html",
+    "export_roofmat_footprints",
+    "visualize_buildings_3d",
+    "visualize_graph_3d",
+]

@@ -1,0 +1,256 @@
+{
+  "phase": "postcheck",
+  "city": "zurich",
+  "generated": "20260716_175533",
+  "dataset": "zurich",
+  "deep": true,
+  "orphans_scanned": true,
+  "datasets": [
+    {
+      "name": "zurich",
+      "crs": "EPSG:2056",
+      "minx": 2668076.375,
+      "miny": 1224001.7138999999,
+      "maxx": 2720629.2041000016,
+      "maxy": 1284027.7655999996
+    }
+  ],
+  "label_counts": {
+    "BoundarySurface": 425263,
+    "Building": 102668,
+    "BuildingFunction": 0,
+    "BuildingPart": 12030,
+    "City": 78,
+    "CityObject": 0,
+    "Dataset": 1,
+    "District": 78,
+    "Entity": 21762846,
+    "GeometryLineString": 455516,
+    "GeometryMultiSurface": 0,
+    "GeometryPolygon": 19253759,
+    "GeometryRing": 19259959,
+    "GeometrySolid": 108725,
+    "OsmBuilding": 460631,
+    "OsmFeature": 1860401,
+    "OsmFurniture": 424171,
+    "OsmLandUse": 43710,
+    "OsmPOI": 158125,
+    "OsmRoad": 502180,
+    "OsmVegetation": 13480,
+    "OsmWater": 4762,
+    "RoofType": 0,
+    "SpatialLayer": 2,
+    "TerrainIntersection": 0
+  },
+  "relationship_counts": {
+    "COVERS": 78,
+    "ENRICHED_BY": 100312,
+    "HAS_BOUNDARY": 425263,
+    "HAS_BUILDING_PART": 12030,
+    "HAS_EXTERIOR_RING": 19253759,
+    "HAS_FOOTPRINT": 592834,
+    "HAS_INTERIOR_RING": 6200,
+    "HAS_LOD_SOLID": 108725,
+    "HAS_LOD_SURFACE": 455516,
+    "HAS_POI": 13587,
+    "HAS_POLYGON": 9530119,
+    "HAS_SURFACE_MEMBER": 9130806,
+    "LOCATED_IN": 1963069,
+    "PART_OF": 1963147,
+    "RTREE_CHILD": 29887,
+    "RTREE_METADATA": 2,
+    "RTREE_REFERENCE": 1963069,
+    "RTREE_ROOT": 2
+  },
+  "totals": {
+    "nodes": 41508371,
+    "relationships": 45548405
+  },
+  "id_synthesized_count": 40,
+  "building_count": 102668,
+  "boundaries_per_building": {
+    "n": 102668,
+    "min": 0.0,
+    "max": 916.0,
+    "mean": 4.1421,
+    "median": 3.0,
+    "p90": 6.0,
+    "p99": 13.0,
+    "stdev": 4.517
+  },
+  "parts_per_building": {
+    "n": 102668,
+    "min": 0.0,
+    "max": 312.0,
+    "mean": 0.1172,
+    "median": 0.0,
+    "p90": 0.0,
+    "p99": 3.0,
+    "stdev": 1.4122
+  },
+  "collapse_suspects": {
+    "boundary_threshold": 200,
+    "count": 3,
+    "top": [
+      {
+        "id": "ID___swissbuildings3d_3_0_1070_24_gml__1",
+        "source": "swissBUILDINGS3D_3-0_1070-24.gml",
+        "boundaries": 916,
+        "parts": 312
+      },
+      {
+        "id": "ID___swissbuildings3d_3_0_1070_44_gml__1",
+        "source": "swissBUILDINGS3D_3-0_1070-44.gml",
+        "boundaries": 766,
+        "parts": 266
+      },
+      {
+        "id": "ID___swissbuildings3d_3_0_1070_42_gml__1",
+        "source": "swissBUILDINGS3D_3-0_1070-42.gml",
+        "boundaries": 140,
+        "parts": 46
+      }
+    ]
+  },
+  "buildings_per_source_top": [
+    {
+      "source": "swissBUILDINGS3D_3-0_1091-41.gml",
+      "nodes": 11261
+    },
+    {
+      "source": "swissBUILDINGS3D_3-0_1091-23.gml",
+      "nodes": 9213
+    },
+    {
+      "source": "swissBUILDINGS3D_3-0_1091-21.gml",
+      "nodes": 7652
+    },
+    {
+      "source": "swissBUILDINGS3D_3-0_1091-14.gml",
+      "nodes": 6332
+    },
+    {
+      "source": "swissBUILDINGS3D_3-0_1091-32.gml",
+      "nodes": 4920
+    },
+    {
+      "source": "swissBUILDINGS3D_3-0_1031-42.gml",
+      "nodes": 4387
+    },
+    {
+      "source": "swissBUILDINGS3D_3-0_1112-44.gml",
+      "nodes": 4353
+    },
+    {
+      "source": "swissBUILDINGS3D_3-0_1090-42.gml",
+      "nodes": 4122
+    },
+    {
+      "source": "swissBUILDINGS3D_3-0_1091-43.gml",
+      "nodes": 3121
+    },
+    {
+      "source": "swissBUILDINGS3D_3-0_1132-12.gml",
+      "nodes": 2926
+    },
+    {
+      "source": "swissBUILDINGS3D_3-0_1032-44.gml",
+      "nodes": 2531
+    },
+    {
+      "source": "swissBUILDINGS3D_3-0_1091-12.gml",
+      "nodes": 2491
+    },
+    {
+      "source": "swissBUILDINGS3D_3-0_1132-21.gml",
+      "nodes": 2394
+    },
+    {
+      "source": "swissBUILDINGS3D_3-0_1070-44.gml",
+      "nodes": 2263
+    },
+    {
+      "source": "swissBUILDINGS3D_3-0_1091-42.gml",
+      "nodes": 2262
+    }
+  ],
+  "osm": {
+    "osm_feature_nodes": 1860401,
+    "by_kind": {
+      "road": 502180,
+      "building": 460631,
+      "furniture": 424171,
+      "other": 253342,
+      "poi": 158125,
+      "landuse": 43710,
+      "vegetation": 13480,
+      "water": 4762
+    },
+    "matched": 102794,
+    "orphan": 1757607,
+    "orphan_rate": 0.9447,
+    "orphan_reasons": {
+      "no_pykci_type": 1241645,
+      "no_overlap": 372279,
+      "no_containing_building": 143683
+    },
+    "enriched_buildings": 93958,
+    "pois": 13587,
+    "dup_osm_id": 0
+  },
+  "roofmat": {
+    "total_buildings": 102668,
+    "with_prediction": 0,
+    "coverage": 0.0
+  },
+  "lod3": {
+    "enriched_buildings": 0,
+    "facade_edges": 0
+  },
+  "measured_height": {
+    "n": 95983,
+    "min": 1.0,
+    "max": 189.68,
+    "mean": 10.0303,
+    "median": 9.22,
+    "p90": 17.28,
+    "p99": 25.82,
+    "stdev": 5.5858
+  },
+  "measured_height_sentinels": 0,
+  "missing_source": {
+    "buildings": 0,
+    "osm": 0
+  },
+  "nodes_per_building": {
+    "min": 6,
+    "max": 160003,
+    "avg": 369.8380800249379,
+    "p50": 253.0,
+    "p90": 738.0,
+    "p99": 2019.0,
+    "buildings": 102668
+  },
+  "geoms_per_building": {
+    "min": 2,
+    "max": 79231,
+    "avg": 181.75989597537733,
+    "p50": 124.0,
+    "p90": 365.0,
+    "p99": 1001.0,
+    "buildings": 102668,
+    "unit": "GeometryPolygon nodes in the building's CityGML subtree"
+  },
+  "attrs_per_building": {
+    "min": 3,
+    "max": 24,
+    "avg": 20.90915377722388,
+    "p50": 22.0,
+    "p90": 22.0,
+    "p99": 22.0,
+    "buildings": 102668,
+    "unit": "thematic property keys on the Building node (identity/bbox/spatial-plugin/OSM/LoD3/ML keys excluded)"
+  },
+  "buildings_no_geometry": 0,
+  "orphan_nodes": 0
+}
