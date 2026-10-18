@@ -1,6 +1,6 @@
 {
-  "timestamp": "20260614T193003",
-  "source_file": "input\\citygml\\FZKHaus\\FZK-Haus-LoD2-KIT-IAI-KHH-B36-V1.gml",
+  "timestamp": "20260712T062258",
+  "source_file": "input\\citygml\\FZK-Haus\\FZK-Haus-LoD2-KIT-IAI-KHH-B36-V1.gml",
   "export_file": "output\\citygml\\FZK-Haus-LoD2-KIT-IAI-KHH-B36-V1_export.gml",
   "summary": {
     "PASS": 15,
@@ -29,11 +29,13 @@
           "UUID_d281adfc-4901-0f52-540b-4cc1a9325f82": 7
         },
         "bsurf_counts_per_id": {
-          "UUID_d281adfc-4901-0f52-540b-4cc1a9325f82": {
-            "WallSurface": 4,
-            "RoofSurface": 2,
-            "GroundSurface": 1
-          }
+          "UUID_d281adfc-4901-0f52-540b-4cc1a9325f82": [
+            {
+              "WallSurface": 4,
+              "RoofSurface": 2,
+              "GroundSurface": 1
+            }
+          ]
         },
         "scalar_per_id": {
           "UUID_d281adfc-4901-0f52-540b-4cc1a9325f82": {
@@ -69,7 +71,7 @@
     {
       "name": "building_bsurf_count[UUID_d281adfc-4901-0f52-540b-4cc1a9325f82]",
       "status": "PASS",
-      "detail": "7 boundary surfaces ({'WallSurface': 4, 'RoofSurface': 2, 'GroundSurface': 1})"
+      "detail": "[7] boundary surfaces (1 occurrence(s))"
     },
     {
       "name": "building_poly_count[UUID_d281adfc-4901-0f52-540b-4cc1a9325f82]",
@@ -99,7 +101,7 @@
     {
       "name": "export_file_exists",
       "status": "PASS",
-      "detail": "10 KB"
+      "detail": "11 KB"
     },
     {
       "name": "export_parses_as_xml",

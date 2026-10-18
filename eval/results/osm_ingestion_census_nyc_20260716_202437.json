@@ -1,0 +1,75 @@
+{
+  "timestamp": "20260716_202437",
+  "pbf": "input\\osm\\new-york-260703.osm.pbf",
+  "dataset": "nyc",
+  "crs": "EPSG:32618",
+  "buffer_m": 10.0,
+  "city_bbox_wgs84": [
+    -74.25557974709007,
+    40.498404259241156,
+    -73.69678364219654,
+    40.914155162005
+  ],
+  "source": {
+    "layer_admitted": {
+      "multipolygons": 1375098,
+      "points": 734413,
+      "lines": 445957
+    },
+    "kind_counts": {
+      "water": 1471,
+      "other": 284892,
+      "landuse": 23488,
+      "building": 1166948,
+      "vegetation": 7312,
+      "road": 659851,
+      "poi": 201840,
+      "furniture": 209666
+    },
+    "geometry_skipped": 0,
+    "duplicate_ids": 0,
+    "expected_nodes": 2555468
+  },
+  "graph": {
+    "osm_feature_nodes": 2555468,
+    "kind_counts": {
+      "other": 284892,
+      "water": 1471,
+      "landuse": 23488,
+      "building": 1166948,
+      "vegetation": 7312,
+      "road": 659851,
+      "poi": 201840,
+      "furniture": 209666
+    },
+    "matched_split": {
+      "False": 1433567,
+      "True": 1121901
+    }
+  },
+  "scope_unfiltered": {
+    "points": 734413,
+    "lines": 491637,
+    "multipolygons": 1375098,
+    "multilinestrings": 2457,
+    "other_relations": 13437
+  },
+  "per_feature_findings": {},
+  "global_checks": {
+    "flag_null": 0,
+    "matched_without_anchor": 0,
+    "orphan_with_anchor": 0,
+    "orphan_without_reason": 0,
+    "missing_provenance": 0,
+    "missing_part_of": 0,
+    "missing_rtree": 0,
+    "missing_bbox_wkt": 0,
+    "enriched_by_bad_props": 0,
+    "has_poi_bad_props": 0,
+    "bad_anchor_labels": 0,
+    "anchor_namespace_violations": 0
+  },
+  "global_failures": {},
+  "passed": true,
+  "city": "nyc"
+}

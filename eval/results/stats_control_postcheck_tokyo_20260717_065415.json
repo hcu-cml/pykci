@@ -1,0 +1,375 @@
+{
+  "phase": "postcheck",
+  "city": "tokyo",
+  "generated": "20260717_065415",
+  "dataset": "tokyo",
+  "deep": true,
+  "orphans_scanned": true,
+  "datasets": [
+    {
+      "name": "tokyo",
+      "crs": "EPSG:6677",
+      "minx": -48814.7548139157,
+      "miny": -53996.535346736775,
+      "maxx": 7999.985384004634,
+      "maxy": -19498.6844514034
+    }
+  ],
+  "label_counts": {
+    "BoundarySurface": 3087724,
+    "Bridge": 968,
+    "Building": 2005762,
+    "BuildingFunction": 0,
+    "BuildingInstallation": 37053,
+    "BuildingPart": 0,
+    "City": 1600,
+    "CityFurniture": 38231,
+    "CityObject": 659006,
+    "CityObjectGroup": 1,
+    "Dataset": 1,
+    "District": 1600,
+    "Entity": 44065533,
+    "GeometryLineString": 643074,
+    "GeometryMultiSurface": 2692170,
+    "GeometryPolygon": 29563224,
+    "GeometryRing": 29600596,
+    "GeometrySolid": 2181009,
+    "NestedFeature": 2182,
+    "Opening": 6994,
+    "OsmBuilding": 2484449,
+    "OsmFeature": 3830408,
+    "OsmFurniture": 65740,
+    "OsmLandUse": 49378,
+    "OsmPOI": 263523,
+    "OsmRoad": 836785,
+    "OsmVegetation": 26127,
+    "OsmWater": 3470,
+    "PlantCover": 735,
+    "Road": 605293,
+    "RoofType": 0,
+    "Room": 1,
+    "SolitaryVegetationObject": 10883,
+    "SpatialLayer": 2,
+    "TerrainIntersection": 0,
+    "WaterBody": 2895
+  },
+  "relationship_counts": {
+    "COVERS": 1600,
+    "ENRICHED_BY": 1390723,
+    "HAS_BOUNDARY": 3087826,
+    "HAS_EXTERIOR_RING": 29563224,
+    "HAS_FOOTPRINT": 2669627,
+    "HAS_INTERIOR_INSTALLATION": 1,
+    "HAS_INTERIOR_RING": 37372,
+    "HAS_INTERIOR_ROOM": 1,
+    "HAS_LOD_GEOMETRY": 39235,
+    "HAS_LOD_SOLID": 2181009,
+    "HAS_LOD_SURFACE": 3296009,
+    "HAS_NESTED": 2185,
+    "HAS_OPENING": 6994,
+    "HAS_OUTER_INSTALLATION": 37046,
+    "HAS_POI": 91487,
+    "HAS_POLYGON": 3727459,
+    "HAS_ROOM_INSTALLATION": 6,
+    "HAS_SURFACE_MEMBER": 26902860,
+    "LOCATED_IN": 5836170,
+    "PART_OF": 6496776,
+    "RTREE_CHILD": 96990,
+    "RTREE_METADATA": 2,
+    "RTREE_REFERENCE": 6484630,
+    "RTREE_ROOT": 2
+  },
+  "totals": {
+    "nodes": 74409400,
+    "relationships": 91949234
+  },
+  "id_synthesized_count": 468,
+  "building_count": 2005762,
+  "boundaries_per_building": {
+    "n": 2005762,
+    "min": 0.0,
+    "max": 6591.0,
+    "mean": 1.5278,
+    "median": 0.0,
+    "p90": 0.0,
+    "p99": 31.0,
+    "stdev": 11.5394
+  },
+  "parts_per_building": {
+    "n": 2005762,
+    "min": 0.0,
+    "max": 0.0,
+    "mean": 0.0,
+    "median": 0.0,
+    "p90": 0.0,
+    "p99": 0.0,
+    "stdev": 0.0
+  },
+  "collapse_suspects": {
+    "boundary_threshold": 248.0,
+    "count": 273,
+    "top": [
+      {
+        "id": "bldg_8f8402e5-225b-4511-9689-490bdf162865",
+        "source": "53392653_bldg_6697_op.gml",
+        "boundaries": 6591,
+        "parts": 0
+      },
+      {
+        "id": "bldg_85660669-ad73-413e-b750-b1c28309955a",
+        "source": "53392652_bldg_6697_op.gml",
+        "boundaries": 6306,
+        "parts": 0
+      },
+      {
+        "id": "bldg_96c5aebd-2cb5-40e5-8cb3-55fcc563a6ed",
+        "source": "53392651_bldg_6697_op.gml",
+        "boundaries": 3350,
+        "parts": 0
+      },
+      {
+        "id": "bldg_d840231c-8174-4086-9ca6-6417886b0fda",
+        "source": "53394517_bldg_6697_op.gml",
+        "boundaries": 2826,
+        "parts": 0
+      },
+      {
+        "id": "bldg_7ff86282-ea5e-4445-9a37-082a1d28323d",
+        "source": "53394655_bldg_6697_op.gml",
+        "boundaries": 1756,
+        "parts": 0
+      },
+      {
+        "id": "bldg_a51ef926-e19d-405c-b242-a576132eeae5",
+        "source": "53392651_bldg_6697_op.gml",
+        "boundaries": 1644,
+        "parts": 0
+      },
+      {
+        "id": "bldg_7edfdc76-b5f3-4c40-9205-581773143c79",
+        "source": "53393559_bldg_6697_op.gml",
+        "boundaries": 1609,
+        "parts": 0
+      },
+      {
+        "id": "bldg_3a8f49d0-008b-4e10-9cc6-9167d6ecd4be",
+        "source": "53394507_bldg_6697_op.gml",
+        "boundaries": 1187,
+        "parts": 0
+      },
+      {
+        "id": "bldg_1ab9da34-f9f3-4765-af19-ba9c14024304",
+        "source": "53392672_bldg_6697_op.gml",
+        "boundaries": 993,
+        "parts": 0
+      },
+      {
+        "id": "bldg_de6e6745-7a8e-41e7-8c1f-a2801d3994c8",
+        "source": "53392641_bldg_6697_op.gml",
+        "boundaries": 986,
+        "parts": 0
+      },
+      {
+        "id": "bldg_de56d771-11e9-43bd-9282-8852b3c7bfc6",
+        "source": "53393690_bldg_6697_op.gml",
+        "boundaries": 982,
+        "parts": 0
+      },
+      {
+        "id": "bldg_a882c67a-df66-484f-a0cb-a4f8e1c646db",
+        "source": "53394665_bldg_6697_op.gml",
+        "boundaries": 979,
+        "parts": 0
+      },
+      {
+        "id": "bldg_94d9bf2e-52be-47c7-a446-5724bfcbe220",
+        "source": "53393682_bldg_6697_op.gml",
+        "boundaries": 959,
+        "parts": 0
+      },
+      {
+        "id": "bldg_3d5e3046-2fd3-42bd-8d09-9752650a5a06",
+        "source": "53393680_bldg_6697_op.gml",
+        "boundaries": 944,
+        "parts": 0
+      },
+      {
+        "id": "bldg_47420a04-982c-4178-8430-87ae1a039d63",
+        "source": "53393651_bldg_6697_op.gml",
+        "boundaries": 935,
+        "parts": 0
+      },
+      {
+        "id": "bldg_6006c155-ea28-4848-81b0-c37444f2bd96",
+        "source": "53393598_bldg_6697_op.gml",
+        "boundaries": 895,
+        "parts": 0
+      },
+      {
+        "id": "bldg_1305c678-0e95-4113-af5a-1980b5f8952f",
+        "source": "53393681_bldg_6697_op.gml",
+        "boundaries": 847,
+        "parts": 0
+      },
+      {
+        "id": "bldg_89109ed2-cd36-4479-b74e-08df24bbafc5",
+        "source": "53393673_bldg_6697_op.gml",
+        "boundaries": 843,
+        "parts": 0
+      },
+      {
+        "id": "bldg_df84fd73-6a2e-4c2c-9cbc-911c67e488df",
+        "source": "53393690_bldg_6697_op.gml",
+        "boundaries": 842,
+        "parts": 0
+      },
+      {
+        "id": "bldg_fb6ec863-5418-4302-9f9a-6882e17e5094",
+        "source": "53394509_bldg_6697_op.gml",
+        "boundaries": 832,
+        "parts": 0
+      }
+    ]
+  },
+  "buildings_per_source_top": [
+    {
+      "source": "53394691_bldg_6697_op.gml",
+      "nodes": 6517
+    },
+    {
+      "source": "53394692_bldg_6697_op.gml",
+      "nodes": 6299
+    },
+    {
+      "source": "53394551_bldg_6697_op.gml",
+      "nodes": 6175
+    },
+    {
+      "source": "53395517_bldg_6697_op.gml",
+      "nodes": 6129
+    },
+    {
+      "source": "53394550_bldg_6697_op.gml",
+      "nodes": 6107
+    },
+    {
+      "source": "53393527_bldg_6697_op.gml",
+      "nodes": 6106
+    },
+    {
+      "source": "53393537_bldg_6697_op.gml",
+      "nodes": 6102
+    },
+    {
+      "source": "53394541_bldg_6697_op.gml",
+      "nodes": 6079
+    },
+    {
+      "source": "53394655_bldg_6697_op.gml",
+      "nodes": 6054
+    },
+    {
+      "source": "53394696_bldg_6697_op.gml",
+      "nodes": 6010
+    },
+    {
+      "source": "53394531_bldg_6697_op.gml",
+      "nodes": 5974
+    },
+    {
+      "source": "53393526_bldg_6697_op.gml",
+      "nodes": 5934
+    },
+    {
+      "source": "53393517_bldg_6697_op.gml",
+      "nodes": 5926
+    },
+    {
+      "source": "53394663_bldg_6697_op.gml",
+      "nodes": 5894
+    },
+    {
+      "source": "53392586_bldg_6697_op.gml",
+      "nodes": 5883
+    }
+  ],
+  "osm": {
+    "osm_feature_nodes": 3830408,
+    "by_kind": {
+      "building": 2484449,
+      "road": 836785,
+      "poi": 263523,
+      "other": 100936,
+      "furniture": 65740,
+      "landuse": 49378,
+      "vegetation": 26127,
+      "water": 3470
+    },
+    "matched": 1235353,
+    "orphan": 2595055,
+    "orphan_rate": 0.6775,
+    "orphan_reasons": {
+      "no_overlap": 1351032,
+      "no_pykci_type": 1082436,
+      "no_containing_building": 161587
+    },
+    "enriched_buildings": 1181049,
+    "pois": 91487,
+    "dup_osm_id": 0
+  },
+  "roofmat": {
+    "total_buildings": 2005762,
+    "with_prediction": 0,
+    "coverage": 0.0
+  },
+  "lod3": {
+    "enriched_buildings": 0,
+    "facade_edges": 0
+  },
+  "measured_height": {
+    "n": 1981872,
+    "min": 0.1,
+    "max": 355.5,
+    "mean": 9.1162,
+    "median": 7.9,
+    "p90": 12.8,
+    "p99": 35.6,
+    "stdev": 6.0321
+  },
+  "measured_height_sentinels": 23890,
+  "missing_source": {
+    "buildings": 0,
+    "osm": 0
+  },
+  "nodes_per_building": {
+    "min": 15,
+    "max": 135567,
+    "avg": 28.87079773173431,
+    "p50": 21.0,
+    "p90": 37.0,
+    "p99": 168.0,
+    "buildings": 2005762
+  },
+  "geoms_per_building": {
+    "min": 6,
+    "max": 64750,
+    "avg": 12.101005503146098,
+    "p50": 9.0,
+    "p90": 16.0,
+    "p99": 66.0,
+    "buildings": 2005762,
+    "unit": "GeometryPolygon nodes in the building's CityGML subtree"
+  },
+  "attrs_per_building": {
+    "min": 13,
+    "max": 22,
+    "avg": 17.709120523772793,
+    "p50": 18.0,
+    "p90": 19.0,
+    "p99": 20.0,
+    "buildings": 2005762,
+    "unit": "thematic property keys on the Building node (identity/bbox/spatial-plugin/OSM/LoD3/ML keys excluded)"
+  },
+  "buildings_no_geometry": 0,
+  "orphan_nodes": 0
+}

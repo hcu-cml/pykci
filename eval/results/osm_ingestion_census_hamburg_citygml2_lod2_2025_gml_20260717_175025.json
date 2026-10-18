@@ -1,0 +1,75 @@
+{
+  "timestamp": "20260717_175025",
+  "pbf": "input\\osm\\hamburg-260629.osm.pbf",
+  "dataset": "hamburg_citygml2_lod2_2025.gml",
+  "crs": "EPSG:25832",
+  "buffer_m": 10.0,
+  "city_bbox_wgs84": [
+    8.493798891767284,
+    53.40296480993336,
+    10.334345274666013,
+    53.92436727245531
+  ],
+  "source": {
+    "layer_admitted": {
+      "multipolygons": 417309,
+      "points": 540664,
+      "lines": 230166
+    },
+    "kind_counts": {
+      "water": 2939,
+      "vegetation": 7753,
+      "other": 140660,
+      "building": 354162,
+      "landuse": 20810,
+      "road": 281056,
+      "poi": 81353,
+      "furniture": 299406
+    },
+    "geometry_skipped": 0,
+    "duplicate_ids": 0,
+    "expected_nodes": 1188139
+  },
+  "graph": {
+    "osm_feature_nodes": 1188139,
+    "kind_counts": {
+      "water": 2939,
+      "vegetation": 7753,
+      "other": 140660,
+      "building": 354162,
+      "landuse": 20810,
+      "road": 281056,
+      "poi": 81353,
+      "furniture": 299406
+    },
+    "matched_split": {
+      "False": 831432,
+      "True": 356707
+    }
+  },
+  "scope_unfiltered": {
+    "points": 540664,
+    "lines": 274507,
+    "multipolygons": 417309,
+    "multilinestrings": 1425,
+    "other_relations": 8613
+  },
+  "per_feature_findings": {},
+  "global_checks": {
+    "flag_null": 0,
+    "matched_without_anchor": 0,
+    "orphan_with_anchor": 0,
+    "orphan_without_reason": 0,
+    "missing_provenance": 0,
+    "missing_part_of": 0,
+    "missing_rtree": 0,
+    "missing_bbox_wkt": 0,
+    "enriched_by_bad_props": 0,
+    "has_poi_bad_props": 0,
+    "bad_anchor_labels": 0,
+    "anchor_namespace_violations": 0
+  },
+  "global_failures": {},
+  "passed": true,
+  "city": "hamburg_citygml2_lod2_2025_gml"
+}

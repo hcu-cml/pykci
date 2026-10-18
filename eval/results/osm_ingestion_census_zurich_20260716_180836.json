@@ -1,0 +1,75 @@
+{
+  "timestamp": "20260716_180836",
+  "pbf": "input\\osm\\switzerland-260704.osm.pbf",
+  "dataset": "zurich",
+  "crs": "EPSG:2056",
+  "buffer_m": 10.0,
+  "city_bbox_wgs84": [
+    8.336326218398064,
+    47.163390199485704,
+    9.045756619770422,
+    47.69583781954171
+  ],
+  "source": {
+    "layer_admitted": {
+      "multipolygons": 591777,
+      "points": 813108,
+      "lines": 455516
+    },
+    "kind_counts": {
+      "vegetation": 13480,
+      "building": 460631,
+      "furniture": 424171,
+      "water": 4762,
+      "other": 253342,
+      "landuse": 43710,
+      "road": 502180,
+      "poi": 158125
+    },
+    "geometry_skipped": 0,
+    "duplicate_ids": 0,
+    "expected_nodes": 1860401
+  },
+  "graph": {
+    "osm_feature_nodes": 1860401,
+    "kind_counts": {
+      "vegetation": 13480,
+      "building": 460631,
+      "furniture": 424171,
+      "water": 4762,
+      "other": 253342,
+      "landuse": 43710,
+      "road": 502180,
+      "poi": 158125
+    },
+    "matched_split": {
+      "False": 1757607,
+      "True": 102794
+    }
+  },
+  "scope_unfiltered": {
+    "points": 813108,
+    "lines": 524034,
+    "multipolygons": 591777,
+    "multilinestrings": 5196,
+    "other_relations": 6911
+  },
+  "per_feature_findings": {},
+  "global_checks": {
+    "flag_null": 0,
+    "matched_without_anchor": 0,
+    "orphan_with_anchor": 0,
+    "orphan_without_reason": 0,
+    "missing_provenance": 0,
+    "missing_part_of": 0,
+    "missing_rtree": 0,
+    "missing_bbox_wkt": 0,
+    "enriched_by_bad_props": 0,
+    "has_poi_bad_props": 0,
+    "bad_anchor_labels": 0,
+    "anchor_namespace_violations": 0
+  },
+  "global_failures": {},
+  "passed": true,
+  "city": "zurich"
+}

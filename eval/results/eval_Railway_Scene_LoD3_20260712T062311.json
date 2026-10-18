@@ -1,5 +1,5 @@
 {
-  "timestamp": "20260516T034622",
+  "timestamp": "20260712T062311",
   "source_file": "input\\citygml\\Railway_Scene_LoD3\\Railway_Scene_LoD3.gml",
   "export_file": "output\\citygml\\Railway_Scene_LoD3_export.gml",
   "summary": {
@@ -98,21 +98,51 @@
           "GMLID_SO086970_1053_8814": 0
         },
         "bsurf_counts_per_id": {
-          "GMLID_SO0158953_776_12462": {},
-          "GMLID_SO092422_3593_9527": {},
-          "GMLID_SO0200811_525_4986": {},
-          "GMLID_SO0321978_1466_7441": {},
-          "GMLID_SO0260143_1214_1315": {},
-          "GMLID_SO0400934_2926_3381": {},
-          "GMLID_SO0124800_3522_13577": {},
-          "GMLID_SO0443764_1492_9667": {},
-          "GMLID_SO015374_872_14131": {},
-          "GMLID_SO081792_2341_11961": {},
-          "GMLID_SO0283142_1335_8999": {},
-          "GMLID_SO0107241_3793_12555": {},
-          "GMLID_SO0286258_965_2893": {},
-          "GMLID_SO0410128_214_10515": {},
-          "GMLID_SO086970_1053_8814": {}
+          "GMLID_SO0158953_776_12462": [
+            {}
+          ],
+          "GMLID_SO092422_3593_9527": [
+            {}
+          ],
+          "GMLID_SO0200811_525_4986": [
+            {}
+          ],
+          "GMLID_SO0321978_1466_7441": [
+            {}
+          ],
+          "GMLID_SO0260143_1214_1315": [
+            {}
+          ],
+          "GMLID_SO0400934_2926_3381": [
+            {}
+          ],
+          "GMLID_SO0124800_3522_13577": [
+            {}
+          ],
+          "GMLID_SO0443764_1492_9667": [
+            {}
+          ],
+          "GMLID_SO015374_872_14131": [
+            {}
+          ],
+          "GMLID_SO081792_2341_11961": [
+            {}
+          ],
+          "GMLID_SO0283142_1335_8999": [
+            {}
+          ],
+          "GMLID_SO0107241_3793_12555": [
+            {}
+          ],
+          "GMLID_SO0286258_965_2893": [
+            {}
+          ],
+          "GMLID_SO0410128_214_10515": [
+            {}
+          ],
+          "GMLID_SO086970_1053_8814": [
+            {}
+          ]
         },
         "scalar_per_id": {
           "GMLID_SO0158953_776_12462": {
@@ -198,30 +228,38 @@
           "GMLID_BUI180021_673_14143": 456
         },
         "bsurf_counts_per_id": {
-          "GMLID_BUI142242_863_347": {
-            "GroundSurface": 1,
-            "WallSurface": 2,
-            "RoofSurface": 1,
-            "ClosureSurface": 2
-          },
-          "GMLID_BUI336993_213_9312": {
-            "WallSurface": 2,
-            "RoofSurface": 1,
-            "ClosureSurface": 2,
-            "GroundSurface": 1
-          },
-          "GMLID_BUI289877_1911_4122": {
-            "WallSurface": 2,
-            "GroundSurface": 1,
-            "ClosureSurface": 2,
-            "RoofSurface": 1
-          },
-          "GMLID_BUI180021_673_14143": {
-            "GroundSurface": 1,
-            "WallSurface": 2,
-            "RoofSurface": 1,
-            "ClosureSurface": 2
-          }
+          "GMLID_BUI142242_863_347": [
+            {
+              "GroundSurface": 1,
+              "WallSurface": 2,
+              "RoofSurface": 1,
+              "ClosureSurface": 2
+            }
+          ],
+          "GMLID_BUI336993_213_9312": [
+            {
+              "WallSurface": 2,
+              "RoofSurface": 1,
+              "ClosureSurface": 2,
+              "GroundSurface": 1
+            }
+          ],
+          "GMLID_BUI289877_1911_4122": [
+            {
+              "WallSurface": 2,
+              "GroundSurface": 1,
+              "ClosureSurface": 2,
+              "RoofSurface": 1
+            }
+          ],
+          "GMLID_BUI180021_673_14143": [
+            {
+              "GroundSurface": 1,
+              "WallSurface": 2,
+              "RoofSurface": 1,
+              "ClosureSurface": 2
+            }
+          ]
         },
         "scalar_per_id": {
           "GMLID_BUI142242_863_347": {},
@@ -292,16 +330,36 @@
           "GMLID_21614432_375009_394": 10105
         },
         "bsurf_counts_per_id": {
-          "GMLID_46150217_194492_1237": {},
-          "GMLID_53596160_235206_887": {},
-          "GMLID_48290571_3377_526": {},
-          "GMLID_55518178_9051_1323": {},
-          "GMLID_43172916_275975_492": {},
-          "GMLID_0632464_192141_968": {},
-          "GMLID_2633647_39464_319": {},
-          "GMLID_18468614_329001_318": {},
-          "GMLID_10415082_319158_1266": {},
-          "GMLID_21614432_375009_394": {}
+          "GMLID_46150217_194492_1237": [
+            {}
+          ],
+          "GMLID_53596160_235206_887": [
+            {}
+          ],
+          "GMLID_48290571_3377_526": [
+            {}
+          ],
+          "GMLID_55518178_9051_1323": [
+            {}
+          ],
+          "GMLID_43172916_275975_492": [
+            {}
+          ],
+          "GMLID_0632464_192141_968": [
+            {}
+          ],
+          "GMLID_2633647_39464_319": [
+            {}
+          ],
+          "GMLID_18468614_329001_318": [
+            {}
+          ],
+          "GMLID_10415082_319158_1266": [
+            {}
+          ],
+          "GMLID_21614432_375009_394": [
+            {}
+          ]
         },
         "scalar_per_id": {
           "GMLID_46150217_194492_1237": {
@@ -370,10 +428,18 @@
           "GMLID_BUI30683_572_6686": 745
         },
         "bsurf_counts_per_id": {
-          "GMLID_BUI205585_1385_1373": {},
-          "GMLID_BUI51891_765_738": {},
-          "GMLID_BUI100628_817_8083": {},
-          "GMLID_BUI30683_572_6686": {}
+          "GMLID_BUI205585_1385_1373": [
+            {}
+          ],
+          "GMLID_BUI51891_765_738": [
+            {}
+          ],
+          "GMLID_BUI100628_817_8083": [
+            {}
+          ],
+          "GMLID_BUI30683_572_6686": [
+            {}
+          ]
         },
         "scalar_per_id": {
           "GMLID_BUI205585_1385_1373": {},
@@ -418,23 +484,29 @@
           "GMLID_BUI130363_1235_6047": 412
         },
         "bsurf_counts_per_id": {
-          "GMLID_BUI184698_512_898": {
-            "WallSurface": 9,
-            "GroundSurface": 1,
-            "RoofSurface": 3
-          },
-          "GMLID_BUI46739_1739_10911": {
-            "WallSurface": 11,
-            "RoofSurface": 3,
-            "OuterCeilingSurface": 3,
-            "OuterFloorSurface": 1,
-            "GroundSurface": 1
-          },
-          "GMLID_BUI130363_1235_6047": {
-            "WallSurface": 5,
-            "RoofSurface": 2,
-            "GroundSurface": 1
-          }
+          "GMLID_BUI184698_512_898": [
+            {
+              "WallSurface": 9,
+              "GroundSurface": 1,
+              "RoofSurface": 3
+            }
+          ],
+          "GMLID_BUI46739_1739_10911": [
+            {
+              "WallSurface": 11,
+              "RoofSurface": 3,
+              "OuterCeilingSurface": 3,
+              "OuterFloorSurface": 1,
+              "GroundSurface": 1
+            }
+          ],
+          "GMLID_BUI130363_1235_6047": [
+            {
+              "WallSurface": 5,
+              "RoofSurface": 2,
+              "GroundSurface": 1
+            }
+          ]
         },
         "scalar_per_id": {
           "GMLID_BUI184698_512_898": {
@@ -511,17 +583,39 @@
           "GMLID_855011_330784_753": 101
         },
         "bsurf_counts_per_id": {
-          "GMLID_7431654_78949_792": {},
-          "GMLID_0528986_170479_94": {},
-          "GMLID_4323540_367099_910": {},
-          "GMLID_1381455_184173_656": {},
-          "GMLID_1429491_351612_1485": {},
-          "GMLID_5361967_192822_672": {},
-          "GMLID_2108434_31807_876": {},
-          "GMLID_0373494_301709_129": {},
-          "GMLID_6162422_289094_1279": {},
-          "GMLID_3313190_307178_612": {},
-          "GMLID_855011_330784_753": {}
+          "GMLID_7431654_78949_792": [
+            {}
+          ],
+          "GMLID_0528986_170479_94": [
+            {}
+          ],
+          "GMLID_4323540_367099_910": [
+            {}
+          ],
+          "GMLID_1381455_184173_656": [
+            {}
+          ],
+          "GMLID_1429491_351612_1485": [
+            {}
+          ],
+          "GMLID_5361967_192822_672": [
+            {}
+          ],
+          "GMLID_2108434_31807_876": [
+            {}
+          ],
+          "GMLID_0373494_301709_129": [
+            {}
+          ],
+          "GMLID_6162422_289094_1279": [
+            {}
+          ],
+          "GMLID_3313190_307178_612": [
+            {}
+          ],
+          "GMLID_855011_330784_753": [
+            {}
+          ]
         },
         "scalar_per_id": {
           "GMLID_7431654_78949_792": {
@@ -574,7 +668,9 @@
           "GMLID_TIN436865_187531_1154": 0
         },
         "bsurf_counts_per_id": {
-          "GMLID_TIN436865_187531_1154": {}
+          "GMLID_TIN436865_187531_1154": [
+            {}
+          ]
         },
         "scalar_per_id": {
           "GMLID_TIN436865_187531_1154": {}
@@ -595,10 +691,12 @@
           "GMLID_0314272_32937_848": 1610
         },
         "bsurf_counts_per_id": {
-          "GMLID_0314272_32937_848": {
-            "WaterGroundSurface": 1,
-            "WaterSurface": 1
-          }
+          "GMLID_0314272_32937_848": [
+            {
+              "WaterGroundSurface": 1,
+              "WaterSurface": 1
+            }
+          ]
         },
         "scalar_per_id": {
           "GMLID_0314272_32937_848": {
@@ -621,7 +719,9 @@
           "UUID_f488e8ce-b953-4b35-a3fe-a394fb203868": 0
         },
         "bsurf_counts_per_id": {
-          "UUID_f488e8ce-b953-4b35-a3fe-a394fb203868": {}
+          "UUID_f488e8ce-b953-4b35-a3fe-a394fb203868": [
+            {}
+          ]
         },
         "scalar_per_id": {
           "UUID_f488e8ce-b953-4b35-a3fe-a394fb203868": {}
@@ -661,7 +761,7 @@
     {
       "name": "building_bsurf_count[GMLID_BUI184698_512_898]",
       "status": "PASS",
-      "detail": "13 boundary surfaces ({'WallSurface': 9, 'GroundSurface': 1, 'RoofSurface': 3})"
+      "detail": "[13] boundary surfaces (1 occurrence(s))"
     },
     {
       "name": "building_poly_count[GMLID_BUI184698_512_898]",
@@ -671,7 +771,7 @@
     {
       "name": "building_bsurf_count[GMLID_BUI46739_1739_10911]",
       "status": "PASS",
-      "detail": "19 boundary surfaces ({'WallSurface': 11, 'RoofSurface': 3, 'OuterCeilingSurface': 3, 'OuterFloorSurface': 1, 'GroundSurface': 1})"
+      "detail": "[19] boundary surfaces (1 occurrence(s))"
     },
     {
       "name": "building_poly_count[GMLID_BUI46739_1739_10911]",
@@ -681,7 +781,7 @@
     {
       "name": "building_bsurf_count[GMLID_BUI130363_1235_6047]",
       "status": "PASS",
-      "detail": "8 boundary surfaces ({'WallSurface': 5, 'RoofSurface': 2, 'GroundSurface': 1})"
+      "detail": "[8] boundary surfaces (1 occurrence(s))"
     },
     {
       "name": "building_poly_count[GMLID_BUI130363_1235_6047]",
@@ -816,12 +916,12 @@
     {
       "name": "cityobject_bbox_wkt_stored",
       "status": "PASS",
-      "detail": "46/47 CityObject nodes have bbox_wkt stored"
+      "detail": "48/47 CityObject nodes have bbox_wkt stored"
     },
     {
       "name": "cityobject_location_stored",
       "status": "PASS",
-      "detail": "46/47 CityObject nodes have location point stored"
+      "detail": "48/47 CityObject nodes have location point stored"
     },
     {
       "name": "unsupported_feature_type[GenericCityObject]",
@@ -831,7 +931,7 @@
     {
       "name": "export_file_exists",
       "status": "PASS",
-      "detail": "39,610 KB"
+      "detail": "40,455 KB"
     },
     {
       "name": "export_parses_as_xml",

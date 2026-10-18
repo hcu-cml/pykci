@@ -1,0 +1,492 @@
+{
+  "phase": "precheck",
+  "city": "zurich",
+  "generated": "20260716_170613",
+  "citygml": {
+    "files": 78,
+    "buildings_total": 102673,
+    "distinct_gml_ids": 102628,
+    "per_file": {
+      "swissBUILDINGS3D_3-0_1031-42.gml": {
+        "buildings": 4387,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1031-44.gml": {
+        "buildings": 105,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1032-31.gml": {
+        "buildings": 2017,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1032-33.gml": {
+        "buildings": 101,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1032-34.gml": {
+        "buildings": 1362,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1032-43.gml": {
+        "buildings": 469,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1032-44.gml": {
+        "buildings": 2532,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1051-12.gml": {
+        "buildings": 4,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1051-23.gml": {
+        "buildings": 13,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1051-24.gml": {
+        "buildings": 9,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1051-31.gml": {
+        "buildings": 175,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1051-33.gml": {
+        "buildings": 313,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1051-41.gml": {
+        "buildings": 946,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1051-42.gml": {
+        "buildings": 5,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1051-43.gml": {
+        "buildings": 43,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1052-12.gml": {
+        "buildings": 3,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1052-14.gml": {
+        "buildings": 17,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1052-21.gml": {
+        "buildings": 0,
+        "srs": null
+      },
+      "swissBUILDINGS3D_3-0_1052-22.gml": {
+        "buildings": 441,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1052-23.gml": {
+        "buildings": 704,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1052-24.gml": {
+        "buildings": 484,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1052-41.gml": {
+        "buildings": 17,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1052-42.gml": {
+        "buildings": 940,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1052-44.gml": {
+        "buildings": 1497,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1070-22.gml": {
+        "buildings": 694,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1070-24.gml": {
+        "buildings": 982,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1070-42.gml": {
+        "buildings": 117,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1070-44.gml": {
+        "buildings": 2264,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1071-11.gml": {
+        "buildings": 6,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1071-43.gml": {
+        "buildings": 19,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1072-22.gml": {
+        "buildings": 11,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1073-11.gml": {
+        "buildings": 503,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1073-13.gml": {
+        "buildings": 1686,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1073-31.gml": {
+        "buildings": 1009,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1073-33.gml": {
+        "buildings": 106,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1073-34.gml": {
+        "buildings": 1634,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1090-22.gml": {
+        "buildings": 2032,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1090-24.gml": {
+        "buildings": 1823,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1090-42.gml": {
+        "buildings": 4122,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1091-12.gml": {
+        "buildings": 2491,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1091-14.gml": {
+        "buildings": 6333,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1091-21.gml": {
+        "buildings": 7653,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1091-22.gml": {
+        "buildings": 766,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1091-23.gml": {
+        "buildings": 9214,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1091-24.gml": {
+        "buildings": 1312,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1091-32.gml": {
+        "buildings": 4920,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1091-33.gml": {
+        "buildings": 377,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1091-34.gml": {
+        "buildings": 247,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1091-41.gml": {
+        "buildings": 11261,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1091-42.gml": {
+        "buildings": 2262,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1091-43.gml": {
+        "buildings": 3121,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1091-44.gml": {
+        "buildings": 103,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1093-11.gml": {
+        "buildings": 41,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1093-13.gml": {
+        "buildings": 3,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1093-14.gml": {
+        "buildings": 171,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1093-32.gml": {
+        "buildings": 45,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1093-34.gml": {
+        "buildings": 2,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1093-43.gml": {
+        "buildings": 367,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1110-24.gml": {
+        "buildings": 1806,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1111-11.gml": {
+        "buildings": 1111,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1111-12.gml": {
+        "buildings": 5,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1111-13.gml": {
+        "buildings": 76,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1111-21.gml": {
+        "buildings": 2,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1111-31.gml": {
+        "buildings": 116,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1111-33.gml": {
+        "buildings": 31,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1112-41.gml": {
+        "buildings": 13,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1112-42.gml": {
+        "buildings": 936,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1112-43.gml": {
+        "buildings": 19,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1112-44.gml": {
+        "buildings": 4353,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1113-12.gml": {
+        "buildings": 14,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1113-14.gml": {
+        "buildings": 284,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1113-21.gml": {
+        "buildings": 139,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1113-31.gml": {
+        "buildings": 775,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1113-32.gml": {
+        "buildings": 2212,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1132-12.gml": {
+        "buildings": 2926,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1132-13.gml": {
+        "buildings": 8,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1132-14.gml": {
+        "buildings": 1172,
+        "srs": "EPSG:2056"
+      },
+      "swissBUILDINGS3D_3-0_1132-21.gml": {
+        "buildings": 2394,
+        "srs": "EPSG:2056"
+      }
+    },
+    "srs_seen": {
+      "EPSG:2056": 77
+    },
+    "dominant_srs": "EPSG:2056",
+    "dominant_epsg": "EPSG:2056",
+    "duplicate_ids": {
+      "colliding_id_count": 17,
+      "buildings_involved": 62,
+      "top": [
+        [
+          "ID_",
+          30
+        ],
+        [
+          "ID_6C000625-236B-4567-B69F-AFF202B85F5A",
+          2
+        ],
+        [
+          "ID_7004B7EE-A83E-4353-B52C-6852D8532D50",
+          2
+        ],
+        [
+          "ID_3D611D32-10B0-499D-8D16-72410663C77E",
+          2
+        ],
+        [
+          "ID_5CC367CE-DD0D-4058-B71C-49CF9481050B",
+          2
+        ],
+        [
+          "ID_63FD7DE4-9F2D-4DF0-BD87-86760470B43D",
+          2
+        ],
+        [
+          "ID_10C4883F-6AA1-46A2-B57E-A3606C4D35C1",
+          2
+        ],
+        [
+          "ID_20ED8585-33A8-480E-9D89-D50D877AC2CC",
+          2
+        ],
+        [
+          "ID_439025FC-01EF-41E1-8CBA-146AE90776EF",
+          2
+        ],
+        [
+          "ID_DF116B92-BDEC-40BA-95A0-15ADFFDEC6D3",
+          2
+        ],
+        [
+          "ID_31D38AE0-05D9-4EC6-B4AD-2C1098BAD104",
+          2
+        ],
+        [
+          "ID_47EBD6FB-4383-489E-B91A-8E686DBA3D72",
+          2
+        ],
+        [
+          "ID_C92E0E5F-9FE8-4F8E-90BF-82E117071CDD",
+          2
+        ],
+        [
+          "ID_40C30522-294B-4CA2-A969-C75EFBCB5FF8",
+          2
+        ],
+        [
+          "ID_B1582C1E-97E7-4E23-B46C-F989926EE5BF",
+          2
+        ],
+        [
+          "ID_841EC70E-E57C-4EBE-BBEB-9A60DAC84280",
+          2
+        ],
+        [
+          "ID_41A37A14-98BA-44F0-8EBA-32827920A2AC",
+          2
+        ]
+      ]
+    },
+    "placeholder_ids": {
+      "id_count": 1,
+      "buildings_involved": 30,
+      "values": [
+        "ID_"
+      ]
+    },
+    "missing_id": 0,
+    "no_geometry": 5,
+    "degenerate_rings": 0,
+    "nonfinite_coords": 0,
+    "unclosed_rings": 0,
+    "height": {
+      "n": 100351,
+      "min": 1.0,
+      "max": 189.68,
+      "mean": 10.269,
+      "median": 9.39,
+      "p90": 17.75,
+      "p99": 26.405,
+      "stdev": 5.7492
+    },
+    "height_sentinels": 0,
+    "vertex_count": {
+      "n": 102673,
+      "min": 0.0,
+      "max": 316924.0,
+      "mean": 727.0373,
+      "median": 496.0,
+      "p90": 1460.0,
+      "p99": 4004.0,
+      "stdev": 1562.0555
+    },
+    "vertex_outliers": {
+      "threshold": 20020.0,
+      "count": 15
+    },
+    "spatial_outliers": 0,
+    "crs_range_issue": null,
+    "functions_top": [],
+    "roof_types_top": [],
+    "roofmat": {
+      "buildings_with_prediction": 0,
+      "coverage": 0.0,
+      "class_histogram": {}
+    },
+    "examples": {
+      "missing_id": [],
+      "no_geom": [
+        "swissBUILDINGS3D_3-0_1032-44.gml:ID_",
+        "swissBUILDINGS3D_3-0_1070-44.gml:ID_",
+        "swissBUILDINGS3D_3-0_1091-14.gml:ID_",
+        "swissBUILDINGS3D_3-0_1091-21.gml:ID_",
+        "swissBUILDINGS3D_3-0_1091-23.gml:ID_5CC367CE-DD0D-4058-B71C-49CF9481050B"
+      ],
+      "degenerate": [],
+      "nonfinite": [],
+      "unclosed": [],
+      "placeholder": [
+        "swissBUILDINGS3D_3-0_1031-44.gml:ID_",
+        "swissBUILDINGS3D_3-0_1032-31.gml:ID_",
+        "swissBUILDINGS3D_3-0_1032-33.gml:ID_",
+        "swissBUILDINGS3D_3-0_1032-43.gml:ID_",
+        "swissBUILDINGS3D_3-0_1032-44.gml:ID_",
+        "swissBUILDINGS3D_3-0_1032-44.gml:ID_",
+        "swissBUILDINGS3D_3-0_1051-41.gml:ID_",
+        "swissBUILDINGS3D_3-0_1052-23.gml:ID_",
+        "swissBUILDINGS3D_3-0_1052-23.gml:ID_",
+        "swissBUILDINGS3D_3-0_1052-42.gml:ID_",
+        "swissBUILDINGS3D_3-0_1052-44.gml:ID_",
+        "swissBUILDINGS3D_3-0_1070-22.gml:ID_",
+        "swissBUILDINGS3D_3-0_1070-24.gml:ID_",
+        "swissBUILDINGS3D_3-0_1070-42.gml:ID_",
+        "swissBUILDINGS3D_3-0_1070-44.gml:ID_"
+      ]
+    }
+  },
+  "osm": {
+    "pbf": "switzerland-260704.osm.pbf",
+    "size_bytes": 537911901,
+    "ogrinfo_available": true,
+    "layer_feature_counts": {
+      "points": null,
+      "lines": null,
+      "multipolygons": null,
+      "multilinestrings": null,
+      "other_relations": null
+    },
+    "note": "Lossless per-feature OSM verification is eval/osm_ingestion_census.py (run it after fusion). This is a pre-ingest sanity count only."
+  }
+}

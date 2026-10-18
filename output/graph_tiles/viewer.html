@@ -83,7 +83,7 @@ html,body{width:100%;height:100%;overflow:hidden;
   <span id="opacity-val">50%</span>
   <button class="btn" id="btn-edges">Edges ON</button>
   <button class="btn" id="btn-mode">Dark Mode</button>
-  <span class="stat">131603 nodes &middot; 132639 edges &middot; 2026-06-16 13:40</span>
+  <span class="stat">15159103 nodes &middot; 20856796 edges &middot; 2026-07-08 06:11</span>
   <span id="loading">Loading nodes…</span>
 </div>
 
@@ -100,7 +100,7 @@ html,body{width:100%;height:100%;overflow:hidden;
 <div id="edge-note">Zoom in to see edges (&lt; 2 km altitude)</div>
 
 <script>
-const LABEL_COLORS   = {"Building": "#FF7043", "Dataset": "#FFD54F", "District": "#AED581", "City": "#81D4FA", "BuildingFunction": "#CE93D8", "RoofType": "#F48FB1", "RoofSurface": "#FF8A65", "WallSurface": "#CFD8DC", "GroundSurface": "#BCAAA4", "ClosureSurface": "#B0BEC5", "OuterCeilingSurface": "#90A4AE", "OuterFloorSurface": "#A1887F", "GeometrySolid": "#80CBC4", "GeometryPolygon": "#4DB6AC", "GeometryRing": "#26A69A", "GeometryLineString": "#80DEEA", "TerrainIntersection": "#A5D6A7", "Road": "#78909C", "Railway": "#CE93D8", "Track": "#AB47BC", "Square": "#FFCC80", "TransportationComplex": "#90A4AE", "SolitaryVegetationObject": "#81C784", "PlantCover": "#66BB6A", "WaterBody": "#4FC3F7", "LandUse": "#DCE775", "CityFurniture": "#CE93D8", "ReliefFeature": "#BCAAA4", "Bridge": "#A1887F", "Tunnel": "#78909C", "CityObjectGroup": "#80CBC4", "default": "#90A4AE"};
+const LABEL_COLORS   = {"Building": "#FF7043", "Dataset": "#FFD54F", "District": "#AED581", "City": "#81D4FA", "BuildingFunction": "#CE93D8", "RoofType": "#F48FB1", "RoofSurface": "#FF8A65", "WallSurface": "#CFD8DC", "GroundSurface": "#BCAAA4", "ClosureSurface": "#B0BEC5", "OuterCeilingSurface": "#90A4AE", "OuterFloorSurface": "#A1887F", "GeometrySolid": "#80CBC4", "GeometryPolygon": "#4DB6AC", "GeometryRing": "#26A69A", "GeometryLineString": "#80DEEA", "TerrainIntersection": "#A5D6A7", "Road": "#78909C", "Railway": "#CE93D8", "Track": "#AB47BC", "Square": "#FFCC80", "TransportationComplex": "#90A4AE", "SolitaryVegetationObject": "#81C784", "PlantCover": "#66BB6A", "WaterBody": "#4FC3F7", "LandUse": "#DCE775", "CityFurniture": "#CE93D8", "ReliefFeature": "#BCAAA4", "Bridge": "#A1887F", "Tunnel": "#78909C", "CityObjectGroup": "#80CBC4", "OsmBuilding": "#43A047", "OsmPOI": "#9CCC65", "Lod3Facade": "#FFB300", "Opening": "#FFE082", "default": "#90A4AE"};
 const BUILDING_URL   = "http://localhost:8080/tileset.json";
 const EDGE_ALT_LIMIT = 2000;   // metres — edges shown below this altitude
 

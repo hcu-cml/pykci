@@ -1,0 +1,160 @@
+{
+  "phase": "precheck",
+  "city": "nyc",
+  "generated": "20260716_182337",
+  "citygml": {
+    "files": 20,
+    "buildings_total": 1083437,
+    "distinct_gml_ids": 1083437,
+    "per_file": {
+      "DA10_3D_Buildings_Merged.gml": {
+        "buildings": 49847,
+        "srs": "EPSG:2263"
+      },
+      "DA11_3D_Buildings_Merged.gml": {
+        "buildings": 59675,
+        "srs": "EPSG:2263"
+      },
+      "DA12_3D_Buildings_Merged.gml": {
+        "buildings": 24038,
+        "srs": "EPSG:2263"
+      },
+      "DA13_3D_Buildings_Merged.gml": {
+        "buildings": 23777,
+        "srs": "EPSG:2263"
+      },
+      "DA14_3D_Buildings_Merged.gml": {
+        "buildings": 37521,
+        "srs": "EPSG:2263"
+      },
+      "DA15_3D_Buildings_Merged.gml": {
+        "buildings": 66596,
+        "srs": "EPSG:2263"
+      },
+      "DA16_3D_Buildings_Merged.gml": {
+        "buildings": 68256,
+        "srs": "EPSG:2263"
+      },
+      "DA17_3D_Buildings_Merged.gml": {
+        "buildings": 72124,
+        "srs": "EPSG:2263"
+      },
+      "DA18_3D_Buildings_Merged.gml": {
+        "buildings": 105486,
+        "srs": "EPSG:2263"
+      },
+      "DA19_3D_Buildings_Merged.gml": {
+        "buildings": 105569,
+        "srs": "EPSG:2263"
+      },
+      "DA1_3D_Buildings_Merged.gml": {
+        "buildings": 19408,
+        "srs": "EPSG:2263"
+      },
+      "DA20_3D_Buildings_Merged.gml": {
+        "buildings": 106165,
+        "srs": "EPSG:2263"
+      },
+      "DA2_3D_Buildings_Merged.gml": {
+        "buildings": 23348,
+        "srs": "EPSG:2263"
+      },
+      "DA3_3D_Buildings_Merged.gml": {
+        "buildings": 20918,
+        "srs": "EPSG:2263"
+      },
+      "DA4_3D_Buildings_Merged.gml": {
+        "buildings": 16665,
+        "srs": "EPSG:2263"
+      },
+      "DA5_3D_Buildings_Merged.gml": {
+        "buildings": 34082,
+        "srs": "EPSG:2263"
+      },
+      "DA6_3D_Buildings_Merged.gml": {
+        "buildings": 53073,
+        "srs": "EPSG:2263"
+      },
+      "DA7_3D_Buildings_Merged.gml": {
+        "buildings": 71378,
+        "srs": "EPSG:2263"
+      },
+      "DA8_3D_Buildings_Merged.gml": {
+        "buildings": 66277,
+        "srs": "EPSG:2263"
+      },
+      "DA9_3D_Buildings_Merged.gml": {
+        "buildings": 59234,
+        "srs": "EPSG:2263"
+      }
+    },
+    "srs_seen": {
+      "EPSG:2263": 20
+    },
+    "dominant_srs": "EPSG:2263",
+    "dominant_epsg": "EPSG:2263",
+    "duplicate_ids": {
+      "colliding_id_count": 0,
+      "buildings_involved": 0,
+      "top": []
+    },
+    "placeholder_ids": {
+      "id_count": 0,
+      "buildings_involved": 0,
+      "values": []
+    },
+    "missing_id": 0,
+    "no_geometry": 0,
+    "degenerate_rings": 0,
+    "nonfinite_coords": 0,
+    "unclosed_rings": 0,
+    "height": {
+      "n": 0
+    },
+    "height_sentinels": 0,
+    "vertex_count": {
+      "n": 1083437,
+      "min": 5.0,
+      "max": 18151.0,
+      "mean": 69.0093,
+      "median": 52.0,
+      "p90": 114.0,
+      "p99": 338.0,
+      "stdev": 83.8188
+    },
+    "vertex_outliers": {
+      "threshold": 20000,
+      "count": 0
+    },
+    "spatial_outliers": 0,
+    "crs_range_issue": null,
+    "functions_top": [],
+    "roof_types_top": [],
+    "roofmat": {
+      "buildings_with_prediction": 0,
+      "coverage": 0.0,
+      "class_histogram": {}
+    },
+    "examples": {
+      "missing_id": [],
+      "no_geom": [],
+      "degenerate": [],
+      "nonfinite": [],
+      "unclosed": [],
+      "placeholder": []
+    }
+  },
+  "osm": {
+    "pbf": "new-york-260703.osm.pbf",
+    "size_bytes": 492681832,
+    "ogrinfo_available": true,
+    "layer_feature_counts": {
+      "points": null,
+      "lines": null,
+      "multipolygons": null,
+      "multilinestrings": null,
+      "other_relations": null
+    },
+    "note": "Lossless per-feature OSM verification is eval/osm_ingestion_census.py (run it after fusion). This is a pre-ingest sanity count only."
+  }
+}

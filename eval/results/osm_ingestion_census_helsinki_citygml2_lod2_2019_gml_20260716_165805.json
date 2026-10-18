@@ -1,0 +1,75 @@
+{
+  "timestamp": "20260716_165805",
+  "pbf": "input\\osm\\finland-260704.osm.pbf",
+  "dataset": "helsinki_citygml2_lod2_2019.gml",
+  "crs": "EPSG:3879",
+  "buffer_m": 10.0,
+  "city_bbox_wgs84": [
+    24.948664734603007,
+    60.16480016597817,
+    25.005431558229112,
+    60.204663671351035
+  ],
+  "source": {
+    "layer_admitted": {
+      "multipolygons": 8344,
+      "points": 32406,
+      "lines": 15180
+    },
+    "kind_counts": {
+      "building": 3157,
+      "other": 13365,
+      "vegetation": 1264,
+      "water": 45,
+      "furniture": 10533,
+      "road": 20666,
+      "landuse": 1958,
+      "poi": 4942
+    },
+    "geometry_skipped": 0,
+    "duplicate_ids": 0,
+    "expected_nodes": 55930
+  },
+  "graph": {
+    "osm_feature_nodes": 55930,
+    "kind_counts": {
+      "building": 3157,
+      "other": 13365,
+      "vegetation": 1264,
+      "water": 45,
+      "furniture": 10533,
+      "road": 20666,
+      "landuse": 1958,
+      "poi": 4942
+    },
+    "matched_split": {
+      "True": 4281,
+      "False": 51649
+    }
+  },
+  "scope_unfiltered": {
+    "points": 32406,
+    "lines": 20961,
+    "multipolygons": 8344,
+    "multilinestrings": 235,
+    "other_relations": 381
+  },
+  "per_feature_findings": {},
+  "global_checks": {
+    "flag_null": 0,
+    "matched_without_anchor": 0,
+    "orphan_with_anchor": 0,
+    "orphan_without_reason": 0,
+    "missing_provenance": 0,
+    "missing_part_of": 0,
+    "missing_rtree": 0,
+    "missing_bbox_wkt": 0,
+    "enriched_by_bad_props": 0,
+    "has_poi_bad_props": 0,
+    "bad_anchor_labels": 0,
+    "anchor_namespace_violations": 0
+  },
+  "global_failures": {},
+  "passed": true,
+  "city": "helsinki_citygml2_lod2_2019_gml"
+}

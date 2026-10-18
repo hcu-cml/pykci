@@ -1,0 +1,294 @@
+{
+  "phase": "precheck",
+  "city": "helsinki",
+  "generated": "20260716_164726",
+  "citygml": {
+    "files": 1,
+    "buildings_total": 2980,
+    "distinct_gml_ids": 2919,
+    "per_file": {
+      "helsinki_citygml2_lod2_2019.gml": {
+        "buildings": 2980,
+        "srs": "urn:ogc:drf:crs:EPSG::3879"
+      }
+    },
+    "srs_seen": {
+      "urn:ogc:drf:crs:EPSG::3879": 1
+    },
+    "dominant_srs": "urn:ogc:drf:crs:EPSG::3879",
+    "dominant_epsg": "EPSG:3879",
+    "duplicate_ids": {
+      "colliding_id_count": 61,
+      "buildings_involved": 122,
+      "top": [
+        [
+          "BID_dfe55944-74c6-44b2-82ff-1820eeee2713",
+          2
+        ],
+        [
+          "BID_ce1bcfa8-a9e4-43e3-b27b-e772975077ac",
+          2
+        ],
+        [
+          "BID_c268d168-ddd0-44dd-a19b-b327940454b9",
+          2
+        ],
+        [
+          "BID_c4874819-3333-4829-a178-11b0d33f7900",
+          2
+        ],
+        [
+          "BID_3eb2b5dc-7420-426e-8462-0c6db92e0823",
+          2
+        ],
+        [
+          "BID_a8385f58-4d43-4a5f-b8a4-821573950f81",
+          2
+        ],
+        [
+          "BID_61fc6e9a-3347-4a73-bd26-3d4a06362e45",
+          2
+        ],
+        [
+          "BID_1b431d54-c7e5-4ed8-aa6a-fab0dfc9dd54",
+          2
+        ],
+        [
+          "BID_af955f0d-d963-41e3-a563-9dee154dfddf",
+          2
+        ],
+        [
+          "BID_f2b6e1f2-9a20-45ee-8e84-ac1a457470ed",
+          2
+        ],
+        [
+          "BID_5e10e2e5-9b57-4911-aed5-a9e9c998c485",
+          2
+        ],
+        [
+          "BID_7b481eea-a20a-4b3d-bf1d-c7a31503812d",
+          2
+        ],
+        [
+          "BID_29d5c8c9-a6e1-439b-ad4e-cceab20d9f9e",
+          2
+        ],
+        [
+          "BID_36219417-7791-4bee-b6ad-c73cf558f365",
+          2
+        ],
+        [
+          "BID_1ff0fc11-a905-4a99-8de6-5f7747ff9f26",
+          2
+        ],
+        [
+          "BID_508bfef0-6aaf-476b-8daa-1669665405c0",
+          2
+        ],
+        [
+          "BID_84d96d04-e1d4-4a42-a2a7-b9a9397c86b7",
+          2
+        ],
+        [
+          "BID_7c1ce529-f780-46c3-9aa8-440af70ddc7a",
+          2
+        ],
+        [
+          "BID_25d4f21c-7975-4acb-8e32-45af0e46783e",
+          2
+        ],
+        [
+          "BID_099c2f64-8d58-4823-bfa9-b8a7630c04a6",
+          2
+        ]
+      ]
+    },
+    "placeholder_ids": {
+      "id_count": 0,
+      "buildings_involved": 0,
+      "values": []
+    },
+    "missing_id": 0,
+    "no_geometry": 0,
+    "degenerate_rings": 0,
+    "nonfinite_coords": 0,
+    "unclosed_rings": 0,
+    "height": {
+      "n": 2972,
+      "min": 0.26,
+      "max": 135.0,
+      "mean": 13.5935,
+      "median": 10.11,
+      "p90": 26.71,
+      "p99": 46.358,
+      "stdev": 11.5186
+    },
+    "height_sentinels": 0,
+    "vertex_count": {
+      "n": 2980,
+      "min": 23.0,
+      "max": 5663.0,
+      "mean": 283.5174,
+      "median": 116.0,
+      "p90": 720.8,
+      "p99": 2176.47,
+      "stdev": 455.2468
+    },
+    "vertex_outliers": {
+      "threshold": 20000,
+      "count": 0
+    },
+    "spatial_outliers": 0,
+    "crs_range_issue": null,
+    "functions_top": [
+      [
+        "151",
+        18
+      ],
+      [
+        "039",
+        14
+      ],
+      [
+        "011",
+        10
+      ],
+      [
+        "719",
+        8
+      ],
+      [
+        "141",
+        8
+      ],
+      [
+        "511",
+        6
+      ],
+      [
+        "941",
+        4
+      ],
+      [
+        "012",
+        4
+      ],
+      [
+        "162",
+        2
+      ],
+      [
+        "692",
+        2
+      ],
+      [
+        "312",
+        2
+      ],
+      [
+        "531",
+        2
+      ],
+      [
+        "112",
+        2
+      ],
+      [
+        "169",
+        2
+      ],
+      [
+        "119",
+        2
+      ]
+    ],
+    "roof_types_top": [
+      [
+        "1000",
+        2917
+      ],
+      [
+        "3500",
+        17
+      ],
+      [
+        "1000;2100",
+        9
+      ],
+      [
+        "2100",
+        6
+      ],
+      [
+        "3200",
+        4
+      ],
+      [
+        "2100;1000",
+        3
+      ],
+      [
+        "2100;1000;2100",
+        2
+      ],
+      [
+        "2100;2100;2100",
+        2
+      ],
+      [
+        "2100;2100;1000",
+        1
+      ],
+      [
+        "2100;2100;2100;1000",
+        1
+      ],
+      [
+        "1000;3500;2100;3500;3109;2100",
+        1
+      ],
+      [
+        "2100;3500;2100;2100;2100;1000",
+        1
+      ],
+      [
+        "2100;1000;3500;2100;3200;2100",
+        1
+      ],
+      [
+        "3200;2100",
+        1
+      ],
+      [
+        "3500;3500",
+        1
+      ]
+    ],
+    "roofmat": {
+      "buildings_with_prediction": 0,
+      "coverage": 0.0,
+      "class_histogram": {}
+    },
+    "examples": {
+      "missing_id": [],
+      "no_geom": [],
+      "degenerate": [],
+      "nonfinite": [],
+      "unclosed": [],
+      "placeholder": []
+    }
+  },
+  "osm": {
+    "pbf": "finland-260704.osm.pbf",
+    "size_bytes": 727008250,
+    "ogrinfo_available": true,
+    "layer_feature_counts": {
+      "points": null,
+      "lines": null,
+      "multipolygons": null,
+      "multilinestrings": null,
+      "other_relations": null
+    },
+    "note": "Lossless per-feature OSM verification is eval/osm_ingestion_census.py (run it after fusion). This is a pre-ingest sanity count only."
+  }
+}

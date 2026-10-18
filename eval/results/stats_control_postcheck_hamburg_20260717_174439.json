@@ -1,0 +1,220 @@
+{
+  "phase": "postcheck",
+  "city": "hamburg",
+  "generated": "20260717_174439",
+  "dataset": "hamburg_citygml2_lod2_2025.gml",
+  "deep": true,
+  "orphans_scanned": true,
+  "datasets": [
+    {
+      "name": "hamburg_citygml2_lod2_2025.gml",
+      "crs": "urn:adv:crs:ETRS89_UTM32*DE_DHHN2016_NH",
+      "minx": 466355.917,
+      "miny": 5917227.923,
+      "maxx": 587611.77,
+      "maxy": 5975921.492
+    }
+  ],
+  "label_counts": {
+    "BoundarySurface": 4533833,
+    "Building": 388267,
+    "BuildingFunction": 131,
+    "BuildingPart": 0,
+    "City": 1,
+    "CityObject": 0,
+    "Dataset": 1,
+    "District": 1,
+    "Entity": 11451598,
+    "GeometryLineString": 619363,
+    "GeometryMultiSurface": 499,
+    "GeometryPolygon": 4951956,
+    "GeometryRing": 4957926,
+    "GeometrySolid": 388267,
+    "Lod3Facade": 3404,
+    "Opening": 499,
+    "OsmBuilding": 354162,
+    "OsmFeature": 1188139,
+    "OsmFurniture": 299406,
+    "OsmLandUse": 20810,
+    "OsmPOI": 81353,
+    "OsmRoad": 281056,
+    "OsmVegetation": 7753,
+    "OsmWater": 2939,
+    "RoofType": 7,
+    "SpatialLayer": 3,
+    "TerrainIntersection": 388248
+  },
+  "relationship_counts": {
+    "COVERS": 1,
+    "ENRICHED_BY": 373211,
+    "HAS_BOUNDARY": 4533530,
+    "HAS_EXTERIOR_RING": 4951956,
+    "HAS_FOOTPRINT": 417624,
+    "HAS_FUNCTION": 388267,
+    "HAS_INTERIOR_RING": 5970,
+    "HAS_LINE": 389197,
+    "HAS_LOD3_FACADE": 303,
+    "HAS_LOD_SOLID": 388267,
+    "HAS_LOD_SURFACE": 230665,
+    "HAS_OPENING": 499,
+    "HAS_POI": 22219,
+    "HAS_POLYGON": 4533833,
+    "HAS_ROOF_TYPE": 388267,
+    "HAS_SURFACE_MEMBER": 4534029,
+    "HAS_TERRAIN_INTERSECTION": 388248,
+    "LOCATED_IN": 1576406,
+    "PART_OF": 1576407,
+    "RTREE_CHILD": 23777,
+    "RTREE_METADATA": 3,
+    "RTREE_REFERENCE": 1576709,
+    "RTREE_ROOT": 3
+  },
+  "totals": {
+    "nodes": 17440924,
+    "relationships": 26299391
+  },
+  "id_synthesized_count": 0,
+  "building_count": 388267,
+  "boundaries_per_building": {
+    "n": 388267,
+    "min": 5.0,
+    "max": 583.0,
+    "mean": 11.6763,
+    "median": 8.0,
+    "p90": 20.0,
+    "p99": 57.0,
+    "stdev": 11.0453
+  },
+  "parts_per_building": {
+    "n": 388267,
+    "min": 0.0,
+    "max": 0.0,
+    "mean": 0.0,
+    "median": 0.0,
+    "p90": 0.0,
+    "p99": 0.0,
+    "stdev": 0.0
+  },
+  "collapse_suspects": {
+    "boundary_threshold": 456.0,
+    "count": 4,
+    "top": [
+      {
+        "id": "DEHHALKAP0007Qzq",
+        "source": "hamburg_citygml2_lod2_2025.gml",
+        "boundaries": 583,
+        "parts": 0
+      },
+      {
+        "id": "DEHHALKAV0000OJM",
+        "source": "hamburg_citygml2_lod2_2025.gml",
+        "boundaries": 515,
+        "parts": 0
+      },
+      {
+        "id": "DEHHALKAP0007QkA",
+        "source": "hamburg_citygml2_lod2_2025.gml",
+        "boundaries": 479,
+        "parts": 0
+      },
+      {
+        "id": "DEHHALKAJ0000ySI",
+        "source": "hamburg_citygml2_lod2_2025.gml",
+        "boundaries": 478,
+        "parts": 0
+      }
+    ]
+  },
+  "buildings_per_source_top": [
+    {
+      "source": "hamburg_citygml2_lod2_2025.gml",
+      "nodes": 388267
+    }
+  ],
+  "osm": {
+    "osm_feature_nodes": 1188139,
+    "by_kind": {
+      "building": 354162,
+      "furniture": 299406,
+      "road": 281056,
+      "other": 140660,
+      "poi": 81353,
+      "landuse": 20810,
+      "vegetation": 7753,
+      "water": 2939
+    },
+    "matched": 356707,
+    "orphan": 831432,
+    "orphan_rate": 0.6998,
+    "orphan_reasons": {
+      "no_pykci_type": 752624,
+      "no_containing_building": 56715,
+      "no_overlap": 22093
+    },
+    "enriched_buildings": 331318,
+    "pois": 22219,
+    "dup_osm_id": 0
+  },
+  "roofmat": {
+    "total_buildings": 388267,
+    "with_prediction": 194799,
+    "coverage": 0.5017,
+    "class_histogram": {
+      "roof_tiles": 108653,
+      "tar_paper": 51325,
+      "concrete": 22905,
+      "metal": 8666,
+      "glass": 3250
+    }
+  },
+  "lod3": {
+    "enriched_buildings": 17,
+    "facade_edges": 303
+  },
+  "measured_height": {
+    "n": 388267,
+    "min": 0.737,
+    "max": 158.47,
+    "mean": 7.7479,
+    "median": 7.528,
+    "p90": 13.8894,
+    "p99": 24.4553,
+    "stdev": 5.1083
+  },
+  "measured_height_sentinels": 0,
+  "missing_source": {
+    "buildings": 0,
+    "osm": 0
+  },
+  "nodes_per_building": {
+    "min": 21,
+    "max": 1758,
+    "avg": 41.043907929337514,
+    "p50": 30,
+    "p90": 66.0,
+    "p99": 177.0,
+    "buildings": 388267
+  },
+  "geoms_per_building": {
+    "min": 5,
+    "max": 583,
+    "avg": 11.678386265121858,
+    "p50": 8,
+    "p90": 20.0,
+    "p99": 57.0,
+    "buildings": 388267,
+    "unit": "GeometryPolygon nodes in the building's CityGML subtree"
+  },
+  "attrs_per_building": {
+    "min": 18,
+    "max": 28,
+    "avg": 21.949707289056022,
+    "p50": 22,
+    "p90": 24.0,
+    "p99": 24.0,
+    "buildings": 388267,
+    "unit": "thematic property keys on the Building node (identity/bbox/spatial-plugin/OSM/LoD3/ML keys excluded)"
+  },
+  "buildings_no_geometry": 0,
+  "orphan_nodes": 0
+}
