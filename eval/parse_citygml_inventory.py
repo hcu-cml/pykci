@@ -2,14 +2,20 @@
 """
 Precise CityGML 2.0 inventory script using lxml.
 """
-import sys
+import argparse
 from collections import defaultdict
 from lxml import etree
 
 # Default GML when no path is given on the command line; any CityGML 2.0 file works.
 # Relative to the project root — run this script from there.
 DEFAULT_GML_FILE = "input/citygml/Railway_Scene_LoD3/Railway_Scene_LoD3.gml"
-GML_FILE = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_GML_FILE
+
+ap = argparse.ArgumentParser(
+    description="Inventory of one CityGML 2.0 file: srsName, module namespaces, building "
+                "details, non-building features, xlink:href targets, gml:Polygon count.")
+ap.add_argument("gml_file", nargs="?", default=DEFAULT_GML_FILE,
+                help=f"CityGML 2.0 file (default: {DEFAULT_GML_FILE}, relative to the project root)")
+GML_FILE = ap.parse_args().gml_file
 
 # ── Namespace maps ────────────────────────────────────────────────────────────
 NS_GML  = "http://www.opengis.net/gml"
@@ -58,7 +64,7 @@ def gml_id(elem):
 def find_lod_geometries(elem):
     """Return a list of lod*Geometry / lod*Solid / lod*MultiSurface tag local names present."""
     found = []
-    for child in elem.iter():
+    for child in elem.iter(etree.Element):
         lname = local(child.tag) if child.tag and child.tag[0] == '{' else None
         if lname and lname.startswith("lod") and (
             lname.endswith("Geometry") or lname.endswith("Solid") or
@@ -83,7 +89,7 @@ print(f"   {srsname}")
 
 # ── Collect all namespaces actually used ──────────────────────────────────────
 all_ns_used = set()
-for elem in root.iter():
+for elem in root.iter(etree.Element):
     if elem.tag and elem.tag[0] == '{':
         all_ns_used.add(nsuri(elem.tag))
 
@@ -95,7 +101,7 @@ print(f"{'='*70}")
 # Map: module_uri -> { local_name -> [gml:id, ...] }
 module_features = defaultdict(lambda: defaultdict(list))
 
-for elem in root.iter():
+for elem in root.iter(etree.Element):
     if not elem.tag or elem.tag[0] != '{':
         continue
     ns = nsuri(elem.tag)
@@ -137,12 +143,12 @@ for bldg in buildings:
     print(f"\n  Building gml:id = {bid}")
 
     # lod*Solid
-    solids = [local(e.tag) for e in bldg.iter()
+    solids = [local(e.tag) for e in bldg.iter(etree.Element)
               if e.tag and local(e.tag).startswith("lod") and local(e.tag).endswith("Solid")]
     print(f"    lod*Solid          : {sorted(set(solids)) or 'none'}")
 
     # lod*MultiSurface
-    msurf = [local(e.tag) for e in bldg.iter()
+    msurf = [local(e.tag) for e in bldg.iter(etree.Element)
              if e.tag and local(e.tag).startswith("lod") and local(e.tag).endswith("MultiSurface")]
     print(f"    lod*MultiSurface   : {sorted(set(msurf)) or 'none'}")
 
@@ -150,13 +156,13 @@ for bldg in buildings:
     bounded = bldg.findall(f".//{{{BLDG_NS}}}boundedBy")
     surf_types = defaultdict(int)
     for b in bounded:
-        for child in b:
+        for child in b.iterchildren(etree.Element):
             surf_types[local(child.tag)] += 1
     print(f"    boundedBy surfaces : {dict(surf_types) or 'none'}")
 
     # gen:*Attribute
     gen_attrs = set()
-    for ga in bldg.iter():
+    for ga in bldg.iter(etree.Element):
         if ga.tag and nsuri(ga.tag) == GEN_NS and "Attribute" in local(ga.tag):
             name_el = ga.find(f"{{{GEN_NS}}}name")
             if name_el is not None and name_el.text:
@@ -185,7 +191,7 @@ city_obj_members = root.findall(f".//{{{NS_CORE}}}cityObjectMember")
 
 seen_non_bldg = []
 for com in city_obj_members:
-    for child in com:
+    for child in com.iterchildren(etree.Element):
         if not child.tag or child.tag[0] != '{':
             continue
         ns = nsuri(child.tag)
@@ -220,14 +226,14 @@ print("5. xlink:href targets (referenced gml:id values)")
 print(f"{'='*70}")
 
 hrefs = set()
-for elem in root.iter():
+for elem in root.iter(etree.Element):
     h = elem.get(href_attr)
     if h and h.startswith("#"):
         hrefs.add(h[1:])  # strip leading '#'
 
 # Also collect all gml:ids
 all_ids = set()
-for elem in root.iter():
+for elem in root.iter(etree.Element):
     eid = gml_id(elem)
     if eid:
         all_ids.add(eid)
