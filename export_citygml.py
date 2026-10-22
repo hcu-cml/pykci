@@ -2028,6 +2028,9 @@ def main(argv=None):
                     help="3.0 → 2.0: Sections/Intersections/TrafficSpaces/Markings/relations "
                          "are dropped (loss report) or kept as gen:stringAttributes "
                          "(citygml3_*) on the traffic areas / the road")
+    ap.add_argument("--keep-id-prefix", action="store_true",
+                    help="write the ids of a Dataset ingested with --id-prefix as stored "
+                         "(default: the prefix is stripped, as in the source files)")
     ap.add_argument("--loss-report", default=None,
                     help="loss-report JSON (default <out>.loss.json; strict writer only)")
     ap.add_argument("--uri", default=NEO4J_URI)
@@ -2057,7 +2060,13 @@ def main(argv=None):
                       ("3.0" if "3.0" in str(ds.get("format", "")) else "2.0"))
     writer = args.writer
     if writer == "auto":
-        writer = "legacy" if (target == "2.0" and src_version.startswith("2")) else "strict"
+        # the legacy writer cannot strip an --id-prefix: such Datasets use the strict one
+        writer = "legacy" if (target == "2.0" and src_version.startswith("2")
+                              and not ds.get("id_prefix")) else "strict"
+    elif writer == "legacy" and ds.get("id_prefix") and not args.keep_id_prefix:
+        raise SystemExit(f"ERROR: Dataset {ds.get('id')} was ingested with --id-prefix "
+                         f"'{ds['id_prefix']}', which only the strict writer strips; use "
+                         "--writer strict, or --keep-id-prefix to write the prefixed ids.")
     stem = Path(ds.get("source") or ds.get("name") or "dataset").stem
     sel = "_selection" if (sel_ids or bbox_wkt) else ""
     out = Path(args.out) if args.out else \
@@ -2074,7 +2083,8 @@ def main(argv=None):
         t0 = time.perf_counter()
         with drv.session(database="neo4j") as sess:
             counts, loss = export_document(sess, ds, target, out,
-                                           {"v2_subfeatures": args.v2_subfeatures},
+                                           {"v2_subfeatures": args.v2_subfeatures,
+                                            "keep_id_prefix": args.keep_id_prefix},
                                            feature_ids=sel_ids or None,
                                            bbox_wkt=None if sel_ids else bbox_wkt, clip=args.clip,
                                            batch=args.batch)

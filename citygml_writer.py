@@ -258,6 +258,8 @@ class BaseWriter:
         self.crs = dataset.get("crs")
         self.srs_dim = int(dataset.get("srs_dimension") or 3)
         self.opts = opts
+        # ids ingested with --id-prefix are written without it (unless keep_id_prefix)
+        self.id_prefix = "" if opts.get("keep_id_prefix") else (dataset.get("id_prefix") or "")
         self.loss = LossReport()
         self.written: set = set()          # gml:ids written in this document
         self.hrefs: list = []              # (href id, context) written as references
@@ -307,6 +309,18 @@ class BaseWriter:
             el.text = str(text)
         return el
 
+    def oid(self, gid):
+        """The id as the source wrote it: without the Dataset's --id-prefix."""
+        p = self.id_prefix
+        return gid[len(p):] if p and gid.startswith(p) else gid
+
+    def oref(self, ref):
+        """A stored reference ('#id' / 'tile.gml#id') without the --id-prefix."""
+        if not self.id_prefix or "#" not in ref:
+            return ref
+        doc, frag = ref.rsplit("#", 1)
+        return f"{doc}#{self.oid(frag)}"
+
     def set_id(self, el, gid, synthetic=False):
         """Write gml:id unless synthesised at ingest; returns False if the id was already
         written (the caller should then reference instead)."""
@@ -315,11 +329,11 @@ class BaseWriter:
         if gid in self.written:
             return False
         self.written.add(gid)
-        el.set(self.P.gml_id, str(gid))
+        el.set(self.P.gml_id, self.oid(str(gid)))
         return True
 
     def href(self, el, target, ctx=""):
-        el.set(XLINK_HREF, f"#{target}")
+        el.set(XLINK_HREF, f"#{self.oid(target)}")
         self.hrefs.append((target, ctx))
 
     def code(self, parent, prefix, local, value, cs=None):
@@ -861,8 +875,8 @@ class Writer3(BaseWriter):
     def ref_target(self, tid, raw_href=None):
         if tid in self.doc_ids:
             self.hrefs.append((tid, "reference"))
-            return f"#{tid}"
-        return raw_href or None
+            return f"#{self.oid(tid)}"
+        return self.oref(raw_href) if raw_href else None
 
     def space(self, el, n, g, base, boundaries=None):
         p = n.p
@@ -1042,7 +1056,7 @@ class Writer3(BaseWriter):
                 if p.get(key) is not None:
                     self.E(el, "app", local, p[key])
             for _rp, t in self._targets(sd):
-                self.E(el, "app", "target", f"#{t.id}")
+                self.E(el, "app", "target", f"#{self.oid(t.id)}")
             return
         self.E(el, "app", "imageURI", p.get("image_uri") or "")
         if p.get("mime_type"):
@@ -1056,7 +1070,7 @@ class Writer3(BaseWriter):
                 ta = self.E(self.E(el, "app", "textureParameterization"), "app", "TextureAssociation")
                 if rp.get("texture_association_id"):
                     self.set_id(ta, rp["texture_association_id"])
-                self.E(ta, "app", "target", f"#{t.id}")
+                self.E(ta, "app", "target", f"#{self.oid(t.id)}")
                 inner = self.E(ta, "app", "textureParameterization")
                 if rp.get("world_to_texture"):
                     self.E(self.E(inner, "app", "TexCoordGen"), "app", "worldToTexture",
@@ -1067,7 +1081,7 @@ class Writer3(BaseWriter):
                     for _ring, coords in pairs:
                         self.E(tcl, "app", "textureCoordinates", coords)
                     for ring, _coords in pairs:
-                        self.E(tcl, "app", "ring", f"#{ring}")
+                        self.E(tcl, "app", "ring", f"#{self.oid(ring)}")
             return
         if p.get("prefer_world_file") is not None:
             self.E(el, "app", "preferWorldFile", p["prefer_world_file"])
@@ -1076,7 +1090,7 @@ class Writer3(BaseWriter):
         if p.get("orientation"):
             self.E(el, "app", "orientation", p["orientation"])
         for _rp, t in self._targets(sd):
-            self.E(el, "app", "target", f"#{t.id}")
+            self.E(el, "app", "target", f"#{self.oid(t.id)}")
 
     # -- thematic surfaces --------------------------------------------------------
     def surface(self, holder, s):
@@ -1741,7 +1755,7 @@ class Writer2(BaseWriter):
                 if p.get(key) is not None:
                     self.E(el, "app", local, p[key])
             for _rp, t in self._targets(sd):
-                self.E(el, "app", "target", f"#{t.id}")
+                self.E(el, "app", "target", f"#{self.oid(t.id)}")
             return
         self.E(el, "app", "imageURI", p.get("image_uri") or "")
         if p.get("mime_type"):
@@ -1752,13 +1766,13 @@ class Writer2(BaseWriter):
                 self.E(el, "app", local, p[key])
         if kind == "ParameterizedTexture":
             for rp, t in self._targets(sd):
-                tg = self.E(el, "app", "target", uri=f"#{t.id}")
+                tg = self.E(el, "app", "target", uri=f"#{self.oid(t.id)}")
                 if rp.get("world_to_texture"):
                     self.E(self.E(tg, "app", "TexCoordGen"), "app", "worldToTexture", rp["world_to_texture"])
                 else:
                     tcl = self.E(tg, "app", "TexCoordList")
                     for ring, coords in _loads(rp.get("texture_coordinates_json"), []):
-                        self.E(tcl, "app", "textureCoordinates", coords, ring=f"#{ring}")
+                        self.E(tcl, "app", "textureCoordinates", coords, ring=f"#{self.oid(ring)}")
             return
         if p.get("prefer_world_file") is not None:
             self.E(el, "app", "preferWorldFile", p["prefer_world_file"])
@@ -1767,7 +1781,7 @@ class Writer2(BaseWriter):
         if p.get("orientation"):
             self.E(el, "app", "orientation", p["orientation"])
         for _rp, t in self._targets(sd):
-            self.E(el, "app", "target", f"#{t.id}")
+            self.E(el, "app", "target", f"#{self.oid(t.id)}")
 
     # -- surfaces ------------------------------------------------------------------
     def surface_lods(self, s, g, allowed):

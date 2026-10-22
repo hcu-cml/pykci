@@ -3013,12 +3013,169 @@ def _create_indexes(sess):
 # Main ingestion
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Source scope of gml:ids (GRAPH.md: a node belongs to exactly one source)
+# ---------------------------------------------------------------------------
+# Every node is MERGEd on its id. A file whose gml:ids already exist in the graph for
+# ANOTHER source (an official building id in a reconstructed file, a template id used by
+# two datasets) would otherwise add to and overwrite that source's nodes. A Dataset
+# therefore lists the files ingested into it (source_files); a file may reuse only ids of
+# nodes whose `source` is one of them. --id-prefix gives a source that reuses another
+# source's ids its own id space; the prefix is recorded on the Dataset and the exporter
+# strips it again.
+
+class IdScopeError(SystemExit):
+    """A file's gml:ids belong to another source; nothing of the file was written."""
+
+
+_SCOPE_LABELS = ("Entity", "GeometryRing", "GeometryLineString", "TerrainIntersection")
+_REF_TEXT_LOCALS = ("target", "ring")       # appearance references written as text URIs
+
+
+def _claim_dataset_file(sess, dataset_id, source):
+    """Add `source` to Dataset.source_files and return True when it was not listed yet.
+    A Dataset ingested before the list existed is first given the sources of its members."""
+    rec = sess.run("MATCH (d:Dataset {id: $id}) RETURN d.source_files IS NULL AS missing",
+                   id=dataset_id).single()
+    if rec is not None and rec["missing"]:
+        init = sorted({r["s"] for r in sess.run(
+            "MATCH (:Dataset {id: $id})<-[:PART_OF]-(n) WHERE n.source IS NOT NULL "
+            "RETURN DISTINCT n.source AS s", id=dataset_id)})
+        sess.run("MATCH (d:Dataset {id: $id}) WHERE d.source_files IS NULL "
+                 "SET d.source_files = $init", id=dataset_id, init=init)
+    rec = sess.run("MATCH (d:Dataset {id: $id}) WITH d, NOT $src IN d.source_files AS new "
+                   "SET d.source_files = CASE WHEN new THEN d.source_files + $src "
+                   "ELSE d.source_files END RETURN new", id=dataset_id, src=source).single()
+    return bool(rec and rec["new"])
+
+
+def _release_dataset_file(sess, dataset_id, source):
+    sess.run("MATCH (d:Dataset {id: $id}) "
+             "SET d.source_files = [f IN coalesce(d.source_files, []) WHERE f <> $src]",
+             id=dataset_id, src=source)
+
+
+def _record_id_prefix(sess, dataset_id, source, prefix):
+    """The id prefix is a property of the Dataset: every file of it uses the same one."""
+    rec = sess.run("MATCH (d:Dataset {id: $id}) RETURN d.id_prefix AS p, "
+                   "[f IN coalesce(d.source_files, []) WHERE f <> $src] AS others",
+                   id=dataset_id, src=source).single()
+    have = rec["p"] if rec else None
+    if (prefix or None) == (have or None):
+        return
+    if have:
+        raise IdScopeError(f"ERROR: Dataset '{dataset_id}' uses --id-prefix '{have}'; "
+                           f"ingest {source} with the same prefix.")
+    if rec and rec["others"]:
+        raise IdScopeError(f"ERROR: Dataset '{dataset_id}' already holds files without an id "
+                           f"prefix; --id-prefix '{prefix}' cannot be added for {source} alone.")
+    sess.run("MATCH (d:Dataset {id: $id}) SET d.id_prefix = $p", id=dataset_id, p=prefix)
+
+
+def _foreign_ids(sess, dataset_id, ids):
+    """Up to 20 nodes with one of `ids` whose `source` is not a file of the Dataset."""
+    for label in _SCOPE_LABELS:
+        hits = sess.run(
+            f"MATCH (d:Dataset {{id: $did}}) UNWIND $ids AS i MATCH (n:{label} {{id: i}}) "
+            "WHERE n.source IS NOT NULL AND NOT n.source IN coalesce(d.source_files, []) "
+            "RETURN n.id AS id, n.source AS source LIMIT 20", did=dataset_id, ids=ids).data()
+        if hits:
+            return hits
+    return []
+
+
+def _check_id_scope(sess, gml_path, dataset_id, id_attr, prefix="", chunk=20000):
+    """Pre-flight: refuse the file (before anything is written) when one of its gml:ids
+    belongs to a node of another source. Skipped when the graph holds no other Dataset."""
+    others = sess.run("MATCH (d:Dataset) WHERE d.id <> $id RETURN count(d) AS c",
+                      id=dataset_id).single()["c"]
+    if not others:
+        return
+    root = None
+    ids: list = []
+
+    def check():
+        hits = _foreign_ids(sess, dataset_id, ids)
+        ids.clear()
+        if hits:
+            ex = ", ".join(f"'{h['id']}' ({h['source']})" for h in hits[:3])
+            raise IdScopeError(
+                f"ERROR: gml:ids of {gml_path.name} already belong to another source, e.g. {ex}. "
+                "Ingesting it would add to and overwrite that source's nodes. Give this source "
+                "its own id space with --id-prefix <prefix> (recorded on the Dataset; the "
+                "exporter strips it), or ingest the file into the Dataset that owns these ids.")
+
+    for ev, el in etree.iterparse(str(gml_path), events=("start", "end"), huge_tree=True):
+        if ev == "start":
+            if root is None:
+                root = el
+                continue
+            gid = el.get(id_attr)
+            if gid:
+                ids.append(prefix + gid)
+                if len(ids) >= chunk:
+                    check()
+        elif el.getparent() is root:
+            el.clear()
+            while el.getprevious() is not None:
+                del root[0]
+    if ids:
+        check()
+
+
+def _prefix_ref(ref, prefix):
+    """'#id' / 'tile.gml#id' → with the prefix on the fragment; external URLs unchanged."""
+    if not ref or "#" not in ref:
+        return ref
+    doc, frag = ref.rsplit("#", 1)
+    if not frag or "://" in doc:
+        return ref
+    return f"{doc}#{prefix}{frag}"
+
+
+def _iter_prefixed(gml_path, tags, prefix, id_attr):
+    """etree.iterparse(events=('end',), tag=tags) with --id-prefix applied on the fly: every
+    gml:id and every document reference (xlink:href, appearance target / ring URIs) gets
+    the prefix before any collector reads the element."""
+    tagset = set(tags)
+    root = None
+    for ev, el in etree.iterparse(str(gml_path), events=("start", "end"), huge_tree=True):
+        if not isinstance(el.tag, str):
+            continue
+        if ev == "start":
+            if root is None:             # the CityModel keeps its own id (Dataset.gml_id)
+                root = el
+                continue
+            gid = el.get(id_attr)
+            if gid:
+                el.set(id_attr, prefix + gid)
+            href = el.get(XLINK_HREF)
+            if href:
+                el.set(XLINK_HREF, _prefix_ref(href, prefix))
+            if el.get("ring"):
+                el.set("ring", _prefix_ref(el.get("ring"), prefix))
+            continue
+        if etree.QName(el).localname in _REF_TEXT_LOCALS and el.text and "#" in el.text:
+            el.text = _prefix_ref(el.text.strip(), prefix)
+        if el.tag in tagset:
+            yield ev, el
+
+
+def _ref_doc(href, current):
+    """The document a reference points into: the file part of 'tile.gml#id', or the
+    current file for '#id'."""
+    doc = href.rsplit("#", 1)[0] if href and "#" in href else ""
+    return Path(doc.replace("\\", "/")).name if doc else current
+
+
+
 def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = True,
            dataset_id: str = None, dataset_name: str = None,
            target_crs: str = None, source_crs: str = None, id_registry: dict = None,
            skip_spatial_index: bool = False, defer_code_hubs: bool = False,
            source_type: str = None, method: str = None, method_version: str = None,
-           rtree_layer: str = None):
+           rtree_layer: str = None, id_prefix: str = None, check_ids: bool = True,
+           district: str = None):
     # Codec selection by the root namespace: CityGML 3.0 files go to the 3.0 codec
     # (ingest_citygml3); everything else runs the unchanged 2.0 path below.
     if detect_citygml_version(gml_path) == "3.0":
@@ -3028,7 +3185,8 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
                                source_crs=source_crs, skip_spatial_index=skip_spatial_index,
                                defer_code_hubs=defer_code_hubs, source_type=source_type,
                                method=method, method_version=method_version,
-                               rtree_layer=rtree_layer)
+                               rtree_layer=rtree_layer, id_prefix=id_prefix,
+                               check_ids=check_ids, district=district)
     # `source` stays per-file (tile-level provenance on every feature node);
     # `dataset_id`/`dataset_name`, when given, merge many tiles into ONE Dataset
     # node (see main()). Without them, behaviour is unchanged: one file, one Dataset.
@@ -3089,6 +3247,15 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
                 "MERGE (n:Dataset {id: $id}) SET n.name = $name, n.source = $src",
                 id=dataset_id, name=ds_display_name, src=ds_display_name,
             )
+            claimed = _claim_dataset_file(sess, dataset_id, source)
+            try:
+                _record_id_prefix(sess, dataset_id, source, id_prefix)
+                if check_ids:
+                    _check_id_scope(sess, gml_path, dataset_id, GML_ID, id_prefix or "")
+            except IdScopeError:
+                if claimed:
+                    _release_dataset_file(sess, dataset_id, source)
+                raise
 
         # ── Writer thread pool ───────────────────────────────────────────────
         batch_queue: queue.Queue = queue.Queue(maxsize=num_writers * 2)
@@ -3129,9 +3296,9 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
 
         parse_tags = [ENVELOPE_TAG, BLDG_TAG] + CITY_OBJECT_TAGS
 
-        for _, el in etree.iterparse(
-            str(gml_path), events=("end",), tag=parse_tags
-        ):
+        events = (_iter_prefixed(gml_path, parse_tags, id_prefix, GML_ID) if id_prefix else
+                  etree.iterparse(str(gml_path), events=("end",), tag=parse_tags))
+        for _, el in events:
             if el.tag == ENVELOPE_TAG:
                 if not envelope_done:
                     crs     = el.get("srsName")
@@ -3319,6 +3486,9 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
 
         # ── District / City ───────────────────────────────────────────────────
         district_name, city_name = _resolve_municipality(gemeinde_key, gml_path.stem)
+        if district:
+            district_name = district
+            city_name = city_name if gemeinde_key else district
         district_id = _slug(district_name)
         city_id     = _slug(city_name)
 
@@ -3358,8 +3528,11 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
         if source_type or method or method_version:
             prov = {k: v for k, v in (("source_type", source_type), ("method", method),
                                       ("method_version", method_version)) if v}
-            _run_retry(sess, "MATCH (n) WHERE (n:Building OR n:CityObject) AND n.source = $src "
-                             "SET n += $prov", src=source, prov=prov)
+            # features, sub-features, surfaces and openings, as in the 3.0 codec; geometry
+            # nodes carry only `source`
+            _run_retry(sess, "MATCH (n:Entity) WHERE n.source = $src AND NOT (n:GeometryPolygon "
+                             "OR n:GeometryMultiSurface OR n:GeometrySolid OR "
+                             "n:GeometryCompositeSurface) SET n += $prov", src=source, prov=prov)
             _run_retry(sess, "MATCH (d:Dataset {id: $id}) SET d += $prov", id=dataset_id, prov=prov)
         if rtree_layer and rtree_layer != "features":
             _run_retry(sess, "MATCH (n) WHERE (n:Building OR n:CityObject) AND n.source = $src "
@@ -3574,9 +3747,10 @@ _V3_INDEX_LABELS = ("Section", "Intersection", "TransportationSpace", "TrafficSp
 class _Ctx3:
     """Per-file state of the 3.0 codec."""
 
-    def __init__(self, source, dataset_id, prov, rtree_layer):
+    def __init__(self, source, dataset_id, prov, rtree_layer, id_prefix=""):
         self.source = source
         self.dataset_id = dataset_id
+        self.id_prefix = id_prefix or ""   # --id-prefix (already applied to ids and refs)
         self.prov = prov                   # {source_type, method, method_version} (non-null)
         self.rtree_layer = rtree_layer
         self.local_ids: set = set()        # gml:ids inside the current top-level feature
@@ -3904,7 +4078,14 @@ def _defer3(ctx, rel, src, href, key, props):
     p = dict(props)
     if href and href != f"#{tgt}":
         p["href"] = href          # cross-document reference: keep it verbatim
-    ctx.deferred.append({"rel": rel, "src": src, "tgt": tgt, "key": dict(key), "props": p})
+    # `doc`: the target must come from the referenced document (the current file for
+    # '#id'); `tgt0`: the fragment without this Dataset's --id-prefix, for a reference into
+    # a Dataset with another (or no) prefix
+    row = {"rel": rel, "src": src, "tgt": tgt, "key": dict(key), "props": p,
+           "doc": _ref_doc(href, ctx.source)}
+    if ctx.id_prefix and tgt.startswith(ctx.id_prefix):
+        row["tgt0"] = tgt[len(ctx.id_prefix):]
+    ctx.deferred.append(row)
 
 
 def _collect_relations3(el, src_id, ctx):
@@ -4496,7 +4677,7 @@ def _collect_appearance3(app_el, fallback_id, source, batch, ctx):
             continue
         ln = _ln3(sd)
         sid = sd.get(GML3_ID)
-        sp = {"id": sid or f"{aid}_sd_{i}", "source": source, "surface_data_type": ln}
+        sp = {"id": sid or f"{aid}_sd_{i}", "source": source, "surface_data_type": ln, **ctx.prov}
         if not sid:
             sp["synthetic_id"] = True
         sid = sp["id"]
@@ -5336,8 +5517,13 @@ def _resolve_refs3(sess, rows):
             continue
         keymap = ", ".join(f"{k}: row.key.{k}" for k in keys)
         keymap = f" {{{keymap}}}" if keymap else ""
+        # the target must come from the referenced document (rows parked before `doc`
+        # was recorded resolve as before)
         stmt = (f"UNWIND $rows AS row MATCH (a:Entity {{id: row.src}}) "
-                f"MATCH (b:Entity {{id: row.tgt}}) MERGE (a)-[r:{rel}{keymap}]->(b) "
+                f"MATCH (b:Entity {{id: row.tgt}}) "
+                f"WHERE row.doc IS NULL OR b.source = row.doc "
+                f"OR row.doc IN coalesce(b.source_files, []) "
+                f"MERGE (a)-[r:{rel}{keymap}]->(b) "
                 f"SET r += row.props RETURN DISTINCT row.i AS i")
         done = set()
         for j in range(0, len(grp), 2000):
@@ -5351,6 +5537,23 @@ def _resolve_refs3(sess, rows):
         unresolved.extend(r for r in grp if r["i"] not in done)
     for r in unresolved:
         r.pop("i", None)
+    # a reference into a Dataset with another id prefix (or none): try the fragment with
+    # the target Dataset's prefix instead of ours
+    alt = [r for r in unresolved if r.get("tgt0") and r.get("doc") and not r.get("_alt")]
+    if alt:
+        docs = sorted({r["doc"] for r in alt})
+        pref = {rec["doc"]: rec["p"] or "" for rec in sess.run(
+            "UNWIND $docs AS doc MATCH (d:Dataset) WHERE doc IN coalesce(d.source_files, []) "
+            "RETURN doc, d.id_prefix AS p", docs=docs)}
+        retry = [dict(r, tgt=pref[r["doc"]] + r["tgt0"], _alt=True) for r in alt
+                 if r["doc"] in pref and pref[r["doc"]] + r["tgt0"] != r["tgt"]]
+        if retry:
+            def _k(r):
+                return (r["src"], r["rel"], r.get("tgt0"), r.get("doc"),
+                        json.dumps(r["key"], sort_keys=True))
+            still = {_k(r) for r in _resolve_refs3(sess, retry)}
+            done = {_k(r) for r in retry} - still
+            unresolved = [r for r in unresolved if _k(r) not in done]
     return unresolved
 
 
@@ -5363,8 +5566,8 @@ def _store_pending3(sess, unresolved):
         return
     by_src = _defaultdict(list)
     for r in unresolved:
-        by_src[r["src"]].append({"rel": r["rel"], "tgt": r["tgt"], "key": r["key"],
-                                 "props": r["props"]})
+        by_src[r["src"]].append({k: r[k] for k in ("rel", "tgt", "key", "props", "doc", "tgt0")
+                                 if k in r})
     ids = list(by_src)
     existing = {rec["id"]: rec["j"] for rec in sess.run(
         "UNWIND $ids AS i MATCH (n:Entity {id: i}) RETURN n.id AS id, n.pending_refs_json AS j",
@@ -5399,8 +5602,8 @@ def resolve_pending_refs(sess):
     unresolved = _resolve_refs3(sess, rows)
     left = _defaultdict(list)
     for r in unresolved:
-        left[r["src"]].append({"rel": r["rel"], "tgt": r["tgt"], "key": r["key"],
-                               "props": r["props"]})
+        left[r["src"]].append({k: r[k] for k in ("rel", "tgt", "key", "props", "doc", "tgt0")
+                               if k in r})
     upd = [{"id": i, "j": json.dumps(left[i])} for i in left]
     clear = [rec["id"] for rec in recs if rec["id"] not in left]
     if upd:
@@ -5630,7 +5833,8 @@ def ingest_citygml3(gml_path: Path, driver, num_writers: int = 3, nearby_edges: 
                     target_crs: str = None, source_crs: str = None,
                     skip_spatial_index: bool = False, defer_code_hubs: bool = False,
                     source_type: str = None, method: str = None, method_version: str = None,
-                    rtree_layer: str = None):
+                    rtree_layer: str = None, id_prefix: str = None, check_ids: bool = True,
+                    district: str = None):
     """CityGML 3.0 → Neo4j (see the codec notes above). Same call contract and return
     shape as ingest(); ingest() dispatches here when the root namespace is 3.0."""
     source = gml_path.name
@@ -5639,7 +5843,7 @@ def ingest_citygml3(gml_path: Path, driver, num_writers: int = 3, nearby_edges: 
                               ("method_version", method_version)) if v}
     dataset_id = dataset_id or _slug(gml_path.stem)
     ds_display_name = dataset_name or source
-    ctx = _Ctx3(source, dataset_id, prov, layer)
+    ctx = _Ctx3(source, dataset_id, prov, layer, id_prefix)
 
     reproj_target = _epsg_from_srs(target_crs) if target_crs else None
     if reproj_target:
@@ -5662,6 +5866,15 @@ def ingest_citygml3(gml_path: Path, driver, num_writers: int = 3, nearby_edges: 
             _create_indexes3(sess)
             sess.run("MERGE (n:Dataset {id: $id}) SET n.name = $name, n.source = $src",
                      id=dataset_id, name=ds_display_name, src=ds_display_name)
+            claimed = _claim_dataset_file(sess, dataset_id, source)
+            try:
+                _record_id_prefix(sess, dataset_id, source, id_prefix)
+                if check_ids:
+                    _check_id_scope(sess, gml_path, dataset_id, GML3_ID, id_prefix or "")
+            except IdScopeError:
+                if claimed:
+                    _release_dataset_file(sess, dataset_id, source)
+                raise
 
         batch_queue: queue.Queue = queue.Queue(maxsize=num_writers * 2)
         flush_errors: list = []
@@ -5697,8 +5910,10 @@ def ingest_citygml3(gml_path: Path, driver, num_writers: int = 3, nearby_edges: 
         bounded_by_tag = f"{{{_GML3}}}boundedBy"
         app_order = 0
         root_gml_id = None
-        for _, el in etree.iterparse(str(gml_path), events=("end",),
-                                     tag=[member_tag, app_member_tag, env_tag], huge_tree=True):
+        tags3 = [member_tag, app_member_tag, env_tag]
+        events = (_iter_prefixed(gml_path, tags3, id_prefix, GML3_ID) if id_prefix else
+                  etree.iterparse(str(gml_path), events=("end",), tag=tags3, huge_tree=True))
+        for _, el in events:
             if root_gml_id is None and el.tag != env_tag and el.getparent() is not None:
                 root_gml_id = el.getparent().get(GML3_ID) or ""
             if el.tag == env_tag:
@@ -5833,12 +6048,19 @@ def ingest_citygml3(gml_path: Path, driver, num_writers: int = 3, nearby_edges: 
                        "n.bbox_max_z = CASE WHEN n.bbox_max_z IS NULL OR $b[5] > n.bbox_max_z THEN $b[5] ELSE n.bbox_max_z END",
                        id=dataset_id, b=box)
 
-        # ── District / City / LOCATED_IN — only when buildings were ingested (a
-        #    street-space tile would otherwise create one District per tile file)
-        if ctx.building_ids:
-            # tiled dataset: fall back to the dataset name, not one District per tile file
+        # ── District / City / LOCATED_IN: only when buildings were ingested (a
+        #    street-space tile would otherwise create one District per tile file) and the
+        #    file names its municipality (Gemeindeschluessel) or --district names it; a
+        #    District named after a file says nothing
+        if ctx.building_ids and not (ctx.gemeinde_key or district):
+            print("  No Gemeindeschluessel in the file: no District / LOCATED_IN "
+                  "(name one with --district).")
+        if ctx.building_ids and (ctx.gemeinde_key or district):
             district_name, city_name = _resolve_municipality(
                 ctx.gemeinde_key, dataset_name or gml_path.stem)
+            if district:
+                district_name = district
+                city_name = city_name if ctx.gemeinde_key else district
             district_id, city_id = _slug(district_name), _slug(city_name)
             with _SHARED_NODE_LOCK:
                 sess.run("MERGE (n:City {id: $id}) SET n.name = $name", id=city_id, name=city_name)
@@ -5954,7 +6176,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--source-type", default=None,
                         choices=["authoritative", "crowdsourced", "predicted", "reconstructed",
-                                 "sensed"],
+                                 "sensed", "derived"],
                         help="Provenance trust class (GRAPH.md provenance rules), written as "
                              "source_type on the Dataset and on every feature / sub-feature / "
                              "surface / prototype / appearance node of the ingested files "
@@ -5963,7 +6185,24 @@ if __name__ == "__main__":
                         help="Method / model id of derived data, stored as `method` beside "
                              "source_type (e.g. --method streetspace-recon).")
     parser.add_argument("--method-version", default=None,
-                        help="Version of --method, stored as `method_version`.")
+                        help="Version of --method, stored as `method_version`. --method and "
+                             "--method-version are required for predicted, reconstructed and "
+                             "derived data (GRAPH.md provenance rules).")
+    parser.add_argument("--id-prefix", default=None,
+                        help="Prefix every gml:id (and every reference to one) of these files "
+                             "(letters, digits, '_', '-', '.', e.g. lgv_), "
+                             "for a source that reuses another source's ids (e.g. a model of "
+                             "the same buildings with the cadastral ids). Recorded on the "
+                             "Dataset; export_citygml strips it again. Every file of a Dataset "
+                             "uses the same prefix.")
+    parser.add_argument("--no-id-check", action="store_true",
+                        help="Skip the pre-flight check that refuses a file whose gml:ids "
+                             "belong to nodes of another source (they would be merged and "
+                             "overwritten). Only for files known to be independent.")
+    parser.add_argument("--district", default=None,
+                        help="District name for the buildings of these files when the files "
+                             "carry no Gemeindeschluessel (or to override it). Without it, a "
+                             "CityGML 3.0 file without one gets no District.")
     parser.add_argument("--rtree-layer", default=None,
                         help="Neo4j Spatial R-tree layer for the top-level features of these "
                              "files (default 'features'). Give every non-authoritative source its "
@@ -5987,8 +6226,17 @@ if __name__ == "__main__":
     parser.add_argument("--password", default=neo4j_auth()[1],
                         help="Neo4j password (default $NEO4J_PASSWORD or neo4jneo4j).")
     args = parser.parse_args()
+    if args.source_type in ("predicted", "reconstructed", "derived") and not (
+            args.method and args.method_version):
+        parser.error(f"--source-type {args.source_type} needs --method and --method-version")
+    if args.id_prefix and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", args.id_prefix):
+        # prefixed ids and the ids pykci derives from them must stay valid gml:ids (NCName)
+        parser.error("--id-prefix must start with a letter or '_' and contain only letters, "
+                     "digits, '_', '-' and '.' (no ':'), e.g. lgv_")
     _opts = dict(source_type=args.source_type, method=args.method,
-                 method_version=args.method_version, rtree_layer=args.rtree_layer)
+                 method_version=args.method_version, rtree_layer=args.rtree_layer,
+                 id_prefix=args.id_prefix, check_ids=not args.no_id_check,
+                 district=args.district)
 
     if args.backfill_bbox and not args.paths:
         _drv = GraphDatabase.driver(args.uri, auth=(args.user, args.password),

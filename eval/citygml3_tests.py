@@ -25,6 +25,12 @@ citygml3_tests.py — end-to-end tests of the CityGML 3.0 codec (ingest_citygml.
       3.0 export valid + lossless, 2.0 export valid with the dynamizers in the loss report
   T10 (with --tiles) --backfill-bbox reproduces the sub-feature bboxes written at ingest
       after they are removed (old-graph situation)
+  T12 source scope of gml:ids: a copy of tile_a.gml (another file, same ids) ingested into a
+      second Dataset is refused and the graph stays unchanged; with --id-prefix it is
+      ingested as nodes of its own, exports without the prefix (valid, lossless), and a
+      copy of tile_b.gml with the prefix resolves its references into tile_a.gml to the
+      first Dataset's nodes; the same for a CityGML 2.0 building model (FZK-Haus LoD2), whose
+      prefixed copy exports as valid 2.0 without the prefix
 
 The database is WIPED. The script refuses bolt://…:7687 (the usual port of a real graph)
 and any non-empty database unless --wipe is given. T5, T6 and T11 need only the fixtures in
@@ -117,6 +123,15 @@ def digest(sess):
                                  {k: str(v) for k, v in r["p"].items()}], sort_keys=True))
     lines.sort()
     return hashlib.sha1("\n".join(lines).encode()).hexdigest(), len(lines)
+
+
+def digest_of(sess, source):
+    """Digest of the nodes of one source file (labels and properties)."""
+    lines = sorted(json.dumps([sorted(r["l"]), {k: str(v) for k, v in r["p"].items()
+                                                if k not in _SPATIAL_PROPS}], sort_keys=True)
+                   for r in sess.run("MATCH (n) WHERE n.source = $s RETURN labels(n) AS l, "
+                                     "properties(n) AS p", s=source))
+    return hashlib.sha1("\n".join(lines).encode()).hexdigest()
 
 
 def wipe(sess):
@@ -278,6 +293,68 @@ def main():
             and pend == 0 and t1 == t2 and tval3 == ("VALID", 0) and tval2 == ("VALID", 0),
             "merged": merged, "pending": pend, "reingest_identical": t1 == t2,
             "v3": tval3, "v2": tval2}
+        # T12 source scope of gml:ids
+        wipe(s)
+        ingest(FIX / "tile_a.gml", "--dataset-name", "scope_one", "--rtree-layer", "streetspace")
+        before = digest_of(s, "tile_a.gml")
+        copy_a, copy_b = out / "tile_a_copy.gml", out / "tile_b_copy.gml"
+        copy_a.write_bytes((FIX / "tile_a.gml").read_bytes())
+        copy_b.write_bytes((FIX / "tile_b.gml").read_bytes())
+        refused, _ = run([PY, "ingest_citygml.py", str(copy_a), *conn, "--dataset-name", "scope_two",
+                          "--rtree-layer", "scope_two"], log, ok_codes=(0, 1))
+        refused_ok = refused.returncode != 0 and "already belong to another source" in (
+            refused.stdout + refused.stderr)
+        written = s.run("MATCH (n) WHERE n.source = 'tile_a_copy.gml' RETURN count(n) AS c").single()["c"]
+        claimed = s.run("MATCH (d:Dataset {id: 'scope_two'}) RETURN d.source_files AS f").single()
+        unchanged = written == 0 and not (claimed and claimed["f"])
+        for f in (copy_a, copy_b):
+            ingest(f, "--dataset-name", "scope_two", "--rtree-layer", "scope_two", "--id-prefix", "two_")
+        # every id from the files carries the prefix (synthetic ids embed the prefixed
+        # parent id), and no node is shared with the first Dataset
+        own = s.run("MATCH (n:Entity) WHERE n.source IN ['tile_a_copy.gml', 'tile_b_copy.gml'] "
+                    "AND n.synthetic_id IS NULL RETURN count(n) AS n, "
+                    "sum(CASE WHEN n.id STARTS WITH 'two_' THEN 1 ELSE 0 END) AS p").single()
+        shared = s.run("MATCH (n:Entity) WHERE n.source IN ['tile_a_copy.gml', 'tile_b_copy.gml'] "
+                       "WITH collect(n.id) AS ids MATCH (m:Entity) WHERE m.source = 'tile_a.gml' "
+                       "AND m.id IN ids RETURN count(m) AS c").single()["c"]
+        first_intact = digest_of(s, "tile_a.gml") == before
+        cross = s.run("MATCH (a)-[r]->(b) WHERE a.source = 'tile_b_copy.gml' AND r.href STARTS WITH "
+                      "'tile_a.gml' RETURN collect(DISTINCT b.source) AS src, count(r) AS n").single()
+        pend12 = s.run("MATCH (n:PendingRefs) WHERE n.source = 'tile_b_copy.gml' "
+                       "RETURN count(n) AS c").single()["c"]
+        sc3 = out / "scope_two_v3.gml"
+        export(3, sc3, "--dataset", "scope_two")
+        sval12 = validate(sc3, 3, log)
+        prefixed_out = bool(re.search(r'(gml:id="|#)two_', sc3.read_text(encoding="utf-8")))
+        # the same for CityGML 2.0 (the guard and the prefix run in the 2.0 path too)
+        fzk = ROOT / "input" / "citygml" / "FZK-Haus" / "FZK-Haus-LoD2-KIT-IAI-KHH-B36-V1.gml"
+        fzk_copy = out / "fzk_lod2_copy.gml"
+        fzk_copy.write_bytes(fzk.read_bytes())
+        ingest(fzk)
+        refused2, _ = run([PY, "ingest_citygml.py", str(fzk_copy), *conn], log, ok_codes=(0, 1))
+        refused2_ok = refused2.returncode != 0 and "already belong to another source" in (
+            refused2.stdout + refused2.stderr)
+        ingest(fzk_copy, "--id-prefix", "copy_")
+        b2 = s.run("MATCH (b:Building) WHERE b.source STARTS WITH 'FZK' OR b.source STARTS WITH 'fzk' "
+                   "RETURN collect(b.id) AS ids").single()["ids"]
+        f2 = out / "fzk_copy_v2.gml"
+        export(2, f2, "--dataset", "fzk_lod2_copy")
+        fval = validate(f2, 2, log)
+        f2_text = f2.read_text(encoding="utf-8")
+        ok20 = (refused2_ok and len(b2) == 2 and sum(i.startswith("copy_") for i in b2) == 1
+                and fval == ("VALID", 0) and not re.search(r'(gml:id="|#)copy_', f2_text))
+        results["T12_id_scope"] = {
+            "ok": refused_ok and unchanged and own["n"] > 0 and own["p"] == own["n"] and shared == 0
+            and first_intact
+            and cross["n"] > 0 and cross["src"] == ["tile_a.gml"] and pend12 == 0
+            and sval12 == ("VALID", 0) and not prefixed_out and ok20,
+            "refused": refused_ok, "nothing_written_when_refused": unchanged,
+            "prefixed_nodes": [own["p"], own["n"]], "shared_with_first": shared,
+            "first_dataset_intact": first_intact,
+            "cross_refs": cross["n"], "cross_target_sources": cross["src"],
+            "pending": pend12, "v3": sval12, "prefix_in_export": prefixed_out,
+            "citygml2": {"refused": refused2_ok, "buildings": b2, "v2": fval,
+                         "prefix_in_export": bool(re.search(r'(gml:id="|#)copy_', f2_text))}}
         # T8 real tiles
         if args.tiles:
             wipe(s)
