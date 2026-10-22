@@ -3,6 +3,18 @@
 // 10 Cypher queries for the Hamburg CityGML 2.0 LOD2 Neo4j graph
 // Written for citizens curious about Hamburg's 3D city model.
 // Run these in the Neo4j Browser at http://localhost:7474
+//
+// Roof materials are the ML-predicted layer written by ingest_roof_materials.py
+// (see ROOF_MATERIAL_INGESTION.md): scalars on the Building node,
+//   predicted_roof_material_<i>            material name, ranked by coverage (i = 0 is the primary)
+//   predicted_roof_material_<i>_coverage   share of the roof pixels (0..1) of that material
+//   predicted_roof_material_count          number of predicted materials
+// Only part of the buildings carry a prediction (about half of Hamburg's). A
+// building without one has an unknown material, not "no material", so shares
+// are taken over the buildings that have a prediction.
+//
+// eval_llm_queries.py --solutions runs these queries (read-only) as the
+// reference answers C01..C10: keep one query per numbered section.
 // =============================================================================
 
 
@@ -22,11 +34,13 @@ RETURN
 
 // -----------------------------------------------------------------------------
 // 2. What is Hamburg's most common roof material?
-//    Shows the distribution of predicted roof materials across all buildings,
-//    with percentage share.
+//    Shows the distribution of predicted roof materials (the primary,
+//    highest-coverage material of each building), with percentage share of
+//    the buildings that have a prediction.
 // -----------------------------------------------------------------------------
-MATCH (rm:RoofMaterial)<-[r:HAS_ROOF_MATERIAL]-(b:Building)
-WITH rm.name AS material, count(DISTINCT b) AS buildings
+MATCH (b:Building)
+WHERE b.predicted_roof_material_0 IS NOT NULL
+WITH b.predicted_roof_material_0 AS material, count(*) AS buildings
 WITH collect({material: material, buildings: buildings}) AS rows, sum(buildings) AS total
 UNWIND rows AS row
 RETURN
@@ -53,7 +67,7 @@ LIMIT 20
 
 // -----------------------------------------------------------------------------
 // 4. Which roof shapes are most popular in Hamburg?
-//    Flat, Gable, Hip, Mono-Pitch — shows the architectural character
+//    Flat, Gable, Hip, Mono-Pitch: shows the architectural character
 //    of different neighbourhoods.
 // -----------------------------------------------------------------------------
 MATCH (b:Building)-[:HAS_ROOF_TYPE]->(rt:RoofType)
@@ -64,7 +78,7 @@ ORDER BY buildings DESC
 
 
 // -----------------------------------------------------------------------------
-// 5. Solar panel potential — flat-roofed buildings taller than 5 m
+// 5. Solar panel potential: flat-roofed buildings taller than 5 m
 //    Flat roofs on larger buildings are the easiest surfaces for solar
 //    installations. This query finds them and ranks by roof area proxy (height).
 // -----------------------------------------------------------------------------
@@ -96,70 +110,82 @@ ORDER BY storeys ASC
 // 7. Which buildings have glass roofs?
 //    Glass roofs typically indicate modern commercial buildings,
 //    train stations, shopping centres, or public spaces.
+//    Any predicted material of the building counts, ranked by its coverage.
 // -----------------------------------------------------------------------------
-MATCH (b:Building)-[r:HAS_ROOF_MATERIAL]->(rm:RoofMaterial {name: "glass"})
+MATCH (b:Building)
+WHERE b.predicted_roof_material_count > 0
+UNWIND range(0, b.predicted_roof_material_count - 1) AS i
+WITH b, i
+WHERE b['predicted_roof_material_' + toString(i)] = 'glass'
 RETURN
   b.id              AS gml_id,
-  r.coverage        AS glass_coverage,
+  b['predicted_roof_material_' + toString(i) + '_coverage'] AS glass_coverage,
   b.measured_height AS height_m,
   b.description     AS description
-ORDER BY r.coverage DESC
+ORDER BY glass_coverage DESC
 LIMIT 50
 
 
 // -----------------------------------------------------------------------------
-// 8. Hamburg high-rises — buildings taller than 50 metres
+// 8. Hamburg high-rises: buildings taller than 50 metres
 //    How many skyscrapers and tower blocks does Hamburg have?
+//    roof_materials is empty for a building without a prediction (unknown).
 // -----------------------------------------------------------------------------
 MATCH (b:Building)
 WHERE b.measured_height > 50
 OPTIONAL MATCH (b)-[:HAS_ROOF_TYPE]->(rt:RoofType)
-OPTIONAL MATCH (b)-[r:HAS_ROOF_MATERIAL]->(rm:RoofMaterial)
 RETURN
   b.id              AS gml_id,
   b.measured_height AS height_m,
   b.storeys_above_ground AS storeys,
   rt.name           AS roof_shape,
-  collect(rm.name + ' (' + toString(round(r.coverage * 100)) + '%)') AS roof_materials,
+  [i IN range(0, coalesce(b.predicted_roof_material_count, 0) - 1)
+   | b['predicted_roof_material_' + toString(i)] + ' ('
+     + toString(round(b['predicted_roof_material_' + toString(i) + '_coverage'] * 100)) + '%)']
+                    AS roof_materials,
   b.description     AS description
 ORDER BY b.measured_height DESC
 
 
 // -----------------------------------------------------------------------------
 // 9. Buildings with mixed roof materials
-//    Some buildings have more than one material on the roof — interesting for
+//    Some buildings have more than one material on the roof: interesting for
 //    understanding complex roof landscapes or renovation history.
 // -----------------------------------------------------------------------------
-MATCH (b:Building)-[r:HAS_ROOF_MATERIAL]->(rm:RoofMaterial)
-WITH b, count(rm) AS material_count, collect(rm.name + ' ' + toString(round(r.coverage * 100)) + '%') AS materials
-WHERE material_count > 1
+MATCH (b:Building)
+WHERE b.predicted_roof_material_count > 1
 RETURN
   b.id              AS gml_id,
   b.measured_height AS height_m,
-  material_count,
-  materials,
+  b.predicted_roof_material_count AS material_count,
+  [i IN range(0, b.predicted_roof_material_count - 1)
+   | b['predicted_roof_material_' + toString(i)] + ' '
+     + toString(round(b['predicted_roof_material_' + toString(i) + '_coverage'] * 100)) + '%']
+                    AS materials,
   b.description     AS description
-ORDER BY material_count DESC, b.measured_height DESC
+ORDER BY material_count DESC, height_m DESC
 LIMIT 50
 
 
 // -----------------------------------------------------------------------------
-// 10. Buildings in HafenCity — Hamburg's modern harbour district
+// 10. Buildings in HafenCity: Hamburg's modern harbour district
 //     Filters by bounding box in ETRS89 UTM32 coordinates (metres).
-//     Shows roof materials and height — great for exploring a specific
+//     Shows roof materials and height: great for exploring a specific
 //     neighbourhood's architectural character.
+//     roof_materials is empty for a building without a prediction (unknown).
 // -----------------------------------------------------------------------------
 MATCH (b:Building)
 WHERE b.center_x >= 564500 AND b.center_x <= 567500
   AND b.center_y >= 5930800 AND b.center_y <= 5932800
 OPTIONAL MATCH (b)-[:HAS_ROOF_TYPE]->(rt:RoofType)
-OPTIONAL MATCH (b)-[r:HAS_ROOF_MATERIAL]->(rm:RoofMaterial)
 RETURN
   b.id              AS gml_id,
   b.measured_height AS height_m,
   b.storeys_above_ground AS storeys,
   rt.name           AS roof_shape,
-  collect(rm.name + ' (' + toString(round(r.coverage * 100)) + '%)') AS roof_materials,
+  [i IN range(0, coalesce(b.predicted_roof_material_count, 0) - 1)
+   | b['predicted_roof_material_' + toString(i)] + ' ('
+     + toString(round(b['predicted_roof_material_' + toString(i) + '_coverage'] * 100)) + '%)']
+                    AS roof_materials,
   b.description     AS description
 ORDER BY b.measured_height DESC
-
