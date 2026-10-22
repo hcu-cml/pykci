@@ -94,7 +94,8 @@ This is a **binding rule for all current and future mapping functions**: before 
 | **Crowd-sourced** | OSM `osm_height`, `osm_building`, POIs | `(:OsmFeature)` node + `ENRICHED_BY`/`HAS_POI` edge; scalars under the `osm_*` prefix |
 | **ML-predicted** | roof materials (5 classes, partial ~50% coverage, Hamburg) | `predicted_roof_material` gen-attr scalar on `Building` — *should additionally carry confidence + coverage; see rules below* |
 | **Reconstructed** | LoD3 building models from facade images (few, Hamburg) | LoD3 geometry edges — *should carry method + a provenance node; see rules below* |
-| **Sensed / detected** | potholes, street-condition (planned) | *not yet added — follow the rules below when you do* |
+| **Sensed / live** | live values of sensors and live feeds (traffic counts, free parking spaces, charge-point status); potholes, street condition (planned) | `live_*` scalars beside the feature's other values, `source_type: 'sensed'` on nodes that hold only sensed data |
+| **Derived / computed** | values a pipeline step computes from other data: aggregates, averaged or interpolated positions, matched links | `source_type: 'derived'` with `method` and `method_version` on a node or edge that is computed as a whole; on a node that otherwise holds a source's values, the computed keys are listed in `derived_keys` |
 
 ### Existing provenance mechanisms (reuse these — do not invent parallel ones)
 
@@ -110,7 +111,9 @@ This is a **binding rule for all current and future mapping functions**: before 
 When adding a new data source (e.g. potholes, energy models, sensor feeds, a new prediction):
 
 - [ ] **Record the source.** Set `source` on every node/edge you create.
-- [ ] **Record the trust class + method.** Add a `source_type` property (one of: `authoritative`, `crowdsourced`, `predicted`, `reconstructed`, `sensed`) and, for derived data, the method/model id **and version** (e.g. `method='roofnet'`, `method_version='1.2'`).
+- [ ] **Record the trust class + method.** Add a `source_type` property (one of: `authoritative`, `crowdsourced`, `predicted`, `reconstructed`, `sensed`, `derived`) and, for derived data, the method/model id **and version** (e.g. `method='roofnet'`, `method_version='1.2'`). `derived` is for values a pipeline step computes from other data (an aggregate, an averaged or interpolated position, a matched link). These stored values are shown as the layers of `pykci_provenance.py` (`crowdsourced` → `crowd_sourced`, `predicted` → `ml_predicted`, the others by the same name); label a value with `pykci_provenance.layer_of(key, node)`.
+- [ ] **Name computed keys on a sourced node.** When a node holds a source's values plus some values you computed (a mapped category, an averaged position), keep its `source_type` and list the computed property names in `derived_keys`; drop a computed key (set it to null) when it cannot be computed any more, never leave an old value behind.
+- [ ] **Live values under `live_`.** Values read from sensors or live feeds, and the time they were observed or written, use the `live_` prefix (shown as *sensed*). Bookkeeping that is not a sensed value (when a node was last seen in a feed or refreshed) uses other names.
 - [ ] **Never overwrite an authoritative value.** Put derived scalars on a namespaced key (`<src>_<attr>`, e.g. `pred_roof_material`, `pothole_severity`) beside the authoritative one.
 - [ ] **Carry confidence.** ML-predicted scalars store a `*_confidence` (probability/score); fused links store confidence on the edge.
 - [ ] **Flag partial coverage explicitly.** If the source covers only some features (e.g. 50% of buildings), the *absence* of a value must be distinguishable from a *negative* value — never impute. A city-wide statistic must be answerable only relative to the covered subset. (This is what makes **coverage-aware** queries — and honest infeasibility answers — possible.)
