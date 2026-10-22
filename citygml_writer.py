@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from collections import Counter, defaultdict
 
 from lxml import etree
@@ -2339,6 +2340,22 @@ def dataset_appearances(sess, w, dataset_id, area_limited=True, chunk=5000):
     return out
 
 
+def _peak_rss_mb():
+    """Peak resident memory of this process in MB, or None where it cannot be read.
+    `resource` exists only on POSIX (ru_maxrss: KB on Linux, bytes on macOS); on Windows
+    psutil gives the peak working set when it is installed."""
+    try:
+        import resource
+    except ImportError:
+        try:
+            import psutil
+            return round(psutil.Process().memory_info().peak_wset / 1048576)
+        except Exception:
+            return None
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return round(peak / (1048576 if sys.platform == "darwin" else 1024))
+
+
 def export_document(sess, dataset, version, out_path, opts=None, feature_ids=None,
                     bbox_wkt=None, clip=None, batch=200):
     """Write `dataset` (a Dataset node's properties) as CityGML `version` ('2.0'/'3.0')
@@ -2347,14 +2364,13 @@ def export_document(sess, dataset, version, out_path, opts=None, feature_ids=Non
     batch, not by the document. With bbox_wkt the R-tree selects the top-level features;
     clip (default: on with bbox_wkt) additionally prunes the transportation hierarchy to
     the sub-features whose bbox meets the box. Returns (counts, loss_report_dict)."""
-    import resource
     import time as _time
     t0 = _time.perf_counter()
     prof = []
 
     def mark(phase):
         prof.append((phase, round(_time.perf_counter() - t0, 2),
-                     round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024)))
+                     _peak_rss_mb()))
 
     opts = dict(opts or {})
     box = wkt_box(bbox_wkt) if bbox_wkt else None

@@ -2094,7 +2094,8 @@ def main(argv=None):
             print(f"  {k}: {v:,}")
         if args.profile:
             for ph in loss.get("profile", []):
-                print(f"  [profile] {ph['t_s']:>8.2f} s  peak RSS {ph['peak_rss_mb']:>6} MB  {ph['phase']}")
+                rss = ph['peak_rss_mb'] if ph['peak_rss_mb'] is not None else '?'
+                print(f"  [profile] {ph['t_s']:>8.2f} s  peak RSS {rss:>6} MB  {ph['phase']}")
     drv.close()
     print("Done.")
 
