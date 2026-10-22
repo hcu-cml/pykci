@@ -14,15 +14,23 @@ GML at four levels and reports every loss.
                    and gml:pos, so the pos<->posList encoding change is not a loss
 
 The bar is SEMANTIC COMPLETENESS, not byte-identity: encoding, element order, and
-whitespace may differ. The appearance/material module is deferred and excluded.
+whitespace may differ. The appearance/material module is excluded unless
+--include-appearance is given (the 3.0 codec models appearances).
+
+Works for CityGML 2.0 and 3.0 alike (local names only). An OBJECTS table (every
+CityGML object element — Road, TrafficSpace, WallSurface, X3DMaterial, … — counted
+in source and export) is printed too; for a cross-version export (3.0 → 2.0) it shows
+what was flattened, while the four multiset checks show what was lost.
 
 Usage (from project root, after ingest + export of the SAME file):
     python eval/roundtrip_census.py --gml <source.gml> --export <export.gml>
+        [--include-appearance] [--json OUT.json]
 
 Exit code 0 when the export covers everything in the source (diff empty), else 1.
 """
 
 import argparse
+import json
 import sys
 from collections import Counter
 from pathlib import Path
@@ -58,8 +66,10 @@ def _ln(tag) -> str:
     return etree.QName(tag).localname if isinstance(tag, str) else ""
 
 
-def _is_appearance(el) -> bool:
+def _is_appearance(el, include=False) -> bool:
     """True if el or any ancestor is in the appearance module."""
+    if include:
+        return False
     node = el
     while node is not None:
         if isinstance(node.tag, str) and _ln(node.tag) in APPEARANCE_LOCALNAMES:
@@ -84,19 +94,23 @@ def _coord_tuples(text: str):
             continue
 
 
-def census(path: Path):
-    root = etree.parse(str(path)).getroot()
+def census(path: Path, include_appearance=False):
+    root = etree.parse(str(path), etree.XMLParser(huge_tree=True)).getroot()
     elems: Counter = Counter()
     attrs: Counter = Counter()
     texts: Counter = Counter()
     coords: Counter = Counter()
+    objects: Counter = Counter()
 
     for el in root.iter():
         if not isinstance(el.tag, str):
             continue
-        if _is_appearance(el):
+        if _is_appearance(el, include_appearance):
             continue
         ln = _ln(el.tag)
+        ns = etree.QName(el.tag).namespace or ""
+        if "citygml" in ns and ln[:1].isupper():
+            objects[ln] += 1
 
         if ln in COORD_LOCALNAMES:
             if el.text:
@@ -115,7 +129,8 @@ def census(path: Path):
         if el.text and el.text.strip():
             texts[(ln, _norm_text(el.text))] += 1
 
-    return {"elements": elems, "attributes": attrs, "texts": texts, "coords": coords}
+    return {"elements": elems, "attributes": attrs, "texts": texts, "coords": coords,
+            "objects": objects}
 
 
 def diff(src: Counter, exp: Counter):
@@ -134,18 +149,29 @@ def main():
     ap.add_argument("--gml", required=True)
     ap.add_argument("--export", required=True)
     ap.add_argument("--show", type=int, default=40, help="max rows per section")
+    ap.add_argument("--include-appearance", action="store_true",
+                    help="include the appearance module (excluded by default)")
+    ap.add_argument("--json", default=None, help="write the comparison as JSON")
     args = ap.parse_args()
 
-    src = census(Path(args.gml))
-    exp = census(Path(args.export))
+    src = census(Path(args.gml), args.include_appearance)
+    exp = census(Path(args.export), args.include_appearance)
 
     sep = "-" * 72
     print(sep)
-    print(f"  CENSUS ROUND-TRIP  (appearance module excluded)")
+    print(f"  CENSUS ROUND-TRIP  (appearance module "
+          f"{'included' if args.include_appearance else 'excluded'})")
     print(f"  source: {args.gml}")
     print(f"  export: {args.export}")
     print(sep)
 
+    print("  OBJECTS (source → export):")
+    for k in sorted(set(src["objects"]) | set(exp["objects"])):
+        a, b = src["objects"].get(k, 0), exp["objects"].get(k, 0)
+        print(f"        {k:<32} {a:>7} → {b:<7}{'' if a == b else '  ≠'}")
+    report = {"source": args.gml, "export": args.export,
+              "objects": {k: [src["objects"].get(k, 0), exp["objects"].get(k, 0)]
+                          for k in sorted(set(src["objects"]) | set(exp["objects"]))}}
     total_lost = 0
     for section, label in [("elements", "ELEMENTS (local-name)"),
                            ("attributes", "ATTRIBUTES (name, value)"),
@@ -154,6 +180,7 @@ def main():
         d = diff(src[section], exp[section])
         lost = sum(s - e for s, e in d.values())
         total_lost += lost
+        report[section] = {"keys_with_loss": len(d), "missing_instances": lost}
         status = "OK" if not d else "!!"
         print(f"  [{status}] {label}: "
               f"{len(d)} keys with loss, {lost} missing instances")
@@ -161,6 +188,9 @@ def main():
             print(f"        src={s:>6} exp={e:>6}  {k}")
 
     print(sep)
+    if args.json:
+        report["missing_total"] = total_lost
+        Path(args.json).write_text(json.dumps(report, indent=2, ensure_ascii=False))
     if total_lost == 0:
         print("  RESULT: LOSSLESS — export covers every source element/attr/text/coord")
         print(sep)

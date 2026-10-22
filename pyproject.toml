@@ -44,6 +44,8 @@ py-modules = [
     "pykci_cli",
     "pykci_runtime",
     "pykci_provenance",
+    "citygml_profiles",
+    "citygml_writer",
     "ingest_citygml",
     "ingest_osm",
     "ingest_roof_materials",

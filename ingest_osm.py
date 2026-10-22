@@ -873,7 +873,11 @@ def index_cityobjects_post_fusion(sess, layer="features", batch=2000):
 
     # 1. Compute bbox_wkt for CityObjects that lack one, from their graph geometry.
     need = [r["id"] for r in sess.run(
-        "MATCH (c:CityObject) WHERE c.bbox_wkt IS NULL RETURN c.id AS id")]
+        # (features of another source's own R-tree layer — e.g. the CityGML 3.0 street
+        #  space, which gets its bbox at ingest — are left alone: the [*1..6] walk below
+        #  would cross HAS_PROTOTYPE template-local coordinates and RELATED_TO links)
+        "MATCH (c:CityObject) WHERE c.bbox_wkt IS NULL AND c.rtree_layer IS NULL "
+        "RETURN c.id AS id")]
     for i in range(0, len(need), batch):
         rows = sess.run(
             "UNWIND $ids AS cid MATCH (c:Entity {id: cid}) "
@@ -904,7 +908,11 @@ def index_cityobjects_post_fusion(sess, layer="features", batch=2000):
 
     # 2. Index every CityObject that has a bbox into the 'features' R-tree (serial).
     ids = [r["id"] for r in sess.run(
-        "MATCH (c:CityObject) WHERE c.bbox_wkt IS NOT NULL RETURN c.id AS id")]
+        # only this layer's CityObjects (GRAPH.md: one R-tree layer per source) and only
+        # those not indexed yet (spatial.addNodes is not idempotent)
+        "MATCH (c:CityObject) WHERE c.bbox_wkt IS NOT NULL "
+        "AND coalesce(c.rtree_layer, 'features') = $layer "
+        "AND NOT ()-[:RTREE_REFERENCE]->(c) RETURN c.id AS id", layer=layer)]
     indexed = 0
     for i in range(0, len(ids), batch):
         r = sess.run(
