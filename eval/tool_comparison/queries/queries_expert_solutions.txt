@@ -9,11 +9,22 @@
 //   - 194,799 buildings (~50%) have roof material predictions
 //   - Coordinates: ETRS89 UTM32 (metres), ground_z in DHHN2016 heights
 //   - Footprint area = bbox proxy (bounding box, not true polygon area)
+//
+// Roof materials are the ML-predicted layer written by ingest_roof_materials.py
+// (see ROOF_MATERIAL_INGESTION.md): scalars on the Building node,
+//   predicted_roof_material_<i>            material name, ranked by coverage (i = 0 is the primary)
+//   predicted_roof_material_<i>_coverage   share of the roof pixels (0..1) of that material
+//   predicted_roof_material_count          number of predicted materials
+// A building without a prediction has an unknown material, not "no material":
+// material shares are taken over the buildings that have a prediction.
+//
+// eval_llm_queries.py --solutions runs these queries (read-only) as the
+// reference answers E01..E10: keep one query per numbered section.
 // =============================================================================
 
 
 // -----------------------------------------------------------------------------
-// 1. Building typology — height and storey profile per use type
+// 1. Building typology: height and storey profile per use type
 //    Urban planners use this to understand the vertical density profile
 //    of each function class: residential, commercial, industrial, etc.
 //    Building type is extracted from the auto-generated description field.
@@ -37,23 +48,23 @@ ORDER BY buildings DESC
 
 
 // -----------------------------------------------------------------------------
-// 2. 1 km spatial grid — building density, height, and dominant roof material
-//    Breaks Hamburg into 1 km × 1 km cells and summarises each.
+// 2. 1 km spatial grid: building density, height, and roof materials
+//    Breaks Hamburg into 1 km x 1 km cells and summarises each.
 //    Useful for density zoning analysis and morphological mapping.
-//    Only cells with ≥ 30 buildings are shown to filter sparse rural edges.
+//    Only cells with >= 30 buildings are shown to filter sparse rural edges.
+//    mat_counts counts the buildings with each predicted material (any rank).
 // -----------------------------------------------------------------------------
 MATCH (b:Building)
-OPTIONAL MATCH (b)-[:HAS_ROOF_MATERIAL]->(rm:RoofMaterial)
 WITH toInteger(b.center_x / 1000) * 1000 AS gx,
      toInteger(b.center_y / 1000) * 1000 AS gy,
-     b.id                                AS bid,
      b.measured_height                   AS h,
-     rm.name                             AS mat
+     [i IN range(0, coalesce(b.predicted_roof_material_count, 0) - 1)
+      | b['predicted_roof_material_' + toString(i)]] AS mats
 WITH gx, gy,
-     count(DISTINCT bid)                 AS buildings,
+     count(*)                            AS buildings,
      round(avg(h) * 10) / 10            AS avg_height_m,
      round(max(h) * 10) / 10            AS max_height_m,
-     collect(mat)                        AS all_mats
+     reduce(acc = [], m IN collect(mats) | acc + m) AS all_mats
 WHERE buildings >= 30
 WITH gx, gy, buildings, avg_height_m, max_height_m,
      [m IN ['roof_tiles','tar_paper','concrete','metal','glass']
@@ -66,19 +77,21 @@ LIMIT 30
 
 
 // -----------------------------------------------------------------------------
-// 3. Solar potential scoring — ranked list of best candidates
+// 3. Solar potential scoring: ranked list of best candidates
 //    Composite score based on: roof shape (flat = highest), material
 //    suitability, height above 10 m (clears most trees/obstacles),
 //    and multi-storey (higher energy demand justifies installation).
-//    Score range: 0 (unsuitable) to 7 (excellent).
+//    Score range: 0 (unsuitable) to 7 (excellent). Every predicted material
+//    of a building adds its points; no prediction adds none.
 // -----------------------------------------------------------------------------
 MATCH (b:Building)-[:HAS_ROOF_TYPE]->(rt:RoofType)
-OPTIONAL MATCH (b)-[r:HAS_ROOF_MATERIAL]->(rm:RoofMaterial)
-WITH b, rt, collect({mat: rm.name, cov: r.coverage}) AS mats
+WITH b, rt,
+     [i IN range(0, coalesce(b.predicted_roof_material_count, 0) - 1)
+      | b['predicted_roof_material_' + toString(i)]] AS mats
 WITH b, rt,
      CASE rt.name WHEN 'Flat Roof' THEN 3 ELSE 0 END            AS shape_pts,
      reduce(s = 0, m IN mats |
-       s + CASE m.mat
+       s + CASE m
          WHEN 'concrete'  THEN 2
          WHEN 'tar_paper' THEN 2
          WHEN 'metal'     THEN 1
@@ -101,10 +114,10 @@ LIMIT 50
 
 
 // -----------------------------------------------------------------------------
-// 4. Floor-to-floor height anomaly detection — data quality flag
-//    A typical storey is 3–4 m. Values outside 2–8 m indicate either
+// 4. Floor-to-floor height anomaly detection: data quality flag
+//    A typical storey is 3-4 m. Values outside 2-8 m indicate either
 //    special structures (industrial halls, towers, carports) or measurement
-//    errors in the source data — valuable for data quality auditing.
+//    errors in the source data: valuable for data quality auditing.
 // -----------------------------------------------------------------------------
 MATCH (b:Building)
 WHERE b.measured_height      IS NOT NULL
@@ -126,14 +139,15 @@ LIMIT 50
 
 // -----------------------------------------------------------------------------
 // 5. Roof material distribution by building function
-//    Cross-tabulation: for each use type, what fraction of buildings
-//    has each predicted roof material? Reveals whether material
-//    predictions correlate with known building typologies.
-//    Only types with ≥ 500 buildings included.
+//    Cross-tabulation: for each use type, what fraction of the buildings with
+//    a prediction has each primary (highest-coverage) predicted roof material?
+//    Reveals whether material predictions correlate with known building
+//    typologies. Only types with >= 500 buildings with a prediction included.
 // -----------------------------------------------------------------------------
-MATCH (b:Building)-[:HAS_ROOF_MATERIAL]->(rm:RoofMaterial)
+MATCH (b:Building)
+WHERE b.predicted_roof_material_0 IS NOT NULL
 WITH split(b.description, ',')[0] AS btype,
-     rm.name                       AS material,
+     b.predicted_roof_material_0   AS material,
      count(*)                       AS cnt
 WITH btype,
      sum(cnt)                       AS total,
@@ -151,20 +165,21 @@ LIMIT 20
 
 
 // -----------------------------------------------------------------------------
-// 6. Urban heat island proxy — dark roof fraction per 2 km grid cell
+// 6. Urban heat island proxy: dark roof fraction per 2 km grid cell
 //    Tar paper and metal absorb significantly more solar radiation than
 //    concrete, tiles, or glass. High dark-roof density correlates with
 //    elevated surface temperatures (urban heat island effect).
-//    Only cells with ≥ 50 buildings with material predictions included.
+//    Only buildings with a prediction are counted (a missing prediction is
+//    unknown, not a light roof), and only cells with >= 50 of them included.
 // -----------------------------------------------------------------------------
 MATCH (b:Building)
-OPTIONAL MATCH (b)-[:HAS_ROOF_MATERIAL]->(rm:RoofMaterial)
+WHERE b.predicted_roof_material_count > 0
 WITH toInteger(b.center_x / 2000) * 2000 AS gx,
      toInteger(b.center_y / 2000) * 2000 AS gy,
-     b.id                                AS bid,
-     collect(rm.name)                    AS mats
+     [i IN range(0, b.predicted_roof_material_count - 1)
+      | b['predicted_roof_material_' + toString(i)]] AS mats
 WITH gx, gy,
-     count(bid)                                                    AS buildings_with_pred,
+     count(*)                                                      AS buildings_with_pred,
      count(CASE WHEN any(m IN mats WHERE m IN ['tar_paper','metal'])
                 THEN 1 END)                                        AS dark_roof_buildings,
      count(CASE WHEN any(m IN mats WHERE m IN ['concrete','glass'])
@@ -183,19 +198,23 @@ LIMIT 20
 
 // -----------------------------------------------------------------------------
 // 7. Roof material prediction coverage completeness
-//    The material_cov values from the ML prediction indicate what fraction
-//    of the roof each material covers. A building with total coverage < 0.9
-//    has an unexplained portion — useful to assess prediction confidence
-//    and identify buildings that need re-inspection.
+//    The predicted_roof_material_<i>_coverage values from the ML prediction
+//    indicate what fraction of the roof each material covers. A building with
+//    total coverage < 0.9 has an unexplained portion: useful to assess
+//    prediction confidence and identify buildings that need re-inspection.
 // -----------------------------------------------------------------------------
-MATCH (b:Building)-[r:HAS_ROOF_MATERIAL]->()
-WITH b, round(sum(r.coverage) * 100) / 100 AS total_cov
+MATCH (b:Building)
+WHERE b.predicted_roof_material_count > 0
+WITH b,
+     round(reduce(s = 0.0, i IN range(0, b.predicted_roof_material_count - 1)
+       | s + coalesce(b['predicted_roof_material_' + toString(i) + '_coverage'], 0.0))
+       * 100) / 100 AS total_cov
 WITH
   CASE
-    WHEN total_cov >= 0.95 THEN '1 — complete  (≥95%)'
-    WHEN total_cov >= 0.75 THEN '2 — good      (75–95%)'
-    WHEN total_cov >= 0.50 THEN '3 — partial   (50–75%)'
-    ELSE                        '4 — low       (<50%)'
+    WHEN total_cov >= 0.95 THEN '1 - complete  (>= 0.95)'
+    WHEN total_cov >= 0.75 THEN '2 - good      (0.75 to 0.95)'
+    WHEN total_cov >= 0.50 THEN '3 - partial   (0.50 to 0.75)'
+    ELSE                        '4 - low       (< 0.50)'
   END                            AS coverage_class,
   count(*)                       AS buildings,
   round(avg(total_cov) * 1000) / 1000 AS avg_coverage
@@ -204,8 +223,8 @@ ORDER BY coverage_class
 
 
 // -----------------------------------------------------------------------------
-// 8. High-rise cluster detection — 500 m grid cells with multiple tall buildings
-//    Tall buildings (> 30 m) rarely stand alone — this identifies dense
+// 8. High-rise cluster detection: 500 m grid cells with multiple tall buildings
+//    Tall buildings (> 30 m) rarely stand alone: this identifies dense
 //    high-rise clusters useful for wind, shadow, and microclimate analysis.
 //    Each cell reports count, height stats, and sample building IDs.
 // -----------------------------------------------------------------------------
@@ -256,11 +275,11 @@ LIMIT 25
 
 
 // -----------------------------------------------------------------------------
-// 10. Ground elevation profile — flood risk and topographic context
+// 10. Ground elevation profile: flood risk and topographic context
 //     Hamburg has areas below sea level (dikes, port basins) down to −5 m
 //     and elevated areas up to 88 m (Alstertal/Bergedorf ridges).
 //     This query combines ground_z with building height to classify
-//     buildings by elevation zone — relevant for flood risk planning.
+//     buildings by elevation zone: relevant for flood risk planning.
 // -----------------------------------------------------------------------------
 MATCH (b:Building)
 WHERE b.ground_z IS NOT NULL AND b.measured_height IS NOT NULL
@@ -280,4 +299,3 @@ WITH elevation_zone,
 RETURN elevation_zone, buildings, avg_ground_z_m,
        avg_building_height_m, max_building_height_m
 ORDER BY avg_ground_z_m ASC
-

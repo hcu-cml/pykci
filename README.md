@@ -426,6 +426,8 @@ Interactive CLI that translates plain-English questions into Cypher via `GraphCy
 - **Local (Ollama)** - default; runs entirely on-premise, keeping data private. Requires Ollama at `http://localhost:11434`. Best for routine queries.
 - **Commercial (Claude)** - swap the LLM object (`ChatOllama` → `ChatAnthropic`) for the most demanding spatial/semantic reasoning. Requires `ANTHROPIC_API_KEY`. Note: the schema, question, and returned rows leave the local machine - prefer the local backend for privacy-sensitive data.
 
+For a batch run of the 20 benchmark questions (read-only sessions, provenance-aware answers, optional grading against reference queries) use [`eval/tool_comparison/queries/eval_llm_queries.py`](eval/tool_comparison/queries/README.md).
+
 #### Minimal-context variant (small models on a laptop)
 
 ```bash
