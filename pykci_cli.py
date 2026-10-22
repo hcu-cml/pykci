@@ -10,10 +10,10 @@ people and for programs (the pykci web client, CI jobs, containers).
 Pipeline commands forward their arguments unchanged to the script, so
 `pykci <command> --help` shows that script's own options:
 
-    ingest-citygml   ingest_citygml.py           CityGML 2.0 → Neo4j
+    ingest-citygml   ingest_citygml.py           CityGML 2.0 / 3.0 → Neo4j
     ingest-osm       ingest_osm.py               OpenStreetMap enrichment (.osm.pbf)
     ingest-roofmats  ingest_roof_materials.py    ML roof-material predictions (GeoJSON)
-    export-citygml   export_citygml.py           Neo4j → CityGML (dataset, --ids or --bbox)
+    export-citygml   export_citygml.py           Neo4j → CityGML 2.0 / 3.0 (dataset, --ids or --bbox)
     build-3dtiles    build_3dtiles.py            Neo4j → 3D Tiles (--tiled for whole cities)
     footprints       tools/extract_citygml_building_footprints.py   CityGML → GeoJSON (no Neo4j)
     upgrade-citygml  tools/upgrade_citygml_10_to_20.py              CityGML 1.0 → 2.0 (no Neo4j)

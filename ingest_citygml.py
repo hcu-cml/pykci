@@ -1,6 +1,11 @@
 """
-CityGML 2.0 → Neo4j ingestion — lossless, dataset-agnostic, all modules.
+CityGML 2.0 / 3.0 → Neo4j ingestion — lossless, dataset-agnostic, all modules.
 Optimized for large files (GBs): streaming iterparse + batched UNWIND writes.
+
+The codec is chosen per file from the root namespace (citygml_profiles): CityGML 3.0
+files are read by the 3.0 codec (ingest_citygml3, section "CityGML 3.0 codec" below),
+everything else by the 2.0 code. Both write the one version-neutral model of GRAPH.md;
+see CITYGML3.md for the 3.0 additions, the 2.0 ↔ 3.0 mapping and the tests.
 
 Supported CityGML 2.0 modules
 ───────────────────────────────
@@ -740,6 +745,32 @@ RESERVED_NODE_KEYS = frozenset({
     "creation_date", "year_of_construction", "relative_to_terrain",
     "external_information_system", "external_object_name",
     "gml_name", "gml_description",
+    # module scalars of CityObjects / sub-features / surfaces (2.0 + 3.0). Without
+    # these a gen:*Attribute named e.g. "height", "function" or "class" silently
+    # overwrote the authoritative module value (props.update(gen_props) runs after
+    # the module scalars), and export then wrote the corrupted value twice.
+    "class", "function", "usage", "class_codespace", "function_codespace",
+    "usage_codespace", "class_list", "function_list", "usage_list",
+    "class_codespace_list", "function_codespace_list", "usage_codespace_list",
+    "class_code_list", "function_code_list", "usage_code_list",
+    "roof_type_codespace", "measured_height_uom", "year_of_demolition",
+    "relative_to_water", "surface_material", "surface_material_codespace",
+    "species", "species_codespace", "height", "height_uom", "trunk_diameter",
+    "trunk_diameter_uom", "crown_diameter", "crown_diameter_uom", "average_height",
+    "average_height_uom", "min_height", "min_height_uom", "max_height",
+    "max_height_uom", "root_ball_diameter", "root_ball_diameter_uom",
+    "max_root_ball_depth", "max_root_ball_depth_uom", "water_level",
+    "water_level_codespace", "is_movable", "granularity", "traffic_direction",
+    "occupancy_json", "space_type", "volume_json", "area_json", "surface_type",
+    "lod", "opening_type", "filling_type", "installation_kind", "feature_kind",
+    "ns_prefix", "relation_to_construction", "is_structural_element",
+    "date_of_construction", "date_of_demolition", "condition_of_construction",
+    "heights_json", "height_high_reference", "height_low_reference", "height_status",
+    "elevations_json", "valid_from", "valid_to", "multi_surface_id", "uses_orientable",
+    "geom_prop", "gml_identifier", "gml_identifier_codespace", "gml_id",
+    # provenance / plumbing (GRAPH.md provenance rules, 3.0 codec)
+    "source_type", "method", "method_version", "source_files", "rtree_layer",
+    "synthetic_id", "pending_refs_json", "rtree_stale", "materialized_from",
 })
 
 
@@ -919,11 +950,22 @@ def _index_features_spatial(session, layer_name="features", batch_size=25000):
     """
     try:
         print("  Indexing all features in R-tree …")
+        _reindex_stale(session)   # 3.0 features whose bbox grew in a later tile
         # Collect ids first (cheap: no geometry materialized), then re-match each
         # batch through the Entity(id) index — a single scan, index-backed lookups.
+        # A feature registered in another source's own layer (n.rtree_layer, set by
+        # --rtree-layer, e.g. the street-space reconstruction) never leaks into this
+        # layer (GRAPH.md: a separate R-tree layer per source). Nodes without the
+        # property belong to 'features', so a 2.0-only graph indexes exactly as before.
+        # spatial.addNodes is NOT idempotent (verified on neo4j-spatial 2025.10: a
+        # re-add creates a second RTREE_REFERENCE and a duplicate hit), so nodes that
+        # are already indexed are skipped — re-running an ingest no longer duplicates
+        # every previously indexed feature.
         ids = [r["id"] for r in session.run(
             "MATCH (n) WHERE (n:Building OR n:CityObject) AND n.bbox_wkt IS NOT NULL "
-            "RETURN n.id AS id"
+            "AND coalesce(n.rtree_layer, 'features') = $layer "
+            "AND NOT ()-[:RTREE_REFERENCE]->(n) "
+            "RETURN n.id AS id", layer=layer_name,
         )]
         total = 0
         for i in range(0, len(ids), batch_size):
@@ -1140,13 +1182,35 @@ def _new_batch():
         "poly_ext_ring_rels": [],
         "poly_int_ring_rels": [],
         "terrain_line_rels":  [],
+        # ── CityGML 3.0 codec (and the 2.0 TrafficArea addition) ─────────────
+        # All empty for a plain 2.0 file, so the 2.0 flush is unchanged.
+        "buildings3":         [],   # Building rows (bbox via bbox_union, source_files union)
+        "city_objects3":      [],   # top-level CityObject rows, label = feature_type
+        "bbox_union":         [],   # {id, minx..maxz} — union-merged across tiles
+        "sub_features":       [],   # {labels, props}: Section/TrafficSpace/Marking/BridgePart/…
+        "surface_labels":     [],   # {id, label}: extra BoundarySurface label (TrafficArea…)
+        "child_rels":         [],   # {rel, src, tgt, props}: HAS_SECTION/HAS_TRAFFIC_SPACE/…
+        "polygon_props":      [],   # {id, props}: srs_name / synthetic_id on GeometryPolygon
+        "prototypes":         [],   # GeometryPrototype rows (implicit-geometry templates)
+        "proto_rels":         [],   # {src, tgt, lod, props}: HAS_PROTOTYPE {matrix, ref point}
+        "solid_member_rels":  [],   # GeometrySolid|Prototype → GeometrySolid {order}
+        "line_rels":          [],   # GeometryPrototype → GeometryLineString {order}
+        "multicurve_rels3":   [],   # Entity → GeometryLineString {lod, order, multi_curve_id}
+        "point_rels":         [],   # Entity → GeometryLineString{geometry_type:'Point'} {lod}
+        "appearances":        [],   # Appearance rows
+        "surface_data":       [],   # {labels, props}: X3DMaterial/ParameterizedTexture/…
+        "appearance_rels":    [],   # Entity → Appearance {order}
+        "surface_data_rels":  [],   # Appearance → surface data {order}
+        "sub_bbox":           [],   # {id, minx..maxz}: sub-feature / surface bbox (union-merged)
     }
 
 
 def _flush_batch(sess, batch):
     has_buildings = bool(batch["buildings"])
     has_objects   = bool(batch["city_objects"])
-    if not has_buildings and not has_objects:
+    # (2.0 batches are only queued when they hold buildings or city objects; a 3.0
+    #  batch may end with CityModel-level appearances only)
+    if not has_buildings and not has_objects and not any(v for v in batch.values()):
         return
 
     # ── Building nodes ─────────────────────────────────────────────────────
@@ -1184,6 +1248,10 @@ def _flush_batch(sess, batch):
                 "SET n.location = point({x: n.center_x, y: n.center_y})",
                 rows=batch["city_objects"],
             )
+
+    # ── CityGML 3.0 feature / sub-feature / appearance nodes ────────────────
+    if batch.get("buildings3") or batch.get("city_objects3") or batch.get("sub_features"):
+        _flush_v3_feature_nodes(sess, batch)
 
     # ── Shared geometry nodes ───────────────────────────────────────────────
     if batch["solids"]:
@@ -1245,6 +1313,9 @@ def _flush_batch(sess, batch):
             "UNWIND $rows AS row MERGE (n:GeometryLineString {id: row.id}) SET n += row",
             rows=batch["linestrings"],
         )
+    if batch.get("prototypes") or batch.get("surface_labels") or batch.get("polygon_props") \
+            or batch.get("bbox_union") or batch.get("appearances") or batch.get("sub_bbox"):
+        _flush_v3_extra_nodes(sess, batch)
 
     # ── Building relationships ──────────────────────────────────────────────
     # HAS_FUNCTION and HAS_ROOF_TYPE are done in a serial post-pass (deadlock avoidance).
@@ -1417,6 +1488,8 @@ def _flush_batch(sess, batch):
             "MERGE (a)-[r:HAS_LINE]->(b) SET r.order = row.order",
             rows=batch["terrain_line_rels"],
         )
+    if any(batch.get(k) for k in _V3_REL_KEYS):
+        _flush_v3_rels(sess, batch)
 
 
 # ---------------------------------------------------------------------------
@@ -2667,6 +2740,84 @@ def _collect_nested_features(el, parent_id, ns_prefix, bsurf_types, source, batc
                 _collect_generic_boundary_surfaces(sub, nid, ns_prefix, bsurf_types, source, batch)
 
 
+def _collect_tran_areas_v2(el, feature_id, source, batch):
+    """CityGML 2.0 tran:trafficArea/TrafficArea and tran:auxiliaryTrafficArea/
+    AuxiliaryTrafficArea → (:BoundarySurface:TrafficArea|AuxiliaryTrafficArea) via
+    HAS_BOUNDARY {order, prop}; tran:lod0Network curves → HAS_LOD_MULTICURVE
+    {lod:'0', role:'network', order}. Same graph pattern the 3.0 codec uses below a
+    TrafficSpace (a 2.0 graph keeps the areas on the Road; no spaces are
+    synthesised)."""
+    for prop, kind in (("trafficArea", "TrafficArea"),
+                       ("auxiliaryTrafficArea", "AuxiliaryTrafficArea")):
+        for order, wrap in enumerate(el.findall(f"tran:{prop}", NS)):
+            ta = wrap.find(f"tran:{kind}", NS)
+            if ta is None:
+                continue
+            sid = ta.get(GML_ID) or f"bsurf_{_slug(feature_id)}_{prop.lower()}_{order}"
+            gen_props, gen_map = _extract_gen_attrs(ta)
+            props = {"id": sid, "surface_type": kind, "source": source,
+                     "_gen_attrs_map": json.dumps(gen_map) if gen_map else "{}"}
+            for nm, xp in (("gml_name", "gml:name"), ("gml_description", "gml:description"),
+                           ("creation_date", "cg:creationDate"),
+                           ("relative_to_terrain", "cg:relativeToTerrain"),
+                           ("relative_to_water", "cg:relativeToWater")):
+                v = _text(ta, xp)
+                if v:
+                    props[nm] = v
+            env = ta.find("gml:boundedBy/gml:Envelope", NS)
+            if env is not None:
+                props["has_bbox_envelope"] = True
+                lc = _text(env, "gml:lowerCorner"); uc = _text(env, "gml:upperCorner")
+                if lc: props["bbox_lower_corner"] = lc
+                if uc: props["bbox_upper_corner"] = uc
+            for key, local in (("class", "class"), ("function", "function"),
+                               ("usage", "usage"), ("surface_material", "surfaceMaterial")):
+                vals = [(c.text.strip(), c.get("codeSpace"))
+                        for c in ta.findall(f"tran:{local}", NS) if c.text and c.text.strip()]
+                if vals:
+                    props[key] = vals[0][0]
+                    if vals[0][1]:
+                        props[f"{key}_codespace"] = vals[0][1]
+                    if len(vals) > 1:
+                        props[f"{key}_list"] = [v for v, _ in vals]
+            for lod in ("2", "3", "4"):
+                ms_el = ta.find(f"tran:lod{lod}MultiSurface/gml:MultiSurface", NS)
+                if ms_el is None:
+                    continue
+                props["lod"] = lod
+                if ms_el.get(GML_ID):
+                    props["multi_surface_id"] = ms_el.get(GML_ID)
+                for p_idx, poly_el in enumerate(ms_el.findall(".//gml:Polygon", NS)):
+                    pid = _collect_polygon(poly_el, source, batch)
+                    batch["surf_poly_rels"].append(
+                        {"src": sid, "tgt": pid, "order": p_idx,
+                         "via_xlink": False, "orientation": None})
+                break
+            props.update(gen_props)
+            _capture_common_extras(ta, props)
+            batch["surfaces"].append(props)
+            batch["surface_labels"].append({"id": sid, "label": kind})
+            batch["child_rels"].append({"rel": "HAS_BOUNDARY", "src": feature_id, "tgt": sid,
+                                        "props": {"order": order, "prop": prop}})
+    n = 0
+    for net in el.findall("tran:lod0Network", NS):
+        for ls_el in net.iter(f"{{{NS['gml']}}}LineString"):
+            pos_el = ls_el.find("gml:posList", NS)
+            if pos_el is not None and pos_el.text:
+                srs_dim = int(pos_el.get("srsDimension", "3"))
+                pos = _reproject_poslist(pos_el.text.strip(), srs_dim)
+            else:
+                pts = [p.text.strip() for p in ls_el.findall("gml:pos", NS) if p.text]
+                srs_dim, pos = 3, _reproject_poslist(" ".join(pts), 3)
+            ls_id = ls_el.get(GML_ID) or f"{feature_id}_network_{n}"
+            batch["linestrings"].append({"id": ls_id, "pos_list": pos,
+                                         "srs_dimension": srs_dim, "source": source})
+            batch["multicurve_rels3"].append({"src": feature_id, "tgt": ls_id, "lod": "0",
+                                              "order": n, "multi_curve_id": None,
+                                              "role": "network"})
+            n += 1
+
+
 def _collect_city_object(el, feature_type, ns_prefix, scalar_attrs,
                          boundary_surface_types, geom_style, lod_range,
                          source, batch):
@@ -2772,6 +2923,12 @@ def _collect_city_object(el, feature_type, ns_prefix, scalar_attrs,
     elif geom_style == "relief":
         _collect_relief_geometry(el, feature_id, source, batch)
 
+    # Transportation sub-features (tran:trafficArea / auxiliaryTrafficArea) and the
+    # lod0Network, previously dropped silently. Files without
+    # them produce no extra rows, so their ingest is unchanged.
+    if ns_prefix == "tran":
+        _collect_tran_areas_v2(el, feature_id, source, batch)
+
     # Boundary surfaces (WaterBody, Bridge, Tunnel)
     if boundary_surface_types:
         _collect_generic_boundary_surfaces(
@@ -2856,10 +3013,180 @@ def _create_indexes(sess):
 # Main ingestion
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Source scope of gml:ids (GRAPH.md: a node belongs to exactly one source)
+# ---------------------------------------------------------------------------
+# Every node is MERGEd on its id. A file whose gml:ids already exist in the graph for
+# ANOTHER source (an official building id in a reconstructed file, a template id used by
+# two datasets) would otherwise add to and overwrite that source's nodes. A Dataset
+# therefore lists the files ingested into it (source_files); a file may reuse only ids of
+# nodes whose `source` is one of them. --id-prefix gives a source that reuses another
+# source's ids its own id space; the prefix is recorded on the Dataset and the exporter
+# strips it again.
+
+class IdScopeError(SystemExit):
+    """A file's gml:ids belong to another source; nothing of the file was written."""
+
+
+_SCOPE_LABELS = ("Entity", "GeometryRing", "GeometryLineString", "TerrainIntersection")
+_REF_TEXT_LOCALS = ("target", "ring")       # appearance references written as text URIs
+
+
+def _claim_dataset_file(sess, dataset_id, source):
+    """Add `source` to Dataset.source_files and return True when it was not listed yet.
+    A Dataset ingested before the list existed is first given the sources of its members."""
+    rec = sess.run("MATCH (d:Dataset {id: $id}) RETURN d.source_files IS NULL AS missing",
+                   id=dataset_id).single()
+    if rec is not None and rec["missing"]:
+        init = sorted({r["s"] for r in sess.run(
+            "MATCH (:Dataset {id: $id})<-[:PART_OF]-(n) WHERE n.source IS NOT NULL "
+            "RETURN DISTINCT n.source AS s", id=dataset_id)})
+        sess.run("MATCH (d:Dataset {id: $id}) WHERE d.source_files IS NULL "
+                 "SET d.source_files = $init", id=dataset_id, init=init)
+    rec = sess.run("MATCH (d:Dataset {id: $id}) WITH d, NOT $src IN d.source_files AS new "
+                   "SET d.source_files = CASE WHEN new THEN d.source_files + $src "
+                   "ELSE d.source_files END RETURN new", id=dataset_id, src=source).single()
+    return bool(rec and rec["new"])
+
+
+def _release_dataset_file(sess, dataset_id, source):
+    sess.run("MATCH (d:Dataset {id: $id}) "
+             "SET d.source_files = [f IN coalesce(d.source_files, []) WHERE f <> $src]",
+             id=dataset_id, src=source)
+
+
+def _record_id_prefix(sess, dataset_id, source, prefix):
+    """The id prefix is a property of the Dataset: every file of it uses the same one."""
+    rec = sess.run("MATCH (d:Dataset {id: $id}) RETURN d.id_prefix AS p, "
+                   "[f IN coalesce(d.source_files, []) WHERE f <> $src] AS others",
+                   id=dataset_id, src=source).single()
+    have = rec["p"] if rec else None
+    if (prefix or None) == (have or None):
+        return
+    if have:
+        raise IdScopeError(f"ERROR: Dataset '{dataset_id}' uses --id-prefix '{have}'; "
+                           f"ingest {source} with the same prefix.")
+    if rec and rec["others"]:
+        raise IdScopeError(f"ERROR: Dataset '{dataset_id}' already holds files without an id "
+                           f"prefix; --id-prefix '{prefix}' cannot be added for {source} alone.")
+    sess.run("MATCH (d:Dataset {id: $id}) SET d.id_prefix = $p", id=dataset_id, p=prefix)
+
+
+def _foreign_ids(sess, dataset_id, ids):
+    """Up to 20 nodes with one of `ids` whose `source` is not a file of the Dataset."""
+    for label in _SCOPE_LABELS:
+        hits = sess.run(
+            f"MATCH (d:Dataset {{id: $did}}) UNWIND $ids AS i MATCH (n:{label} {{id: i}}) "
+            "WHERE n.source IS NOT NULL AND NOT n.source IN coalesce(d.source_files, []) "
+            "RETURN n.id AS id, n.source AS source LIMIT 20", did=dataset_id, ids=ids).data()
+        if hits:
+            return hits
+    return []
+
+
+def _check_id_scope(sess, gml_path, dataset_id, id_attr, prefix="", chunk=20000):
+    """Pre-flight: refuse the file (before anything is written) when one of its gml:ids
+    belongs to a node of another source. Skipped when the graph holds no other Dataset."""
+    others = sess.run("MATCH (d:Dataset) WHERE d.id <> $id RETURN count(d) AS c",
+                      id=dataset_id).single()["c"]
+    if not others:
+        return
+    root = None
+    ids: list = []
+
+    def check():
+        hits = _foreign_ids(sess, dataset_id, ids)
+        ids.clear()
+        if hits:
+            ex = ", ".join(f"'{h['id']}' ({h['source']})" for h in hits[:3])
+            raise IdScopeError(
+                f"ERROR: gml:ids of {gml_path.name} already belong to another source, e.g. {ex}. "
+                "Ingesting it would add to and overwrite that source's nodes. Give this source "
+                "its own id space with --id-prefix <prefix> (recorded on the Dataset; the "
+                "exporter strips it), or ingest the file into the Dataset that owns these ids.")
+
+    for ev, el in etree.iterparse(str(gml_path), events=("start", "end"), huge_tree=True):
+        if ev == "start":
+            if root is None:
+                root = el
+                continue
+            gid = el.get(id_attr)
+            if gid:
+                ids.append(prefix + gid)
+                if len(ids) >= chunk:
+                    check()
+        elif el.getparent() is root:
+            el.clear()
+            while el.getprevious() is not None:
+                del root[0]
+    if ids:
+        check()
+
+
+def _prefix_ref(ref, prefix):
+    """'#id' / 'tile.gml#id' → with the prefix on the fragment; external URLs unchanged."""
+    if not ref or "#" not in ref:
+        return ref
+    doc, frag = ref.rsplit("#", 1)
+    if not frag or "://" in doc:
+        return ref
+    return f"{doc}#{prefix}{frag}"
+
+
+def _iter_prefixed(gml_path, tags, prefix, id_attr):
+    """etree.iterparse(events=('end',), tag=tags) with --id-prefix applied on the fly: every
+    gml:id and every document reference (xlink:href, appearance target / ring URIs) gets
+    the prefix before any collector reads the element."""
+    tagset = set(tags)
+    root = None
+    for ev, el in etree.iterparse(str(gml_path), events=("start", "end"), huge_tree=True):
+        if not isinstance(el.tag, str):
+            continue
+        if ev == "start":
+            if root is None:             # the CityModel keeps its own id (Dataset.gml_id)
+                root = el
+                continue
+            gid = el.get(id_attr)
+            if gid:
+                el.set(id_attr, prefix + gid)
+            href = el.get(XLINK_HREF)
+            if href:
+                el.set(XLINK_HREF, _prefix_ref(href, prefix))
+            if el.get("ring"):
+                el.set("ring", _prefix_ref(el.get("ring"), prefix))
+            continue
+        if etree.QName(el).localname in _REF_TEXT_LOCALS and el.text and "#" in el.text:
+            el.text = _prefix_ref(el.text.strip(), prefix)
+        if el.tag in tagset:
+            yield ev, el
+
+
+def _ref_doc(href, current):
+    """The document a reference points into: the file part of 'tile.gml#id', or the
+    current file for '#id'."""
+    doc = href.rsplit("#", 1)[0] if href and "#" in href else ""
+    return Path(doc.replace("\\", "/")).name if doc else current
+
+
+
 def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = True,
            dataset_id: str = None, dataset_name: str = None,
            target_crs: str = None, source_crs: str = None, id_registry: dict = None,
-           skip_spatial_index: bool = False, defer_code_hubs: bool = False):
+           skip_spatial_index: bool = False, defer_code_hubs: bool = False,
+           source_type: str = None, method: str = None, method_version: str = None,
+           rtree_layer: str = None, id_prefix: str = None, check_ids: bool = True,
+           district: str = None):
+    # Codec selection by the root namespace: CityGML 3.0 files go to the 3.0 codec
+    # (ingest_citygml3); everything else runs the unchanged 2.0 path below.
+    if detect_citygml_version(gml_path) == "3.0":
+        return ingest_citygml3(gml_path, driver, num_writers=num_writers,
+                               nearby_edges=nearby_edges, dataset_id=dataset_id,
+                               dataset_name=dataset_name, target_crs=target_crs,
+                               source_crs=source_crs, skip_spatial_index=skip_spatial_index,
+                               defer_code_hubs=defer_code_hubs, source_type=source_type,
+                               method=method, method_version=method_version,
+                               rtree_layer=rtree_layer, id_prefix=id_prefix,
+                               check_ids=check_ids, district=district)
     # `source` stays per-file (tile-level provenance on every feature node);
     # `dataset_id`/`dataset_name`, when given, merge many tiles into ONE Dataset
     # node (see main()). Without them, behaviour is unchanged: one file, one Dataset.
@@ -2920,6 +3247,15 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
                 "MERGE (n:Dataset {id: $id}) SET n.name = $name, n.source = $src",
                 id=dataset_id, name=ds_display_name, src=ds_display_name,
             )
+            claimed = _claim_dataset_file(sess, dataset_id, source)
+            try:
+                _record_id_prefix(sess, dataset_id, source, id_prefix)
+                if check_ids:
+                    _check_id_scope(sess, gml_path, dataset_id, GML_ID, id_prefix or "")
+            except IdScopeError:
+                if claimed:
+                    _release_dataset_file(sess, dataset_id, source)
+                raise
 
         # ── Writer thread pool ───────────────────────────────────────────────
         batch_queue: queue.Queue = queue.Queue(maxsize=num_writers * 2)
@@ -2960,9 +3296,9 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
 
         parse_tags = [ENVELOPE_TAG, BLDG_TAG] + CITY_OBJECT_TAGS
 
-        for _, el in etree.iterparse(
-            str(gml_path), events=("end",), tag=parse_tags
-        ):
+        events = (_iter_prefixed(gml_path, parse_tags, id_prefix, GML_ID) if id_prefix else
+                  etree.iterparse(str(gml_path), events=("end",), tag=parse_tags))
+        for _, el in events:
             if el.tag == ENVELOPE_TAG:
                 if not envelope_done:
                     crs     = el.get("srsName")
@@ -3150,6 +3486,9 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
 
         # ── District / City ───────────────────────────────────────────────────
         district_name, city_name = _resolve_municipality(gemeinde_key, gml_path.stem)
+        if district:
+            district_name = district
+            city_name = city_name if gemeinde_key else district
         district_id = _slug(district_name)
         city_id     = _slug(city_name)
 
@@ -3184,13 +3523,27 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
         # in a tiled ingest is quadratic across the tile set. The tiled path
         # therefore defers it (skip_spatial_index=True) and main() runs ONE
         # final pass after all tiles.
+        # Opt-in provenance / own R-tree layer (only when the CLI options are given;
+        # without them this block is a no-op and the 2.0 graph is unchanged).
+        if source_type or method or method_version:
+            prov = {k: v for k, v in (("source_type", source_type), ("method", method),
+                                      ("method_version", method_version)) if v}
+            # features, sub-features, surfaces and openings, as in the 3.0 codec; geometry
+            # nodes carry only `source`
+            _run_retry(sess, "MATCH (n:Entity) WHERE n.source = $src AND NOT (n:GeometryPolygon "
+                             "OR n:GeometryMultiSurface OR n:GeometrySolid OR "
+                             "n:GeometryCompositeSurface) SET n += $prov", src=source, prov=prov)
+            _run_retry(sess, "MATCH (d:Dataset {id: $id}) SET d += $prov", id=dataset_id, prov=prov)
+        if rtree_layer and rtree_layer != "features":
+            _run_retry(sess, "MATCH (n) WHERE (n:Building OR n:CityObject) AND n.source = $src "
+                             "SET n.rtree_layer = $layer", src=source, layer=rtree_layer)
         spatial_indexed = 0
         if skip_spatial_index:
             print("  Spatial R-tree indexing deferred to the final pass (tiled mode).")
         else:
             print("  Populating spatial R-tree index on bounding boxes …")
             progress("ingest.spatial_index", file=source, message="building spatial R-tree")
-            spatial_ok = _ensure_spatial_layer(sess)
+            spatial_ok = _ensure_spatial_layer(sess, rtree_layer or "features")
             if spatial_ok:
                 # NB: CityObject footprints are intentionally NOT indexed here.
                 # OSM fusion (ingest_osm.py) pulls candidate footprints from this
@@ -3201,7 +3554,7 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
                 # CityObject spatial index is added AFTER fusion instead — see
                 # ingest_osm.py's post-fusion CityObject-index step (and
                 # _backfill_cityobject_bbox_from_geometry).
-                spatial_indexed = _index_features_spatial(sess)
+                spatial_indexed = _index_features_spatial(sess, rtree_layer or "features")
             print(f"  Spatial R-tree entries: {spatial_indexed}")
 
         # ── GenAI vector embeddings (optional) ───────────────────────────────
@@ -3276,14 +3629,2520 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
     }
 
 
+# ===========================================================================
+# CityGML 3.0 codec
+# ===========================================================================
+# Chosen by ingest() from the root namespace (citygml_profiles.detect_citygml_version).
+# It writes the SAME version-neutral graph model as the 2.0 codec — Building pattern,
+# BoundarySurface → GeometryPolygon → GeometryRing chain, Entity plumbing label,
+# `source` on every node — plus the 3.0 concepts documented in GRAPH.md/CITYGML3.md:
+# transportation spaces (Section/Intersection/TrafficSpace/…), markings, holes,
+# clearance spaces, CityObjectRelations, implicit-geometry prototypes, appearances and
+# pending cross-file references. Qualified names come from the profile (PROFILE_V3);
+# nothing is namespace-wildcarded. Sub-features never get the CityObject label nor
+# PART_OF Dataset (BuildingPart precedent).
+#
+# Merge policy (street-space tiles): features MERGE on gml:id. The same Road / Section
+# / TrafficSpace gml:id may occur in many tile files with different children; every
+# file adds its children (MERGE on deterministic ids and edge keys), the generic
+# attribute map is unioned, the bbox is unioned, `source` is the last file and
+# `source_files` lists all files. No id splitting (the 2.0 _resolve_feature_id tiers
+# are not used: within one 3.0 file gml:id is an xs:ID and therefore unique).
+
+from collections import Counter as _Counter, defaultdict as _defaultdict  # noqa: E402
+
+from citygml_profiles import (PROFILE_V3 as _P3, detect_citygml_version,  # noqa: E402
+                              href_fragment)
+
+NS3 = dict(_P3.ns)
+_GML3 = NS3["gml"]
+GML3_ID = _P3.gml_id
+_KNOWN_NS3 = _P3.known_namespaces()
+_POSLIST3 = f"{{{_GML3}}}posList"
+_POS3 = f"{{{_GML3}}}pos"
+_RELGEOM3 = _P3.q("core", _P3.implicit_geometry_local)
+_LOD_PROP_RE = re.compile(
+    r"^lod([0-3])(Point|MultiSurface|MultiCurve|Solid|TerrainIntersectionCurve|"
+    r"ImplicitRepresentation)$")
+_SAFE_LABELS_RE = re.compile(r"^[A-Za-z][A-Za-z0-9]*(?::[A-Za-z][A-Za-z0-9]*)*$")
+_SAFE_REL_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
+_V3_BATCH_POLYGONS = 20000   # flush a batch early when one huge feature (a Road) is big
+
+# class/function/usage (all 3.0 modules: class 0..1, function/usage 0..*)
+_CFU3 = [("class", "class", "code"), ("function", "function", "code"),
+         ("usage", "usage", "code")]
+
+# Top-level city objects: Clark tag → (feature_type, module prefix, kind, module attrs)
+_V3_TOP = {_P3.q(p, l): v for (p, l), v in {
+    ("tran", "Road"):      ("Road", "tran", "transport", _CFU3),
+    ("tran", "Railway"):   ("Railway", "tran", "transport", _CFU3),
+    ("tran", "Track"):     ("Track", "tran", "transport", _CFU3),
+    ("tran", "Square"):    ("Square", "tran", "transport", _CFU3),
+    ("tran", "Waterway"):  ("Waterway", "tran", "transport", _CFU3),
+    ("frn", "CityFurniture"): ("CityFurniture", "frn", "space", _CFU3),
+    ("veg", "SolitaryVegetationObject"): ("SolitaryVegetationObject", "veg", "space", _CFU3 + [
+        ("species", "species", "code"), ("height", "height", "measure"),
+        ("trunk_diameter", "trunkDiameter", "measure"),
+        ("crown_diameter", "crownDiameter", "measure"),
+        ("root_ball_diameter", "rootBallDiameter", "measure"),
+        ("max_root_ball_depth", "maxRootBallDepth", "measure")]),
+    ("veg", "PlantCover"): ("PlantCover", "veg", "space", _CFU3 + [
+        ("average_height", "averageHeight", "measure"),
+        ("min_height", "minHeight", "measure"), ("max_height", "maxHeight", "measure")]),
+    ("con", "OtherConstruction"): ("OtherConstruction", "con", "construction", _CFU3),
+    ("brid", "Bridge"):    ("Bridge", "brid", "bridge", _CFU3 + [("is_movable", "isMovable", "text")]),
+    ("wtr", "WaterBody"):  ("WaterBody", "wtr", "space", _CFU3),
+    ("luse", "LandUse"):   ("LandUse", "luse", "thematic", _CFU3),
+    ("gen", "GenericOccupiedSpace"):   ("GenericOccupiedSpace", "gen", "space", _CFU3),
+    ("gen", "GenericUnoccupiedSpace"): ("GenericUnoccupiedSpace", "gen", "space", _CFU3),
+    ("gen", "GenericLogicalSpace"):    ("GenericLogicalSpace", "gen", "space", _CFU3),
+    ("gen", "GenericThematicSurface"): ("GenericThematicSurface", "gen", "thematic", _CFU3),
+}.items()}
+_V3_BUILDING_TAG = _P3.q("bldg", "Building")
+
+# Sub-features: local name → (module prefix, module attrs, Neo4j labels)
+_V3_SUB = {
+    "Section":      ("tran", [("class", "class", "code")], "Section:TransportationSpace"),
+    "Intersection": ("tran", [("class", "class", "code")], "Intersection:TransportationSpace"),
+    "TrafficSpace": ("tran", _CFU3 + [("granularity", "granularity", "text"),
+                                      ("traffic_direction", "trafficDirection", "text")],
+                     "TrafficSpace"),
+    "AuxiliaryTrafficSpace": ("tran", _CFU3 + [("granularity", "granularity", "text")],
+                              "AuxiliaryTrafficSpace"),
+    "Hole":           ("tran", [("class", "class", "code")], "Hole"),
+    "ClearanceSpace": ("tran", [("class", "class", "code")], "ClearanceSpace"),
+    "Marking":        ("tran", [("class", "class", "code")], "Marking"),
+}
+# Thematic-surface module attributes: surface_type → (prefix, attrs)
+_V3_SURF_ATTRS = {
+    "TrafficArea": ("tran", _CFU3 + [("surface_material", "surfaceMaterial", "code")]),
+    "AuxiliaryTrafficArea": ("tran", _CFU3 + [("surface_material", "surfaceMaterial", "code")]),
+    "HoleSurface": ("tran", []),
+    "WaterSurface": ("wtr", [("water_level", "waterLevel", "code")]),
+    "GenericThematicSurface": ("gen", _CFU3),
+}
+_V3_SURF_EXTRA_LABEL = {"TrafficArea", "AuxiliaryTrafficArea", "HoleSurface"}
+_GEN3_TYPES = {"StringAttribute": "string", "IntAttribute": "int", "DoubleAttribute": "double",
+               "DateAttribute": "date", "UriAttribute": "uri", "MeasureAttribute": "measure",
+               "CodeAttribute": "code"}
+
+# Deferred (xlink / cross-file) edges: rel type → MERGE key properties.
+_V3_DEFER_KEYS = {
+    "HAS_SURFACE_MEMBER": ("order",), "HAS_POLYGON": ("order",), "HAS_SOLID_MEMBER": ("order",),
+    "HAS_LOD_SURFACE": ("lod",), "HAS_LOD_SOLID": (), "HAS_PROTOTYPE": ("lod",),
+    "PREDECESSOR": ("order",), "SUCCESSOR": ("order",), "RELATED_TO": ("order",),
+    "TARGETS": ("order",), "HAS_BOUNDARY": (), "HAS_TRAFFIC_SPACE": (), "HAS_SECTION": (),
+    "HAS_INTERSECTION": (), "HAS_MARKING": (), "HAS_HOLE": (), "HAS_CLEARANCE_SPACE": (),
+    "HAS_SURFACE_DATA": (), "HAS_BUILDING_PART": (), "HAS_BRIDGE_PART": (), "HAS_DYNAMIZER": (),
+}
+_V3_REL_KEYS = ("child_rels", "proto_rels", "solid_member_rels", "line_rels",
+                "multicurve_rels3", "point_rels", "appearance_rels", "surface_data_rels")
+_V3_INDEX_LABELS = ("Section", "Intersection", "TransportationSpace", "TrafficSpace",
+                    "AuxiliaryTrafficSpace", "Hole", "ClearanceSpace", "Marking", "BridgePart",
+                    "GeometryPrototype", "Appearance", "X3DMaterial", "ParameterizedTexture",
+                    "GeoreferencedTexture", "NestedFeature", "Opening", "Room",
+                    "BuildingInstallation", "GeometryCompositeSurface", "Dynamizer")
+
+
+class _Ctx3:
+    """Per-file state of the 3.0 codec."""
+
+    def __init__(self, source, dataset_id, prov, rtree_layer, id_prefix=""):
+        self.source = source
+        self.dataset_id = dataset_id
+        self.id_prefix = id_prefix or ""   # --id-prefix (already applied to ids and refs)
+        self.prov = prov                   # {source_type, method, method_version} (non-null)
+        self.rtree_layer = rtree_layer
+        self.local_ids: set = set()        # gml:ids inside the current top-level feature
+        self.el_bbox: dict = {}            # element → subtree bbox (current feature)
+        self.deferred: list = []           # xlink / cross-file edges, resolved post-parse
+        self.implicit_jobs: list = []      # (feature_id, matrix, ref point, prototype id)
+        self.proto_bbox: dict = {}         # prototype id → local (min xyz, max xyz)
+        self.top_ids: list = []
+        self.building_ids: list = []
+        self.dataset_appearances: list = []
+        self.ds_bbox = [float("inf")] * 3 + [float("-inf")] * 3
+        self.max_lod = -1
+        self.stats = _Counter()
+        self.unsupported = _Counter()
+        self.gemeinde_key = ""
+
+
+def _ln3(el):
+    return etree.QName(el).localname if isinstance(el.tag, str) else ""
+
+
+def _t3(el, xpath):
+    found = el.find(xpath, NS3)
+    return found.text.strip() if found is not None and found.text else None
+
+
+def _first_child3(el):
+    for c in el:
+        if isinstance(c.tag, str):
+            return c
+    return None
+
+
+def _hash10(el):
+    # without the tail: the whitespace after an element must not change the id
+    return hashlib.sha1(etree.tostring(el, with_tail=False)).hexdigest()[:10]
+
+
+def _codes3(el, prefix, local):
+    out = []
+    for c in el.findall(f"{prefix}:{local}", NS3):
+        if c.text is not None and c.text.strip() != "":
+            out.append((c.text.strip(), c.get("codeSpace")))
+    return out
+
+
+def _set_codes3(props, key, values):
+    """Coded values (gml:CodeType, 0..* in 3.0): the first value stays the queryable
+    scalar `key` (+`key_codespace`), exactly like the 2.0 model; with ≥2 values the full
+    ordered list is kept in `key_list` (and `key_codespace_list` if codeSpaces differ)."""
+    if not values:
+        return
+    props[key] = values[0][0]
+    if values[0][1]:
+        props[f"{key}_codespace"] = values[0][1]
+    if len(values) > 1:
+        props[f"{key}_list"] = [v for v, _ in values]
+        css = [cs or "" for _, cs in values]
+        if any(c != css[0] for c in css):
+            props[f"{key}_codespace_list"] = css
+
+
+def _module_attrs3(el, prefix, specs, props):
+    for key, local, kind in specs:
+        if kind == "code":
+            _set_codes3(props, key, _codes3(el, prefix, local))
+        elif kind == "measure":
+            e = el.find(f"{prefix}:{local}", NS3)
+            if e is not None and e.text and e.text.strip():
+                props[key] = e.text.strip()
+                if e.get("uom"):
+                    props[f"{key}_uom"] = e.get("uom")
+        else:
+            v = _t3(el, f"{prefix}:{local}")
+            if v is not None:
+                props[key] = v
+
+
+def _gen_value3(text):
+    # keep values verbatim (some sources blank-pad values to a fixed width);
+    # only multi-line (pretty-printed) values are stripped
+    if text is None:
+        return ""
+    return text.strip() if "\n" in text else text
+
+
+def _extract_gen_attrs3(el):
+    """3.0 generic attributes (core:genericAttribute/gen:<Type>Attribute{gen:name,
+    gen:value}, gen:GenericAttributeSet{gen:name, gen:codeSpace?, gen:genericAttribute+})
+    → the SAME storage as 2.0: flat string props under _attr_key(name) + _gen_attrs_map
+    {key: {name, type, set?, codeSpace?}}. Type 'code' is new (codeSpace in the map);
+    measures add <key>_uom. Keys colliding with RESERVED_NODE_KEYS become gen_<key>."""
+    props, gen_map = {}, {}
+
+    def _key(name):
+        key = _attr_key(name)
+        if key in RESERVED_NODE_KEYS:
+            base, n = f"gen_{key}", 2
+            key = base
+            while key in RESERVED_NODE_KEYS or key in props:
+                key = f"{base}_{n}"
+                n += 1
+        elif key in props:
+            base, n = key, 2
+            while key in props:
+                key = f"{base}_{n}"
+                n += 1
+        return key
+
+    def _walk(container, wrapper_tag, set_path):
+        set_i = 0
+        for ga in container.findall(wrapper_tag, NS3):
+            for child in ga:
+                ln = _ln3(child)
+                if ln in _GEN3_TYPES:
+                    name_el = child.find("gen:name", NS3)
+                    val_el = child.find("gen:value", NS3)
+                    name = name_el.text.strip() if name_el is not None and name_el.text else ""
+                    if not name or val_el is None:
+                        continue
+                    key = _key(name)
+                    props[key] = _gen_value3(val_el.text)
+                    meta = {"name": name, "type": _GEN3_TYPES[ln]}
+                    if set_path:
+                        meta["set"] = set_path
+                    if ln == "MeasureAttribute" and val_el.get("uom"):
+                        props[f"{key}_uom"] = val_el.get("uom")
+                    if ln == "CodeAttribute" and val_el.get("codeSpace"):
+                        meta["codeSpace"] = val_el.get("codeSpace")
+                    gen_map[key] = meta
+                elif ln == "GenericAttributeSet":
+                    entry = {"name": (child.findtext("gen:name", namespaces=NS3) or "").strip(),
+                             "i": set_i}
+                    cs = child.findtext("gen:codeSpace", namespaces=NS3)
+                    if cs and cs.strip():
+                        entry["codeSpace"] = cs.strip()
+                    set_i += 1
+                    _walk(child, "gen:genericAttribute", set_path + [entry])
+
+    _walk(el, "core:genericAttribute", [])
+    return props, gen_map
+
+
+def _capture_common_extras3(el, props):
+    """3.0 counterpart of _capture_common_extras: lifespan scalars, verbatim
+    gml:metaDataProperty / gml:location / core:generalizesTo / core:externalReference
+    fragments (self-describing: they carry their 3.0 namespace, so an exporter knows
+    their version), ADE content (unknown namespace or adeOf* hooks) → ade_xml."""
+    for key, xp in (("termination_date", "core:terminationDate"),
+                    ("valid_from", "core:validFrom"), ("valid_to", "core:validTo")):
+        v = _t3(el, xp)
+        if v:
+            props[key] = v
+
+    def _frags(matches):
+        return [etree.tostring(m, encoding="unicode") for m in matches]
+
+    meta = _frags(el.findall("gml:metaDataProperty", NS3))
+    if meta:
+        props["metadata_xml"] = json.dumps(meta)
+    loc = el.find("gml:location", NS3)
+    if loc is not None:
+        props["location_xml"] = etree.tostring(loc, encoding="unicode")
+    gens = _frags(el.findall("core:generalizesTo", NS3))
+    if gens:
+        props["generalizes_to_xml"] = json.dumps(gens)
+    ext = el.findall("core:externalReference", NS3)
+    if ext:
+        props["external_reference_xml"] = json.dumps(_frags(ext))
+        er = ext[0].find("core:ExternalReference", NS3)
+        if er is not None:
+            info = _t3(er, "core:informationSystem")
+            tgt = _t3(er, "core:targetResource")
+            if info:
+                props["external_information_system"] = info
+            if tgt:
+                props["external_object_name"] = tgt
+    ade = []
+    for child in el:
+        tag = child.tag
+        if not isinstance(tag, str) or not tag.startswith("{"):
+            continue
+        uri = tag[1:tag.index("}")]
+        if uri not in _KNOWN_NS3 or etree.QName(child).localname.startswith("adeOf"):
+            ade.append(etree.tostring(child, encoding="unicode"))
+    if ade:
+        props["ade_xml"] = json.dumps(ade)
+
+
+def _semantic_props3(el, node_id, props, ctx, batch, top_level=False):
+    """AbstractGML/Feature/CityObject/Space content shared by every 3.0 feature,
+    sub-feature and thematic surface (names, dates, envelope, generic attributes,
+    lifespan/extras, space type, qualified volumes/areas, relations, appearances)."""
+    name = _t3(el, "gml:name")
+    if name:
+        props["gml_name"] = name
+    desc = _t3(el, "gml:description")
+    if desc:
+        props["gml_description"] = desc
+    ident = el.find("gml:identifier", NS3)
+    if ident is not None and ident.text:
+        props["gml_identifier"] = ident.text.strip()
+        if ident.get("codeSpace"):
+            props["gml_identifier_codespace"] = ident.get("codeSpace")
+    for key, xp in (("creation_date", "core:creationDate"),
+                    ("relative_to_terrain", "core:relativeToTerrain"),
+                    ("relative_to_water", "core:relativeToWater"),
+                    ("space_type", "core:spaceType")):
+        v = _t3(el, xp)
+        if v:
+            props[key] = v
+    env = el.find("gml:boundedBy/gml:Envelope", NS3)
+    if env is not None:
+        lc = _t3(env, "gml:lowerCorner")
+        uc = _t3(env, "gml:upperCorner")
+        props["has_bbox_envelope"] = True
+        if lc:
+            props["bbox_lower_corner"] = lc
+        if uc:
+            props["bbox_upper_corner"] = uc
+    elif top_level:
+        props["has_bbox_envelope"] = False
+    for key, xp in (("volume_xml", "core:volume"), ("area_xml", "core:area")):
+        frs = el.findall(xp, NS3)
+        if frs:
+            props[key] = json.dumps([etree.tostring(f, encoding="unicode") for f in frs])
+    gen_props, gen_map = _extract_gen_attrs3(el)
+    props.update(gen_props)
+    props["_gen_attrs_map"] = json.dumps(gen_map) if gen_map else "{}"
+    _capture_common_extras3(el, props)
+    _collect_relations3(el, node_id, ctx)
+    _collect_dynamizers3(el, node_id, ctx, batch)
+    for i, ap in enumerate(el.findall("core:appearance", NS3)):
+        if ap.get(XLINK_HREF):
+            _defer3(ctx, "HAS_APPEARANCE_REF", node_id, ap.get(XLINK_HREF), {}, {"order": i})
+            continue
+        app_el = _first_child3(ap)
+        if app_el is not None:
+            aid = _collect_appearance3(app_el, f"{node_id}_app_{i}", ctx.source, batch, ctx)
+            batch["appearance_rels"].append({"src": node_id, "tgt": aid, "order": i})
+
+
+def _occupancy3(el, prefix):
+    out = []
+    for o in el.findall(f"{prefix}:occupancy/core:Occupancy", NS3):
+        d = {"number_of_occupants": _t3(o, "core:numberOfOccupants")}
+        for key, local in (("interval", "interval"), ("occupant_type", "occupantType")):
+            e = o.find(f"core:{local}", NS3)
+            if e is not None and e.text:
+                d[key] = e.text.strip()
+                if e.get("codeSpace"):
+                    d[f"{key}_codespace"] = e.get("codeSpace")
+        out.append(d)
+    return json.dumps(out) if out else None
+
+
+def _construction_props3(el, props, ctx):
+    """con:AbstractConstruction block → version-neutral scalars. con:height/con:Height:
+    measured_height (+_uom) is the Height with status 'measured' (else the first),
+    with height_high_reference / height_low_reference / height_status; all Heights are
+    kept verbatim in heights_json. dateOfConstruction/Demolition are
+    kept verbatim and their year becomes year_of_construction/demolition (2.0 keys)."""
+    v = _t3(el, "con:conditionOfConstruction")
+    if v:
+        props["condition_of_construction"] = v
+    for key, ykey, xp in (("date_of_construction", "year_of_construction", "con:dateOfConstruction"),
+                          ("date_of_demolition", "year_of_demolition", "con:dateOfDemolition")):
+        d = _t3(el, xp)
+        if d:
+            props[key] = d
+            m = re.match(r"^(-?\d{4})", d)
+            if m:
+                props[ykey] = m.group(1)
+    heights = []
+    for h in el.findall("con:height/con:Height", NS3):
+        entry = {}
+        for key, local in (("high_reference", "highReference"),
+                           ("low_reference", "lowReference"), ("status", "status")):
+            e = h.find(f"con:{local}", NS3)
+            if e is not None and e.text:
+                entry[key] = e.text.strip()
+                if e.get("codeSpace"):
+                    entry[f"{key}_codespace"] = e.get("codeSpace")
+        val = h.find("con:value", NS3)
+        if val is not None and val.text:
+            entry["value"] = val.text.strip()
+            if val.get("uom"):
+                entry["uom"] = val.get("uom")
+        heights.append(entry)
+    if heights:
+        pick = next((x for x in heights if x.get("status") == "measured"), heights[0])
+        try:
+            props["measured_height"] = float(pick.get("value"))
+        except (TypeError, ValueError):
+            pass
+        if pick.get("uom"):
+            props["measured_height_uom"] = pick["uom"]
+        for key in ("high_reference", "low_reference", "status"):
+            if pick.get(key):
+                props[f"height_{key}"] = pick[key]
+        # all Heights verbatim (value text kept exactly) for lossless re-export
+        props["heights_json"] = json.dumps(heights)
+    elevs = []
+    for e in el.findall("con:elevation/con:Elevation", NS3):
+        ref = e.find("con:elevationReference", NS3)
+        val = e.find("con:elevationValue", NS3)
+        elevs.append({"reference": ref.text.strip() if ref is not None and ref.text else None,
+                      "reference_codespace": ref.get("codeSpace") if ref is not None else None,
+                      "value": val.text.strip() if val is not None and val.text else None,
+                      "srs_dimension": val.get("srsDimension") if val is not None else None})
+    if elevs:
+        props["elevations_json"] = json.dumps(elevs)
+    occ = _occupancy3(el, "con")
+    if occ:
+        props["occupancy_json"] = occ
+    if el.find("con:constructionEvent", NS3) is not None:
+        ctx.unsupported["con:constructionEvent"] += len(el.findall("con:constructionEvent", NS3))
+
+
+# ── deferred (xlink / cross-file) references ─────────────────────────────────
+
+def _defer3(ctx, rel, src, href, key, props):
+    tgt = href_fragment(href)
+    if not tgt:
+        return
+    p = dict(props)
+    if href and href != f"#{tgt}":
+        p["href"] = href          # cross-document reference: keep it verbatim
+    # `doc`: the target must come from the referenced document (the current file for
+    # '#id'); `tgt0`: the fragment without this Dataset's --id-prefix, for a reference into
+    # a Dataset with another (or no) prefix
+    row = {"rel": rel, "src": src, "tgt": tgt, "key": dict(key), "props": p,
+           "doc": _ref_doc(href, ctx.source)}
+    if ctx.id_prefix and tgt.startswith(ctx.id_prefix):
+        row["tgt0"] = tgt[len(ctx.id_prefix):]
+    ctx.deferred.append(row)
+
+
+def _collect_relations3(el, src_id, ctx):
+    """core:relatedTo/core:CityObjectRelation → (src)-[:RELATED_TO {order,
+    relation_type, relation_type_codespace, relation_id, gen_attrs_json, href?}]->(tgt),
+    deferred: targets may come later in the file or live in another tile file."""
+    for i, rt in enumerate(el.findall("core:relatedTo", NS3)):
+        if rt.get(XLINK_HREF):
+            ctx.unsupported["core:relatedTo given by reference"] += 1
+            continue
+        cor = rt.find("core:CityObjectRelation", NS3)
+        if cor is None:
+            continue
+        tgt_el = cor.find("core:relatedTo", NS3)
+        href = tgt_el.get(XLINK_HREF) if tgt_el is not None else None
+        if not href:
+            continue
+        props = {"order": i, "source": ctx.source}
+        rtype = cor.find("core:relationType", NS3)
+        if rtype is not None and rtype.text:
+            props["relation_type"] = rtype.text.strip()
+            if rtype.get("codeSpace"):
+                props["relation_type_codespace"] = rtype.get("codeSpace")
+        if cor.get(GML3_ID):
+            props["relation_id"] = cor.get(GML3_ID)
+        gp, gm = _extract_gen_attrs3(cor)
+        if gm:
+            props["gen_attrs_json"] = json.dumps({"props": gp, "map": gm})
+        _defer3(ctx, "RELATED_TO", src_id, href, {"order": i}, props)
+        ctx.stats["relations"] += 1
+
+
+# SensorConnection children → Dynamizer node keys (CityGML 3.0 dynamizer module)
+_SENSOR_FIELDS3 = (("connection_type", "connectionType"), ("observation_property", "observationProperty"),
+                   ("uom", "uom"), ("sensor_id", "sensorID"), ("sensor_name", "sensorName"),
+                   ("observation_id", "observationID"), ("datastream_id", "datastreamID"),
+                   ("base_url", "baseURL"), ("auth_type", "authType"), ("mqtt_server", "mqttServer"),
+                   ("mqtt_topic", "mqttTopic"), ("link_to_observation", "linkToObservation"),
+                   ("link_to_sensor_description", "linkToSensorDescription"))
+
+
+_ATTR_NAME3 = re.compile(r"\[gen:name='([^']+)'\]/gen:value\s*$")
+
+
+def _collect_dynamizers3(el, owner_id, ctx, batch):
+    """core:dynamizer/dyn:Dynamizer → (owner)-[:HAS_DYNAMIZER {order}]->(:Dynamizer) — a
+    sub-feature (no CityObject label, no PART_OF). attributeRef, start/end time and the
+    SensorConnection fields become scalars (sensor_location = the referenced gml:id);
+    dynamicData (a timeseries) is kept verbatim in dynamic_data_xml with its type,
+    first/last timestamp, observation property, uom, value type and value count as query
+    scalars. Live values written later by a live job use the live_* prefix."""
+    for i, dp in enumerate(el.findall("core:dynamizer", NS3)):
+        if dp.get(XLINK_HREF):
+            _defer3(ctx, "HAS_DYNAMIZER", owner_id, dp.get(XLINK_HREF), {}, {"order": i})
+            continue
+        d = _first_child3(dp)
+        if d is None:
+            continue
+        if _ln3(d) != "Dynamizer":
+            ctx.unsupported[f"core:dynamizer {_ln3(d)}"] += 1
+            continue
+        did = d.get(GML3_ID)
+        props = {"id": did or f"{owner_id}_dyn_{i}", "source": ctx.source, "feature_type": "Dynamizer",
+                 **ctx.prov}
+        if not did:
+            props["synthetic_id"] = True
+        for key, xp in (("gml_name", "gml:name"), ("gml_description", "gml:description"),
+                        ("creation_date", "core:creationDate"), ("termination_date", "core:terminationDate"),
+                        ("valid_from", "core:validFrom"), ("valid_to", "core:validTo"),
+                        ("attribute_ref", "dyn:attributeRef"), ("start_time", "dyn:startTime"),
+                        ("end_time", "dyn:endTime")):
+            v = _t3(d, xp)
+            if v:
+                props[key] = v
+        m_attr = _ATTR_NAME3.search(props.get("attribute_ref") or "")
+        if m_attr:                                  # query convenience: the overridden attribute
+            props["attribute_name"] = m_attr.group(1)
+        sc = d.find("dyn:sensorConnection/dyn:SensorConnection", NS3)
+        if sc is not None:
+            for key, local in _SENSOR_FIELDS3:
+                e = sc.find(f"dyn:{local}", NS3)
+                if e is not None and e.text and e.text.strip():
+                    props[key] = e.text.strip()
+                    if e.get("codeSpace"):
+                        props[f"{key}_codespace"] = e.get("codeSpace")
+            loc = sc.find("dyn:sensorLocation", NS3)
+            if loc is not None and loc.get(XLINK_HREF):
+                props["sensor_location"] = href_fragment(loc.get(XLINK_HREF))
+                props["sensor_location_href"] = loc.get(XLINK_HREF)
+        dd = d.find("dyn:dynamicData", NS3)
+        ts = _first_child3(dd) if dd is not None else None
+        if ts is not None:
+            props["dynamic_data_type"] = _ln3(ts)
+            props["dynamic_data_xml"] = etree.tostring(ts, encoding="unicode")
+            for key, xp in (("first_timestamp", "dyn:firstTimestamp"), ("last_timestamp", "dyn:lastTimestamp"),
+                            ("ts_observation_property", "dyn:observationProperty"), ("ts_uom", "dyn:uom"),
+                            ("value_type", "dyn:valueType")):
+                v = _t3(ts, xp)
+                if v:
+                    props[key] = v
+            n_pairs = len(ts.findall("dyn:timeValuePair", NS3))
+            if n_pairs:
+                props["n_values"] = n_pairs
+        ade = [etree.tostring(c, encoding="unicode") for c in d
+               if isinstance(c.tag, str) and _ln3(c).startswith("adeOf")]
+        if ade:
+            props["ade_xml"] = json.dumps(ade)
+        batch["sub_features"].append({"labels": "Dynamizer", "props": props})
+        batch["child_rels"].append({"rel": "HAS_DYNAMIZER", "src": owner_id, "tgt": props["id"],
+                                    "props": {"order": i}})
+        ctx.stats["sub:Dynamizer"] += 1
+
+
+# ── geometry (GML 3.2) ───────────────────────────────────────────────────────
+
+def _dim_of(pos_el, n_values):
+    """srsDimension of a posList / pos: its own, else the nearest geometry ancestor's, else
+    the file's (root Envelope), and only then guessed from the value count."""
+    el, depth = pos_el, 0
+    while el is not None and depth < 6:
+        d = el.get("srsDimension")
+        if d:
+            try:
+                return int(d)
+            except ValueError:
+                break
+        el, depth = el.getparent(), depth + 1
+    root_dim = getattr(_tls, "srs_dim3", None)
+    if root_dim in (2, 3) and n_values % root_dim == 0:
+        return root_dim
+    if n_values % 3 == 0:
+        return 3
+    return 2 if n_values % 2 == 0 else 3
+
+
+def _coords3(holder, reproject=True):
+    """(pos_list, srs_dimension) of a LinearRing / LineString (posList or pos*)."""
+    pos_el = holder.find("gml:posList", NS3)
+    if pos_el is not None and pos_el.text:
+        txt = pos_el.text.strip()
+        dim = _dim_of(pos_el, len(txt.split()))
+        return (_reproject_poslist(txt, dim) if reproject else txt), dim
+    pos_els = holder.findall("gml:pos", NS3)
+    if pos_els:
+        txt = " ".join(p.text.strip() for p in pos_els if p.text and p.text.strip())
+        dim = _dim_of(pos_els[0], len(pos_els[0].text.split()) if pos_els[0].text else 3)
+        return (_reproject_poslist(txt, dim) if reproject else txt), dim
+    return "", 3
+
+
+def _collect_polygon3(poly_el, fallback_id, source, batch, reproject=True, patch=None):
+    pid = poly_el.get(GML3_ID)
+    extra = {}
+    if not pid:
+        pid = fallback_id
+        extra["synthetic_id"] = True
+    if poly_el.get("srsName"):
+        extra["srs_name"] = poly_el.get("srsName")
+    if patch:
+        extra["patch_type"] = patch
+    batch["polygons"].append({"id": pid, "source": source})
+    if extra:
+        batch["polygon_props"].append({"id": pid, "props": extra})
+    ring_el = poly_el.find("gml:exterior/gml:LinearRing", NS3)
+    if ring_el is not None:
+        pos_list, dim = _coords3(ring_el, reproject)
+        rid = ring_el.get(GML3_ID)
+        row = {"id": rid or f"ring_ext_{pid}", "pos_list": pos_list, "srs_dimension": dim,
+               "ring_type": "exterior", "source": source}
+        if not rid:
+            row["synthetic_id"] = True
+        batch["rings"].append(row)
+        batch["poly_ext_ring_rels"].append({"src": pid, "tgt": row["id"]})
+    for i, int_ring in enumerate(poly_el.findall("gml:interior/gml:LinearRing", NS3)):
+        pos_list, dim = _coords3(int_ring, reproject)
+        rid = int_ring.get(GML3_ID)
+        row = {"id": rid or f"ring_int_{pid}_{i}", "pos_list": pos_list, "srs_dimension": dim,
+               "ring_type": "interior", "source": source}
+        if not rid:
+            row["synthetic_id"] = True
+        batch["rings"].append(row)
+        batch["poly_int_ring_rels"].append({"src": pid, "tgt": row["id"], "ring_index": i})
+    return pid
+
+
+def _member_rel3(batch, ctx, rel, row, href=None):
+    """Route one member edge: xlinks whose target is not inside the current top-level
+    feature go to the deferred list (their target may be flushed by another writer
+    batch, later in the file, or in another tile file)."""
+    if row.get("via_xlink") and row["tgt"] not in ctx.local_ids:
+        _defer3(ctx, rel, row["src"], href or f"#{row['tgt']}", {"order": row["order"]},
+                {"via_xlink": True, "orientation": row.get("orientation")})
+        return
+    key = "surf_poly_rels" if rel == "HAS_POLYGON" else "surface_member_rels"
+    batch[key].append(row)
+
+
+def _record_member3(sm_el, container_id, order, source, batch, ctx, rel="HAS_SURFACE_MEMBER",
+                    orientation=None, reproject=True):
+    href = sm_el.get(XLINK_HREF)
+    if href:
+        _member_rel3(batch, ctx, rel, {"src": container_id, "tgt": href_fragment(href),
+                                       "order": order, "via_xlink": True,
+                                       "orientation": orientation}, href)
+        return
+    child = _first_child3(sm_el)
+    if child is None:
+        return
+    ln = _ln3(child)
+    if ln == "OrientableSurface":
+        base = child.find("gml:baseSurface", NS3)
+        if base is not None:
+            _record_member3(base, container_id, order, source, batch, ctx, rel,
+                            orientation=child.get("orientation", "+"), reproject=reproject)
+        return
+    if ln == "Polygon":
+        pid = _collect_polygon3(child, f"{container_id}_poly_{order}", source, batch, reproject)
+        _member_rel3(batch, ctx, rel, {"src": container_id, "tgt": pid, "order": order,
+                                       "via_xlink": False, "orientation": orientation})
+        return
+    if ln == "CompositeSurface" and rel == "HAS_SURFACE_MEMBER":
+        cs_id = child.get(GML3_ID)
+        row = {"id": cs_id or f"{container_id}_cs_{order}", "source": source}
+        if not cs_id:
+            row["synthetic_id"] = True
+        batch["composite_surfaces"].append(row)
+        for i, m in enumerate(child.findall("gml:surfaceMember", NS3)):
+            _record_member3(m, row["id"], i, source, batch, ctx, reproject=reproject)
+        batch["surface_member_rels"].append({"src": container_id, "tgt": row["id"],
+                                             "order": order, "via_xlink": False,
+                                             "orientation": orientation})
+        return
+    ctx.unsupported[f"surface member gml:{ln}"] += 1
+
+
+def _collect_ms3(ms_el, ms_id, lod, source, batch, ctx, synthetic=False, reproject=True):
+    props = {"id": ms_id, "lod": lod, "source": source}
+    if synthetic:
+        props["synthetic_id"] = True
+    if ms_el.get("srsName"):
+        props["srs_name"] = ms_el.get("srsName")
+    batch["multi_surfaces"].append(props)
+    for i, sm in enumerate(ms_el.findall("gml:surfaceMember", NS3)):
+        _record_member3(sm, ms_id, i, source, batch, ctx, reproject=reproject)
+    if ms_el.find("gml:surfaceMembers", NS3) is not None:
+        ctx.unsupported["gml:surfaceMembers (array property)"] += 1
+    ctx.stats["multi_surfaces"] += 1
+    return ms_id
+
+
+def _collect_solid3(solid_el, solid_id, lod, source, batch, ctx, synthetic=False, reproject=True):
+    """gml:Solid (exterior gml:Shell members → HAS_SURFACE_MEMBER) or gml:CompositeSolid /
+    gml:MultiSolid (solidMember Solids → HAS_SOLID_MEMBER) → GeometrySolid."""
+    ln = _ln3(solid_el)
+    props = {"id": solid_id, "lod": lod, "source": source, "composite_surface_id": ""}
+    if synthetic:
+        props["synthetic_id"] = True
+    if ln == "Solid":
+        shell = solid_el.find("gml:exterior/gml:Shell", NS3)
+        if shell is None:
+            shell = solid_el.find("gml:exterior/gml:CompositeSurface", NS3)
+            if shell is not None:
+                props["exterior_type"] = "CompositeSurface"
+        if shell is not None:
+            props["composite_surface_id"] = shell.get(GML3_ID) or ""
+            for i, sm in enumerate(shell.findall("gml:surfaceMember", NS3)):
+                _record_member3(sm, solid_id, i, source, batch, ctx, reproject=reproject)
+        if solid_el.find("gml:interior", NS3) is not None:
+            ctx.unsupported["gml:Solid interior shell"] += 1
+    elif ln in ("CompositeSolid", "MultiSolid"):
+        props["geometry_type"] = ln
+        for i, sm in enumerate(solid_el.findall("gml:solidMember", NS3)):
+            href = sm.get(XLINK_HREF)
+            if href:
+                tgt = href_fragment(href)
+                if tgt in ctx.local_ids:
+                    batch["solid_member_rels"].append({"src": solid_id, "tgt": tgt,
+                                                       "order": i, "via_xlink": True})
+                else:
+                    _defer3(ctx, "HAS_SOLID_MEMBER", solid_id, href, {"order": i},
+                            {"via_xlink": True})
+                continue
+            inner = _first_child3(sm)
+            if inner is None:
+                continue
+            sid = inner.get(GML3_ID)
+            _collect_solid3(inner, sid or f"{solid_id}_solid_{i}", lod, source, batch, ctx,
+                            synthetic=not sid, reproject=reproject)
+            batch["solid_member_rels"].append({"src": solid_id, "tgt": sid or f"{solid_id}_solid_{i}",
+                                               "order": i, "via_xlink": False})
+    else:
+        ctx.unsupported[f"solid gml:{ln}"] += 1
+    batch["solids"].append(props)
+    ctx.stats["solids"] += 1
+    return solid_id
+
+
+def _collect_curves3(curve_parent, owner_id, lod, source, batch, ctx, rel_key, role=None,
+                     reproject=True):
+    """gml:MultiCurve (curveMember LineStrings) → GeometryLineString rows + edges."""
+    mc = curve_parent.find("gml:MultiCurve", NS3) if _ln3(curve_parent) != "MultiCurve" else curve_parent
+    if mc is None:
+        ctx.unsupported["non-MultiCurve curve geometry"] += 1
+        return None
+    mc_id = mc.get(GML3_ID)
+    for i, cm in enumerate(mc.findall("gml:curveMember", NS3)):
+        ls = cm.find("gml:LineString", NS3)
+        if ls is None:
+            ctx.unsupported["curveMember other than inline gml:LineString"] += 1
+            continue
+        lid = ls.get(GML3_ID)
+        pos, dim = _coords3(ls, reproject)
+        row = {"id": lid or f"{owner_id}_mc_lod{lod}_{i}_{_hash10(ls)}", "pos_list": pos,
+               "srs_dimension": dim, "source": source}
+        if not lid:
+            row["synthetic_id"] = True
+        batch["linestrings"].append(row)
+        if rel_key == "line_rels":
+            batch["line_rels"].append({"src": owner_id, "tgt": row["id"], "order": i})
+        else:
+            batch["multicurve_rels3"].append({"src": owner_id, "tgt": row["id"], "lod": lod,
+                                              "order": i, "multi_curve_id": mc_id, "role": role})
+        ctx.stats["linestrings"] += 1
+    return mc_id
+
+
+def _collect_space_geometry3(el, node_id, source, batch, ctx, ms_role=None):
+    """All core LoD geometry properties of a space (or of a Marking): lod0Point,
+    lod0/2/3MultiSurface, lod0/2/3MultiCurve, lod1/2/3Solid, lod1-3TerrainIntersection-
+    Curve, lod1-3ImplicitRepresentation — every LoD is kept."""
+    core_pref = f"{{{NS3['core']}}}"
+    for child in el:
+        if not isinstance(child.tag, str) or not child.tag.startswith(core_pref):
+            continue
+        m = _LOD_PROP_RE.match(child.tag[len(core_pref):])
+        if not m:
+            if child.tag == f"{core_pref}pointCloud":
+                ctx.unsupported["core:pointCloud"] += 1
+            continue
+        lod, kind = m.groups()
+        ctx.max_lod = max(ctx.max_lod, int(lod))
+        href = child.get(XLINK_HREF)
+        if kind == "MultiSurface":
+            if href:
+                _defer3(ctx, "HAS_LOD_SURFACE", node_id, href, {"lod": lod},
+                        {"via_xlink": True, "role": ms_role})
+                continue
+            ms_el = child.find("gml:MultiSurface", NS3)
+            if ms_el is None:
+                continue
+            ms_id = ms_el.get(GML3_ID) or f"ms_{node_id}_lod{lod}_{_hash10(ms_el)}"
+            _collect_ms3(ms_el, ms_id, lod, source, batch, ctx,
+                         synthetic=not ms_el.get(GML3_ID))
+            batch["bldg_surface_rels"].append({"src": node_id, "tgt": ms_id,
+                                               "lod": lod, "role": ms_role})
+        elif kind == "Solid":
+            if href:
+                _defer3(ctx, "HAS_LOD_SOLID", node_id, href, {}, {"via_xlink": True})
+                continue
+            s_el = _first_child3(child)
+            if s_el is None:
+                continue
+            sid = s_el.get(GML3_ID) or f"solid_{node_id}_lod{lod}_{_hash10(s_el)}"
+            _collect_solid3(s_el, sid, lod, source, batch, ctx, synthetic=not s_el.get(GML3_ID))
+            batch["solid_rels"].append({"src": node_id, "tgt": sid})
+        elif kind == "MultiCurve":
+            if href:
+                ctx.unsupported["lodNMultiCurve given by xlink"] += 1
+                continue
+            _collect_curves3(child, node_id, lod, source, batch, ctx, "multicurve_rels3")
+        elif kind == "Point":
+            pt = child.find("gml:Point", NS3)
+            if pt is None:
+                continue
+            pos = pt.find("gml:pos", NS3)
+            txt = pos.text.strip() if pos is not None and pos.text else ""
+            dim = _dim_of(pos, len(txt.split())) if pos is not None else 3
+            pid = pt.get(GML3_ID)
+            row = {"id": pid or f"{node_id}_lod{lod}point_{_hash10(pt)}",
+                   "pos_list": _reproject_poslist(txt, dim),
+                   "srs_dimension": dim, "source": source, "geometry_type": "Point"}
+            if not pid:
+                row["synthetic_id"] = True
+            batch["linestrings"].append(row)
+            batch["point_rels"].append({"src": node_id, "tgt": row["id"], "lod": lod})
+        elif kind == "TerrainIntersectionCurve":
+            ti_id = f"{node_id}_terrain_lod{lod}"
+            mc = child.find("gml:MultiCurve", NS3)
+            batch["terrain_ints"].append({"id": ti_id, "lod": lod, "source": source,
+                                          "multi_curve_id": mc.get(GML3_ID) if mc is not None else None})
+            batch["bldg_terrain_rels"].append({"src": node_id, "tgt": ti_id})
+            if mc is not None:
+                for i, cm in enumerate(mc.findall("gml:curveMember", NS3)):
+                    ls = cm.find("gml:LineString", NS3)
+                    if ls is None:
+                        continue
+                    lid = ls.get(GML3_ID)
+                    pos, dim = _coords3(ls)
+                    row = {"id": lid or f"{ti_id}_ls_{i}_{_hash10(ls)}", "pos_list": pos,
+                           "srs_dimension": dim, "source": source}
+                    if not lid:
+                        row["synthetic_id"] = True
+                    batch["linestrings"].append(row)
+                    batch["terrain_line_rels"].append({"src": ti_id, "tgt": row["id"], "order": i})
+        elif kind == "ImplicitRepresentation":
+            _collect_implicit3(child, node_id, lod, source, batch, ctx)
+
+
+def _local_bbox3(geom_el):
+    acc = [float("inf")] * 3 + [float("-inf")] * 3
+    found = False
+    for c in geom_el.iter(_POSLIST3, _POS3):
+        if not c.text:
+            continue
+        vals = c.text.split()
+        dim = _dim_of(c, len(vals))
+        for i in range(0, len(vals) - dim + 1, dim):
+            try:
+                x, y = float(vals[i]), float(vals[i + 1])
+                z = float(vals[i + 2]) if dim > 2 else 0.0
+            except ValueError:
+                continue
+            found = True
+            acc[0], acc[3] = min(acc[0], x), max(acc[3], x)
+            acc[1], acc[4] = min(acc[1], y), max(acc[4], y)
+            acc[2], acc[5] = min(acc[2], z), max(acc[5], z)
+    return acc if found else None
+
+
+def _collect_prototype3(geom_el, proto_id, synthetic, owner_id, source, batch, ctx):
+    """An inline core:relativeGeometry template → ONE (:GeometryPrototype) (generalises
+    the street-tree pattern): MultiSurface/CompositeSurface/Solid/TriangulatedSurface
+    faces → HAS_SURFACE_MEMBER → GeometryPolygon; CompositeSolid/MultiSolid →
+    HAS_SOLID_MEMBER → GeometrySolid; MultiCurve → HAS_LINE → GeometryLineString.
+    Coordinates are template-local and are never reprojected; a srsName on template
+    polygons is kept but is not meaningful."""
+    ln = _ln3(geom_el)
+    row = {"id": proto_id, "source": source, "geometry_type": ln, "owner_feature_id": owner_id,
+           **ctx.prov}
+    if synthetic:
+        row["synthetic_id"] = True
+    if geom_el.get("srsName"):
+        row["srs_name"] = geom_el.get("srsName")
+    if ln in ("MultiSurface", "CompositeSurface"):
+        for i, sm in enumerate(geom_el.findall("gml:surfaceMember", NS3)):
+            _record_member3(sm, proto_id, i, source, batch, ctx, reproject=False)
+    elif ln == "Solid":
+        shell = geom_el.find("gml:exterior/gml:Shell", NS3)
+        if shell is not None:
+            if shell.get(GML3_ID):
+                row["shell_id"] = shell.get(GML3_ID)
+            for i, sm in enumerate(shell.findall("gml:surfaceMember", NS3)):
+                _record_member3(sm, proto_id, i, source, batch, ctx, reproject=False)
+    elif ln in ("CompositeSolid", "MultiSolid"):
+        for i, sm in enumerate(geom_el.findall("gml:solidMember", NS3)):
+            inner = _first_child3(sm)
+            if inner is None:
+                continue
+            sid = inner.get(GML3_ID)
+            _collect_solid3(inner, sid or f"{proto_id}_solid_{i}", None, source, batch, ctx,
+                            synthetic=not sid, reproject=False)
+            batch["solid_member_rels"].append({"src": proto_id, "tgt": sid or f"{proto_id}_solid_{i}",
+                                               "order": i, "via_xlink": False})
+    elif ln == "MultiCurve":
+        _collect_curves3(geom_el, proto_id, None, source, batch, ctx, "line_rels", reproject=False)
+    elif ln == "TriangulatedSurface":
+        patches = geom_el.find("gml:patches", NS3)
+        tris = (patches if patches is not None else geom_el).findall(".//gml:Triangle", NS3)
+        for i, tri in enumerate(tris):
+            pid = _collect_polygon3(tri, f"tri_{proto_id}_{i}", source, batch, reproject=False,
+                                    patch="Triangle")
+            batch["surface_member_rels"].append({"src": proto_id, "tgt": pid, "order": i,
+                                                 "via_xlink": False, "orientation": None})
+        row["triangle_count"] = len(tris)
+    else:
+        ctx.unsupported[f"implicit template gml:{ln}"] += 1
+    bb = _local_bbox3(geom_el)
+    if bb:
+        for i, ax in enumerate(("x", "y", "z")):
+            row[f"local_min_{ax}"] = bb[i]
+            row[f"local_max_{ax}"] = bb[i + 3]
+        ctx.proto_bbox[proto_id] = bb
+    batch["prototypes"].append(row)
+    ctx.stats["prototypes"] += 1
+
+
+def _collect_implicit3(prop_el, owner_id, lod, source, batch, ctx):
+    """core:lodNImplicitRepresentation/core:ImplicitGeometry → (owner)-[:HAS_PROTOTYPE
+    {lod, transformation_matrix, reference_point, reference_point_id, mime_type,
+    library_object, via_xlink}]->(:GeometryPrototype). The template is stored ONCE; an
+    xlink:href relativeGeometry becomes a deferred edge to the same prototype."""
+    if prop_el.get(XLINK_HREF):
+        ctx.unsupported["ImplicitRepresentation given by xlink"] += 1
+        return
+    ig = prop_el.find("core:ImplicitGeometry", NS3)
+    if ig is None:
+        return
+    props = {"transformation_matrix": _t3(ig, "core:transformationMatrix") or ""}
+    if ig.get(GML3_ID):
+        props["implicit_geometry_id"] = ig.get(GML3_ID)
+    mime = ig.find("core:mimeType", NS3)
+    if mime is not None and mime.text:
+        props["mime_type"] = mime.text.strip()
+        if mime.get("codeSpace"):
+            props["mime_type_codespace"] = mime.get("codeSpace")
+    lib = _t3(ig, "core:libraryObject")
+    if lib:
+        props["library_object"] = lib
+    ref = None
+    pt = ig.find("core:referencePoint/gml:Point", NS3)
+    if pt is not None:
+        pos = pt.find("gml:pos", NS3)
+        txt = pos.text.strip() if pos is not None and pos.text else ""
+        dim = _dim_of(pos, len(txt.split())) if pos is not None else 3
+        txt = _reproject_poslist(txt, dim)
+        props["reference_point"] = txt
+        props["reference_point_srs_dimension"] = dim
+        if pt.get(GML3_ID):
+            props["reference_point_id"] = pt.get(GML3_ID)
+        try:
+            vals = [float(v) for v in txt.split()]
+            ref = (vals + [0.0, 0.0, 0.0])[:3]
+        except ValueError:
+            ref = None
+    rg = ig.find("core:relativeGeometry", NS3)
+    proto_id = None
+    rhref = rg.get(XLINK_HREF) if rg is not None else None
+    if rhref:
+        proto_id = href_fragment(rhref)
+        props["via_xlink"] = True
+    elif rg is not None and _first_child3(rg) is not None:
+        geom = _first_child3(rg)
+        gid = geom.get(GML3_ID)
+        proto_id = gid or f"proto_{owner_id}_lod{lod}"
+        _collect_prototype3(geom, proto_id, not gid, owner_id, source, batch, ctx)
+        props["via_xlink"] = False
+    else:
+        # library object only (no GML geometry): keep the transform on a placeholder
+        proto_id = f"proto_{owner_id}_lod{lod}"
+        batch["prototypes"].append({"id": proto_id, "source": source, "geometry_type": None,
+                                    "owner_feature_id": owner_id, "synthetic_id": True})
+        props["via_xlink"] = False
+    for i, ap in enumerate(ig.findall("core:appearance", NS3)):
+        app_el = _first_child3(ap)
+        if app_el is not None and not ap.get(XLINK_HREF):
+            aid = _collect_appearance3(app_el, f"{proto_id}_app_{i}", source, batch, ctx)
+            batch["appearance_rels"].append({"src": proto_id, "tgt": aid, "order": i})
+    if props["via_xlink"]:
+        _defer3(ctx, "HAS_PROTOTYPE", owner_id, rhref, {"lod": lod}, props)
+    else:
+        batch["proto_rels"].append({"src": owner_id, "tgt": proto_id, "lod": lod, "props": props})
+    try:
+        mvals = [float(v) for v in props["transformation_matrix"].split()]
+    except ValueError:
+        mvals = []
+    if ref is not None and len(mvals) == 16:
+        ctx.implicit_jobs.append((owner_id, mvals, ref, proto_id))
+    ctx.stats["implicit_geometries"] += 1
+
+
+# ── appearance ───────────────────────────────────────────────────────────────
+
+_X3D_FIELDS = (("ambient_intensity", "ambientIntensity"), ("diffuse_color", "diffuseColor"),
+               ("emissive_color", "emissiveColor"), ("specular_color", "specularColor"),
+               ("shininess", "shininess"), ("transparency", "transparency"),
+               ("is_smooth", "isSmooth"))
+_TEX_FIELDS = (("image_uri", "imageURI"), ("texture_type", "textureType"),
+               ("wrap_mode", "wrapMode"), ("border_color", "borderColor"))
+
+
+def _collect_appearance3(app_el, fallback_id, source, batch, ctx):
+    """app:Appearance (CityModel member, feature-level or on an ImplicitGeometry) →
+    (:Appearance {id, theme}) -[:HAS_SURFACE_DATA {order}]-> (:X3DMaterial |
+    :ParameterizedTexture | :GeoreferencedTexture) -[:TARGETS {order,
+    texture_coordinates_json?, world_to_texture?}]-> (GeometryPolygon | …) — targets are
+    resolved by gml:id after parsing (deferred)."""
+    aid = app_el.get(GML3_ID)
+    props = {"id": aid or fallback_id, "source": source, **ctx.prov}
+    if not aid:
+        props["synthetic_id"] = True
+    aid = props["id"]
+    theme = _t3(app_el, "app:theme")
+    if theme is not None:
+        props["theme"] = theme
+    for key, xp in (("gml_name", "gml:name"), ("gml_description", "gml:description")):
+        v = _t3(app_el, xp)
+        if v:
+            props[key] = v
+    batch["appearances"].append(props)
+    ctx.stats["appearances"] += 1
+    for i, sdp in enumerate(app_el.findall("app:surfaceData", NS3)):
+        if sdp.get(XLINK_HREF):
+            _defer3(ctx, "HAS_SURFACE_DATA", aid, sdp.get(XLINK_HREF), {}, {"order": i})
+            continue
+        sd = _first_child3(sdp)
+        if sd is None:
+            continue
+        ln = _ln3(sd)
+        sid = sd.get(GML3_ID)
+        sp = {"id": sid or f"{aid}_sd_{i}", "source": source, "surface_data_type": ln, **ctx.prov}
+        if not sid:
+            sp["synthetic_id"] = True
+        sid = sp["id"]
+        front = _t3(sd, "app:isFront")
+        if front is not None:
+            sp["is_front"] = front
+        targets = []
+        if ln == "X3DMaterial":
+            for key, local in _X3D_FIELDS:
+                v = _t3(sd, f"app:{local}")
+                if v is not None:
+                    sp[key] = v
+            targets = [(t.text or "").strip() for t in sd.findall("app:target", NS3)]
+            for j, t in enumerate(targets):
+                _defer3(ctx, "TARGETS", sid, t, {"order": j}, {})
+        elif ln in ("ParameterizedTexture", "GeoreferencedTexture"):
+            for key, local in _TEX_FIELDS:
+                v = _t3(sd, f"app:{local}")
+                if v is not None:
+                    sp[key] = v
+            mime = sd.find("app:mimeType", NS3)
+            if mime is not None and mime.text:
+                sp["mime_type"] = mime.text.strip()
+                if mime.get("codeSpace"):
+                    sp["mime_type_codespace"] = mime.get("codeSpace")
+            if ln == "ParameterizedTexture":
+                for j, tp in enumerate(sd.findall("app:textureParameterization", NS3)):
+                    ta = tp.find("app:TextureAssociation", NS3)
+                    if ta is None:
+                        continue
+                    tgt = _t3(ta, "app:target")
+                    ep = {}
+                    if ta.get(GML3_ID):
+                        ep["texture_association_id"] = ta.get(GML3_ID)
+                    tcl = ta.find("app:textureParameterization/app:TexCoordList", NS3)
+                    if tcl is not None:
+                        coords = [" ".join((c.text or "").split())
+                                  for c in tcl.findall("app:textureCoordinates", NS3)]
+                        rings = [href_fragment((r.text or "").strip())
+                                 for r in tcl.findall("app:ring", NS3)]
+                        ep["texture_coordinates_json"] = json.dumps(
+                            [[r, c] for r, c in zip(rings, coords)])
+                    tcg = ta.find("app:textureParameterization/app:TexCoordGen", NS3)
+                    if tcg is not None:
+                        ep["world_to_texture"] = _t3(tcg, "app:worldToTexture")
+                    if tgt:
+                        _defer3(ctx, "TARGETS", sid, tgt, {"order": j}, ep)
+                        targets.append(tgt)
+            else:
+                v = _t3(sd, "app:preferWorldFile")
+                if v is not None:
+                    sp["prefer_world_file"] = v
+                pos = sd.find("app:referencePoint/gml:Point/gml:pos", NS3)
+                if pos is not None and pos.text:
+                    sp["reference_point"] = pos.text.strip()
+                v = _t3(sd, "app:orientation")
+                if v is not None:
+                    sp["orientation"] = v
+                targets = [(t.text or "").strip() for t in sd.findall("app:target", NS3)]
+                for j, t in enumerate(targets):
+                    _defer3(ctx, "TARGETS", sid, t, {"order": j}, {})
+        else:
+            ctx.unsupported[f"surface data app:{ln}"] += 1
+            continue
+        batch["surface_data"].append({"label": ln, "props": sp})
+        batch["surface_data_rels"].append({"src": aid, "tgt": sid, "order": i})
+        ctx.stats["surface_data"] += 1
+        ctx.stats["targets"] += len(targets)
+    return aid
+
+
+# ── thematic surfaces, spaces, sub-features ──────────────────────────────────
+
+def _collect_thematic_surface3(surf_el, parent_id, order, source, batch, ctx):
+    """A core:boundary thematic surface (con:WallSurface…, core:ClosureSurface,
+    tran:TrafficArea/AuxiliaryTrafficArea/HoleSurface, wtr:Water*Surface,
+    gen:GenericThematicSurface) → (:BoundarySurface[:TrafficArea…] {surface_type, lod}).
+    The highest-LoD MultiSurface is the primary geometry (HAS_POLYGON, as in 2.0); other
+    LoDs → HAS_LOD_SURFACE {lod}; lod0MultiCurve → HAS_LOD_MULTICURVE {lod:'0'};
+    con:fillingSurface (Window/DoorSurface) → Opening via HAS_OPENING."""
+    st = _ln3(surf_el)
+    gid = surf_el.get(GML3_ID)
+    sid = gid or f"bsurf_{_slug(parent_id)}_{st.lower()}_{_hash10(surf_el)}"
+    props = {"id": sid, "surface_type": st, "source": source, **ctx.prov}
+    if not gid:
+        props["synthetic_id"] = True
+    _semantic_props3(surf_el, sid, props, ctx, batch)
+    if st in _V3_SURF_ATTRS:
+        pref, specs = _V3_SURF_ATTRS[st]
+        _module_attrs3(surf_el, pref, specs, props)
+    ms_props = {}
+    for child in surf_el:
+        if not isinstance(child.tag, str) or not child.tag.startswith(f"{{{NS3['core']}}}lod"):
+            continue
+        m = _LOD_PROP_RE.match(etree.QName(child).localname)
+        if m and m.group(2) in ("MultiSurface", "MultiCurve"):
+            ms_props.setdefault(m.group(2), []).append((m.group(1), child))
+    surfaces = sorted(ms_props.get("MultiSurface", []), key=lambda t: t[0])
+    primary = None
+    for lod, child in reversed(surfaces):
+        if not child.get(XLINK_HREF) and child.find("gml:MultiSurface", NS3) is not None:
+            primary = (lod, child)
+            break
+    for lod, child in surfaces:
+        ctx.max_lod = max(ctx.max_lod, int(lod))
+        if primary is not None and child is primary[1]:
+            ms_el = child.find("gml:MultiSurface", NS3)
+            props["lod"] = lod
+            if ms_el.get(GML3_ID):
+                props["multi_surface_id"] = ms_el.get(GML3_ID)
+            members = ms_el.findall("gml:surfaceMember", NS3)
+            cs = members[0].find("gml:CompositeSurface", NS3) if len(members) == 1 else None
+            if cs is not None and cs.get(GML3_ID):
+                props["composite_surface_id"] = cs.get(GML3_ID)
+                batch["composite_surfaces"].append({"id": cs.get(GML3_ID), "source": source})
+                for i, sm in enumerate(cs.findall("gml:surfaceMember", NS3)):
+                    _record_member3(sm, sid, i, source, batch, ctx, rel="HAS_POLYGON")
+                    pid = sm.find("gml:Polygon", NS3)
+                    if pid is not None:
+                        batch["composite_poly_rels"].append(
+                            {"src": cs.get(GML3_ID), "order": i,
+                             "tgt": pid.get(GML3_ID) or f"{sid}_poly_{i}"})
+            else:
+                for i, sm in enumerate(members):
+                    _record_member3(sm, sid, i, source, batch, ctx, rel="HAS_POLYGON")
+            continue
+        href = child.get(XLINK_HREF)
+        if href:
+            _defer3(ctx, "HAS_LOD_SURFACE", sid, href, {"lod": lod}, {"via_xlink": True})
+            continue
+        ms_el = child.find("gml:MultiSurface", NS3)
+        if ms_el is None:
+            continue
+        mid = ms_el.get(GML3_ID) or f"ms_{sid}_lod{lod}_{_hash10(ms_el)}"
+        _collect_ms3(ms_el, mid, lod, source, batch, ctx, synthetic=not ms_el.get(GML3_ID))
+        batch["bldg_surface_rels"].append({"src": sid, "tgt": mid, "lod": lod, "role": None})
+    for lod, child in ms_props.get("MultiCurve", []):
+        _collect_curves3(child, sid, lod, source, batch, ctx, "multicurve_rels3")
+    # openings (con:fillingSurface → con:WindowSurface | con:DoorSurface)
+    for i, fs in enumerate(surf_el.findall("con:fillingSurface", NS3)):
+        o = _first_child3(fs)
+        if o is None:
+            continue
+        fln = _ln3(o)
+        oid = o.get(GML3_ID) or f"{sid}_opening_{i}"
+        op = {"id": oid, "opening_type": fln.replace("Surface", ""), "filling_type": fln,
+              "source": source, **ctx.prov}
+        if not o.get(GML3_ID):
+            op["synthetic_id"] = True
+        _semantic_props3(o, oid, op, ctx, batch)
+        batch["openings"].append(op)
+        _add_sub_bbox3(batch, ctx, oid, o)
+        batch["surf_opening_rels"].append({"src": sid, "tgt": oid, "order": i})
+        for child in o:
+            if not isinstance(child.tag, str):
+                continue
+            m = _LOD_PROP_RE.match(etree.QName(child).localname)
+            if not m or m.group(2) != "MultiSurface":
+                continue
+            ms_el = child.find("gml:MultiSurface", NS3)
+            if ms_el is None:
+                continue
+            mid = ms_el.get(GML3_ID)
+            _collect_ms3(ms_el, mid or f"ms_{oid}_lod{m.group(1)}", m.group(1), source, batch, ctx,
+                         synthetic=not mid)
+            batch["opening_ms_rels"].append({"src": oid, "tgt": mid or f"ms_{oid}_lod{m.group(1)}",
+                                             "lod": m.group(1)})
+        ctx.stats["surface:" + fln] += 1
+    batch["surfaces"].append(props)
+    _add_sub_bbox3(batch, ctx, sid, surf_el)
+    if st in _V3_SURF_EXTRA_LABEL:
+        batch["surface_labels"].append({"id": sid, "label": st})
+    ctx.stats["surface:" + st] += 1
+    return sid
+
+
+def _collect_space_common3(el, node_id, source, batch, ctx, ms_role=None, boundary_prop=None):
+    """core:boundary thematic surfaces + all space LoD geometry of a space node."""
+    for i, b in enumerate(el.findall("core:boundary", NS3)):
+        if b.get(XLINK_HREF):
+            _defer3(ctx, "HAS_BOUNDARY", node_id, b.get(XLINK_HREF), {},
+                    {"order": i, "prop": boundary_prop or "boundary", "via_xlink": True})
+            continue
+        child = _first_child3(b)
+        if child is None:
+            continue
+        sid = _collect_thematic_surface3(child, node_id, i, source, batch, ctx)
+        if boundary_prop:
+            batch["child_rels"].append({"rel": "HAS_BOUNDARY", "src": node_id, "tgt": sid,
+                                        "props": {"order": i, "prop": boundary_prop}})
+        else:
+            batch["boundary_rels"].append({"src": node_id, "tgt": sid, "order": i})
+    _collect_space_geometry3(el, node_id, source, batch, ctx, ms_role)
+
+
+def _child_id3(el, parent_id, kind):
+    gid = el.get(GML3_ID)
+    return (gid, False) if gid else (f"{parent_id}_{kind.lower()}_{_hash10(el)}", True)
+
+
+def _collect_sub_feature3(el, kind, parent_id, source, batch, ctx):
+    """Section / Intersection / TrafficSpace / AuxiliaryTrafficSpace / Hole /
+    ClearanceSpace / Marking → (:<labels>:Entity) — never CityObject, never PART_OF."""
+    prefix, specs, labels = _V3_SUB[kind]
+    sid, synth = _child_id3(el, parent_id, kind)
+    props = {"id": sid, "feature_type": kind, "source": source, **ctx.prov}
+    if synth:
+        props["synthetic_id"] = True
+    _semantic_props3(el, sid, props, ctx, batch)
+    _module_attrs3(el, prefix, specs, props)
+    if kind == "Marking":
+        _collect_space_geometry3(el, sid, source, batch, ctx)
+    else:
+        _collect_space_common3(el, sid, source, batch, ctx,
+                               boundary_prop="boundary" if kind not in ("Hole", "ClearanceSpace")
+                               else None)
+    if kind in ("Section", "Intersection"):
+        _collect_transport_children3(el, sid, props, source, batch, ctx)
+    if kind == "TrafficSpace":
+        occ = _occupancy3(el, "tran")
+        if occ:
+            props["occupancy_json"] = occ
+        for rel, local in (("PREDECESSOR", "predecessor"), ("SUCCESSOR", "successor")):
+            for i, r in enumerate(el.findall(f"tran:{local}", NS3)):
+                if r.get(XLINK_HREF):
+                    _defer3(ctx, rel, sid, r.get(XLINK_HREF), {"order": i},
+                            {"order": i, "source": source})
+        for i, w in enumerate(el.findall("tran:clearanceSpace", NS3)):
+            cs = w.find("tran:ClearanceSpace", NS3)
+            if cs is None:
+                continue
+            cid = _collect_sub_feature3(cs, "ClearanceSpace", sid, source, batch, ctx)
+            batch["child_rels"].append({"rel": "HAS_CLEARANCE_SPACE", "src": sid, "tgt": cid,
+                                        "props": {"order": i}})
+    batch["sub_features"].append({"labels": labels, "props": props})
+    _add_sub_bbox3(batch, ctx, sid, el)
+    ctx.stats["sub:" + kind] += 1
+    return sid
+
+
+def _collect_transport_children3(el, node_id, props, source, batch, ctx):
+    """tran:AbstractTransportationSpace content of a Road/Railway/Track/Square/Waterway/
+    Section/Intersection: trafficDirection, occupancy, trafficSpace*,
+    auxiliaryTrafficSpace*, hole*, marking*, section*, intersection*."""
+    td = _t3(el, "tran:trafficDirection")
+    if td:
+        props["traffic_direction"] = td
+    occ = _occupancy3(el, "tran")
+    if occ:
+        props["occupancy_json"] = occ
+    for prop, kind, rel, extra in (
+            ("trafficSpace", "TrafficSpace", "HAS_TRAFFIC_SPACE", {"auxiliary": False}),
+            ("auxiliaryTrafficSpace", "AuxiliaryTrafficSpace", "HAS_TRAFFIC_SPACE", {"auxiliary": True}),
+            ("hole", "Hole", "HAS_HOLE", {}),
+            ("marking", "Marking", "HAS_MARKING", {}),
+            ("section", "Section", "HAS_SECTION", {}),
+            ("intersection", "Intersection", "HAS_INTERSECTION", {})):
+        for i, w in enumerate(el.findall(f"tran:{prop}", NS3)):
+            if w.get(XLINK_HREF):
+                _defer3(ctx, rel, node_id, w.get(XLINK_HREF), {},
+                        {"order": i, "via_xlink": True, **extra})
+                continue
+            child = w.find(f"tran:{kind}", NS3)
+            if child is None:
+                continue
+            cid = _collect_sub_feature3(child, kind, node_id, source, batch, ctx)
+            batch["child_rels"].append({"rel": rel, "src": node_id, "tgt": cid,
+                                        "props": {"order": i, **extra}})
+
+
+def _collect_nested3(el, kind, prop, parent_id, order, source, batch, ctx):
+    """brid:BridgeConstructiveElement / brid:BridgeInstallation → NestedFeature (the
+    2.0 bridge-nesting node) via HAS_NESTED {prop, order}."""
+    nid, synth = _child_id3(el, parent_id, kind)
+    props = {"id": nid, "feature_kind": kind, "ns_prefix": "brid", "source": source, **ctx.prov}
+    if synth:
+        props["synthetic_id"] = True
+    _semantic_props3(el, nid, props, ctx, batch)
+    _module_attrs3(el, "brid", _CFU3, props)
+    v = _t3(el, "con:isStructuralElement")
+    if v is not None:
+        props["is_structural_element"] = v
+    v = _t3(el, "con:relationToConstruction")
+    if v is not None:
+        props["relation_to_construction"] = v
+    if el.find("con:filling", NS3) is not None:
+        ctx.unsupported["con:filling"] += 1
+    _collect_space_common3(el, nid, source, batch, ctx)
+    batch["nested_features"].append(props)
+    _add_sub_bbox3(batch, ctx, nid, el)
+    batch["nested_rels"].append({"src": parent_id, "tgt": nid, "prop": prop, "order": order})
+    ctx.stats["sub:" + kind] += 1
+    return nid
+
+
+def _collect_bridge_body3(el, node_id, props, source, batch, ctx):
+    _construction_props3(el, props, ctx)
+    _collect_space_common3(el, node_id, source, batch, ctx)
+    for prop, kind in (("bridgeConstructiveElement", "BridgeConstructiveElement"),
+                       ("bridgeInstallation", "BridgeInstallation")):
+        for i, w in enumerate(el.findall(f"brid:{prop}", NS3)):
+            child = w.find(f"brid:{kind}", NS3)
+            if child is not None:
+                _collect_nested3(child, kind, prop, node_id, i, source, batch, ctx)
+    for prop in ("bridgeRoom", "bridgeFurniture"):
+        n = len(el.findall(f"brid:{prop}", NS3))
+        if n:
+            ctx.unsupported[f"brid:{prop}"] += n
+    addr = el.findall("brid:address", NS3)
+    if addr:
+        props["address_xml"] = json.dumps([etree.tostring(a, encoding="unicode") for a in addr])
+    for i, w in enumerate(el.findall("brid:bridgePart", NS3)):
+        bp = w.find("brid:BridgePart", NS3)
+        if bp is None:
+            continue
+        pid, synth = _child_id3(bp, node_id, "BridgePart")
+        pprops = {"id": pid, "feature_type": "BridgePart", "source": source, **ctx.prov}
+        if synth:
+            pprops["synthetic_id"] = True
+        _semantic_props3(bp, pid, pprops, ctx, batch)
+        _module_attrs3(bp, "brid", _CFU3 + [("is_movable", "isMovable", "text")], pprops)
+        _collect_bridge_body3(bp, pid, pprops, source, batch, ctx)
+        batch["sub_features"].append({"labels": "BridgePart", "props": pprops})
+        _add_sub_bbox3(batch, ctx, pid, bp)
+        batch["child_rels"].append({"rel": "HAS_BRIDGE_PART", "src": node_id, "tgt": pid,
+                                    "props": {"order": i}})
+        ctx.stats["sub:BridgePart"] += 1
+
+
+def _bbox_map3(root):
+    """One post-order pass over a top-level feature: the coordinate bbox of every
+    element (union of its subtree, template-local relativeGeometry excluded), keyed by
+    the lxml element. Sub-features and boundary surfaces look their own element up, so
+    a TrafficSpace's bbox is the union of its boundaries and lod0 curves and a Section's
+    the union of its spaces — computed once per feature, not once per nesting level."""
+    xf = getattr(_tls, "reproj", None)
+    out = {}
+    gml_pref = f"{{{_GML3}}}"
+
+    def walk(e):
+        tag = e.tag
+        if not isinstance(tag, str) or tag == _RELGEOM3:
+            return None
+        if tag == _POSLIST3 or tag == _POS3:
+            if not e.text:
+                return None
+            vals = e.text.split()
+            dim = _dim_of(e, len(vals))
+            bb = None
+            for i in range(0, len(vals) - dim + 1, dim):
+                try:
+                    x, y = float(vals[i]), float(vals[i + 1])
+                    z = float(vals[i + 2]) if dim > 2 else 0.0
+                except ValueError:
+                    continue
+                if xf is not None:
+                    x, y, z = xf.point(x, y, z)
+                if bb is None:
+                    bb = [x, y, z, x, y, z]
+                else:
+                    if x < bb[0]: bb[0] = x
+                    if y < bb[1]: bb[1] = y
+                    if z < bb[2]: bb[2] = z
+                    if x > bb[3]: bb[3] = x
+                    if y > bb[4]: bb[4] = y
+                    if z > bb[5]: bb[5] = z
+            return bb
+        bb = None
+        for c in e:
+            cb = walk(c)
+            if cb is None:
+                continue
+            if bb is None:
+                bb = list(cb)
+            else:
+                bb = [min(bb[0], cb[0]), min(bb[1], cb[1]), min(bb[2], cb[2]),
+                      max(bb[3], cb[3]), max(bb[4], cb[4]), max(bb[5], cb[5])]
+        if bb is not None and not tag.startswith(gml_pref):
+            out[e] = bb
+        return bb
+
+    walk(root)
+    return out
+
+
+def _add_sub_bbox3(batch, ctx, nid, el):
+    bb = ctx.el_bbox.get(el)
+    if bb is not None:
+        batch["sub_bbox"].append({"id": nid, "minx": bb[0], "miny": bb[1], "minz": bb[2],
+                                  "maxx": bb[3], "maxy": bb[4], "maxz": bb[5]})
+
+
+def _feature_bbox3(el, props, ctx=None):
+    """Feature bbox: the envelope when present, else every coordinate of the feature
+    except template-local implicit geometry (implicit instances are added post-parse
+    from prototype extent × matrix + reference point)."""
+    if props.get("bbox_lower_corner") and props.get("bbox_upper_corner"):
+        lc = _parse_corner(props["bbox_lower_corner"])
+        uc = _parse_corner(props["bbox_upper_corner"])
+        return [lc[0], lc[1], lc[2], uc[0], uc[1], uc[2]]
+    if ctx is not None and el in ctx.el_bbox:
+        return list(ctx.el_bbox[el])
+    acc = [float("inf")] * 3 + [float("-inf")] * 3
+    found = False
+    xf = getattr(_tls, "reproj", None)
+    stack = [el]
+    while stack:
+        e = stack.pop()
+        tag = e.tag
+        if not isinstance(tag, str) or tag == _RELGEOM3:
+            continue
+        if tag == _POSLIST3 or tag == _POS3:
+            if not e.text:
+                continue
+            vals = e.text.split()
+            dim = _dim_of(e, len(vals))
+            for i in range(0, len(vals) - dim + 1, dim):
+                try:
+                    x, y = float(vals[i]), float(vals[i + 1])
+                    z = float(vals[i + 2]) if dim > 2 else 0.0
+                except ValueError:
+                    continue
+                if xf is not None:
+                    x, y, z = xf.point(x, y, z)
+                found = True
+                acc[0], acc[3] = min(acc[0], x), max(acc[3], x)
+                acc[1], acc[4] = min(acc[1], y), max(acc[4], y)
+                acc[2], acc[5] = min(acc[2], z), max(acc[5], z)
+            continue
+        stack.extend(e)
+    return acc if found else None
+
+
+def _add_bbox3(batch, ctx, fid, bb):
+    if bb is None:
+        return
+    batch["bbox_union"].append({"id": fid, "minx": bb[0], "miny": bb[1], "minz": bb[2],
+                                "maxx": bb[3], "maxy": bb[4], "maxz": bb[5]})
+    for i in range(3):
+        ctx.ds_bbox[i] = min(ctx.ds_bbox[i], bb[i])
+        ctx.ds_bbox[i + 3] = max(ctx.ds_bbox[i + 3], bb[i + 3])
+
+
+def _collect_building3(el, source, batch, ctx, parent_id=None, order=0):
+    """bldg:Building / bldg:BuildingPart (3.0) → the SAME graph pattern as 2.0
+    buildings (Building|BuildingPart node, HAS_BOUNDARY → BoundarySurface → HAS_POLYGON,
+    HAS_LOD_SOLID, HAS_LOD_SURFACE {lod, role}, HAS_TERRAIN_INTERSECTION,
+    HAS_LOD_MULTICURVE, HAS_BUILDING_PART, HAS_OUTER_INSTALLATION, HAS_INTERIOR_ROOM)."""
+    is_part = parent_id is not None
+    gid = el.get(GML3_ID)
+    if not gid:
+        if not is_part:
+            ctx.unsupported["top-level feature without gml:id (skipped)"] += 1
+            return None
+        gid = f"{parent_id}_part_{_hash10(el)}"
+    props = {"id": gid, "name": gid, "source": source, **ctx.prov}
+    if is_part and not el.get(GML3_ID):
+        props["synthetic_id"] = True
+    _semantic_props3(el, gid, props, ctx, batch, top_level=not is_part)
+    for key, local in (("class_code", "class"), ("function_code", "function"),
+                       ("usage_code", "usage"), ("roof_type_code", "roofType")):
+        vals = _codes3(el, "bldg", local)
+        if vals:
+            props[key] = vals[0][0]
+            if vals[0][1]:
+                props[f"{key.replace('_code', '')}_codespace"] = vals[0][1]
+            if len(vals) > 1:
+                props[f"{key}_list"] = [v for v, _ in vals]
+    for key, local in (("storeys_above_ground", "storeysAboveGround"),
+                       ("storeys_below_ground", "storeysBelowGround")):
+        v = _t3(el, f"bldg:{local}")
+        if v is not None:
+            try:
+                props[key] = int(v)
+            except ValueError:
+                pass
+    for key, local in (("storey_heights_above_ground", "storeyHeightsAboveGround"),
+                       ("storey_heights_below_ground", "storeyHeightsBelowGround")):
+        e = el.find(f"bldg:{local}", NS3)
+        if e is not None and e.text:
+            props[key] = e.text.strip()
+            if e.get("uom"):
+                props[f"{key}_uom"] = e.get("uom")
+    _construction_props3(el, props, ctx)
+    addr = el.findall("bldg:address", NS3)
+    if addr:
+        props["address_xml"] = json.dumps([etree.tostring(a, encoding="unicode") for a in addr])
+    if not ctx.gemeinde_key and props.get("gemeindeschluessel"):
+        ctx.gemeinde_key = props["gemeindeschluessel"]
+    _collect_space_common3(el, gid, source, batch, ctx, ms_role="multisurface")
+    for i, w in enumerate(el.findall("bldg:buildingInstallation", NS3)):
+        inst = w.find("bldg:BuildingInstallation", NS3)
+        if inst is None:
+            continue
+        iid, synth = _child_id3(inst, gid, "inst")
+        ip = {"id": iid, "installation_kind": "BuildingInstallation", "source": source, **ctx.prov}
+        if synth:
+            ip["synthetic_id"] = True
+        _semantic_props3(inst, iid, ip, ctx, batch)
+        for key, local in (("class_code", "class"), ("function_code", "function"),
+                           ("usage_code", "usage")):
+            vals = _codes3(inst, "bldg", local)
+            if vals:
+                ip[key] = vals[0][0]
+                if vals[0][1]:
+                    ip[f"{key.replace('_code', '')}_codespace"] = vals[0][1]
+        v = _t3(inst, "con:relationToConstruction")
+        if v:
+            ip["relation_to_construction"] = v
+        _collect_space_common3(inst, iid, source, batch, ctx)
+        batch["installations"].append(ip)
+        _add_sub_bbox3(batch, ctx, iid, inst)
+        batch["bldg_inst_rels"].append({"src": gid, "tgt": iid, "order": i})
+        ctx.stats["sub:BuildingInstallation"] += 1
+    for i, w in enumerate(el.findall("bldg:buildingRoom", NS3)):
+        room = w.find("bldg:BuildingRoom", NS3)
+        if room is None:
+            continue
+        rid, synth = _child_id3(room, gid, "room")
+        rp = {"id": rid, "source": source, **ctx.prov}
+        if synth:
+            rp["synthetic_id"] = True
+        _semantic_props3(room, rid, rp, ctx, batch)
+        for key, local in (("class_code", "class"), ("function_code", "function"),
+                           ("usage_code", "usage")):
+            vals = _codes3(room, "bldg", local)
+            if vals:
+                rp[key] = vals[0][0]
+        _collect_space_common3(room, rid, source, batch, ctx)
+        batch["rooms"].append(rp)
+        _add_sub_bbox3(batch, ctx, rid, room)
+        batch["interior_room_rels"].append({"src": gid, "tgt": rid, "order": i})
+        ctx.stats["sub:BuildingRoom"] += 1
+        n_unsup = len(room.findall("bldg:buildingFurniture", NS3)) + \
+            len(room.findall("bldg:buildingInstallation", NS3))
+        if n_unsup:
+            ctx.unsupported["bldg:BuildingRoom furniture/installation"] += n_unsup
+    for prop in ("buildingConstructiveElement", "buildingFurniture", "buildingSubdivision"):
+        n = len(el.findall(f"bldg:{prop}", NS3))
+        if n:
+            ctx.unsupported[f"bldg:{prop}"] += n
+    for i, w in enumerate(el.findall("bldg:buildingPart", NS3)):
+        bp = w.find("bldg:BuildingPart", NS3)
+        if bp is not None:
+            _collect_building3(bp, source, batch, ctx, parent_id=gid, order=i)
+    if is_part:
+        batch["building_parts"].append(props)
+        _add_sub_bbox3(batch, ctx, gid, el)
+        batch["bldg_part_rels"].append({"src": parent_id, "tgt": gid, "order": order})
+        ctx.stats["sub:BuildingPart"] += 1
+        return gid
+    bb = _feature_bbox3(el, props, ctx)
+    if bb is not None:
+        cx, cy = (bb[0] + bb[3]) / 2.0, (bb[1] + bb[4]) / 2.0
+        fn_label = BUILDING_FUNCTION_NAMES.get(props.get("function_code") or "", "Building")
+        rt_label = ROOF_TYPE_NAMES.get(props.get("roof_type_code") or "", "")
+        mh, st = props.get("measured_height"), props.get("storeys_above_ground")
+        props["description"] = (
+            f"{fn_label}{f', {mh} m tall' if mh is not None else ''}"
+            f"{f', {st} storeys' if st is not None else ''}"
+            f"{f', {rt_label} roof' if rt_label else ''}, at ({cx:.1f}, {cy:.1f})")
+    props["rtree_layer"] = ctx.rtree_layer
+    batch["buildings3"].append(props)
+    _add_bbox3(batch, ctx, gid, bb)
+    ctx.top_ids.append(gid)
+    ctx.building_ids.append(gid)
+    ctx.stats["top:Building"] += 1
+    return gid
+
+
+def _collect_city_object3(el, spec, source, batch, ctx):
+    ft, prefix, kind, attrs = spec
+    fid = el.get(GML3_ID)
+    if not fid:
+        ctx.unsupported["top-level feature without gml:id (skipped)"] += 1
+        return None
+    props = {"id": fid, "name": fid, "feature_type": ft, "source": source,
+             "rtree_layer": ctx.rtree_layer, **ctx.prov}
+    _semantic_props3(el, fid, props, ctx, batch, top_level=True)
+    _module_attrs3(el, prefix, attrs, props)
+    if kind == "transport":
+        _collect_space_common3(el, fid, source, batch, ctx, boundary_prop="boundary")
+        _collect_transport_children3(el, fid, props, source, batch, ctx)
+    elif kind == "construction":
+        _construction_props3(el, props, ctx)
+        _collect_space_common3(el, fid, source, batch, ctx)
+    elif kind == "bridge":
+        _collect_bridge_body3(el, fid, props, source, batch, ctx)
+    elif kind == "thematic":
+        _collect_space_geometry3(el, fid, source, batch, ctx)
+    else:
+        _collect_space_common3(el, fid, source, batch, ctx)
+    batch["city_objects3"].append(props)
+    _add_bbox3(batch, ctx, fid, _feature_bbox3(el, props, ctx))
+    ctx.top_ids.append(fid)
+    ctx.stats["top:" + ft] += 1
+    return fid
+
+
+def _collect_member3(feat_el, source, batch, ctx):
+    ctx.local_ids = {e.get(GML3_ID) for e in feat_el.iter()
+                     if isinstance(e.tag, str) and e.get(GML3_ID)}
+    ctx.el_bbox = _bbox_map3(feat_el)
+    if feat_el.tag == _V3_BUILDING_TAG:
+        return _collect_building3(feat_el, source, batch, ctx)
+    spec = _V3_TOP.get(feat_el.tag)
+    if spec is not None:
+        return _collect_city_object3(feat_el, spec, source, batch, ctx)
+    q = etree.QName(feat_el)
+    pref = next((p for p, u in NS3.items() if u == q.namespace), q.namespace)
+    ctx.unsupported[f"top-level {pref}:{q.localname} (skipped)"] += 1
+    return None
+
+
+# ── flush helpers for the 3.0 batch keys (called from _flush_batch) ─────────
+
+_SOURCE_FILES_SET = (
+    "SET n.source_files = CASE WHEN row.source IN coalesce(n.source_files, []) "
+    "THEN n.source_files ELSE coalesce(n.source_files, []) + row.source END")
+
+
+def _merge_existing_gen_maps(sess, rows):
+    """Union the stored _gen_attrs_map with the incoming one: the same Road/Section/
+    TrafficSpace gml:id arrives from several tile files and must accumulate."""
+    ids = [r["id"] for r in rows]
+    existing = {r["id"]: r["m"] for r in sess.run(
+        "UNWIND $ids AS i MATCH (n:Entity {id: i}) "
+        "WHERE n._gen_attrs_map IS NOT NULL AND n._gen_attrs_map <> '{}' "
+        "RETURN n.id AS id, n._gen_attrs_map AS m", ids=ids)}
+    for r in rows:
+        old = existing.get(r["id"])
+        if old and old != r.get("_gen_attrs_map"):
+            try:
+                merged = json.loads(old)
+                merged.update(json.loads(r.get("_gen_attrs_map") or "{}"))
+                r["_gen_attrs_map"] = json.dumps(merged)
+            except ValueError:
+                pass
+
+
+def _flush_v3_feature_nodes(sess, batch):
+    if batch.get("buildings3"):
+        rows = batch["buildings3"]
+        _merge_existing_gen_maps(sess, rows)
+        sess.run("UNWIND $rows AS row MERGE (n:Building {id: row.id}) SET n += row, n:Entity "
+                 + _SOURCE_FILES_SET, rows=rows)
+    if batch.get("city_objects3"):
+        groups = _defaultdict(list)
+        for r in batch["city_objects3"]:
+            groups[r["feature_type"]].append(r)
+        for ft, rows in groups.items():
+            if not _SAFE_LABELS_RE.match(ft):
+                continue
+            _merge_existing_gen_maps(sess, rows)
+            sess.run(f"UNWIND $rows AS row MERGE (n:CityObject {{id: row.id}}) "
+                     f"SET n += row, n:Entity, n:{ft} " + _SOURCE_FILES_SET, rows=rows)
+    if batch.get("sub_features"):
+        groups = _defaultdict(list)
+        for r in batch["sub_features"]:
+            groups[r["labels"]].append(r["props"])
+        for labels, rows in groups.items():
+            if not _SAFE_LABELS_RE.match(labels):
+                continue
+            first, *rest = labels.split(":")
+            extra = "".join(f", n:{lab}" for lab in rest)
+            _merge_existing_gen_maps(sess, rows)
+            sess.run(f"UNWIND $rows AS row MERGE (n:{first} {{id: row.id}}) "
+                     f"SET n += row, n:Entity{extra} " + _SOURCE_FILES_SET, rows=rows)
+
+
+def _flush_v3_extra_nodes(sess, batch):
+    if batch.get("prototypes"):
+        sess.run("UNWIND $rows AS row MERGE (n:GeometryPrototype {id: row.id}) "
+                 "SET n += row, n:Entity", rows=batch["prototypes"])
+    if batch.get("appearances"):
+        sess.run("UNWIND $rows AS row MERGE (n:Appearance {id: row.id}) SET n += row, n:Entity",
+                 rows=batch["appearances"])
+    if batch.get("surface_data"):
+        groups = _defaultdict(list)
+        for r in batch["surface_data"]:
+            groups[r["label"]].append(r["props"])
+        for label, rows in groups.items():
+            if _SAFE_LABELS_RE.match(label):
+                sess.run(f"UNWIND $rows AS row MERGE (n:{label} {{id: row.id}}) "
+                         f"SET n += row, n:Entity", rows=rows)
+    if batch.get("surface_labels"):
+        groups = _defaultdict(list)
+        for r in batch["surface_labels"]:
+            groups[r["label"]].append(r["id"])
+        for label, ids in groups.items():
+            if _SAFE_LABELS_RE.match(label):
+                sess.run(f"UNWIND $ids AS i MATCH (n:BoundarySurface {{id: i}}) SET n:{label}",
+                         ids=ids)
+    if batch.get("polygon_props"):
+        sess.run("UNWIND $rows AS row MATCH (n:GeometryPolygon {id: row.id}) SET n += row.props",
+                 rows=batch["polygon_props"])
+    if batch.get("bbox_union"):
+        _apply_bbox_union(sess, batch["bbox_union"])
+    if batch.get("sub_bbox"):
+        _apply_sub_bbox(sess, batch["sub_bbox"])
+
+
+_SUB_BBOX_SET = (
+    "SET n.bbox_min_x = CASE WHEN n.bbox_min_x IS NULL OR row.minx < n.bbox_min_x THEN row.minx ELSE n.bbox_min_x END, "
+    "    n.bbox_min_y = CASE WHEN n.bbox_min_y IS NULL OR row.miny < n.bbox_min_y THEN row.miny ELSE n.bbox_min_y END, "
+    "    n.bbox_min_z = CASE WHEN n.bbox_min_z IS NULL OR row.minz < n.bbox_min_z THEN row.minz ELSE n.bbox_min_z END, "
+    "    n.bbox_max_x = CASE WHEN n.bbox_max_x IS NULL OR row.maxx > n.bbox_max_x THEN row.maxx ELSE n.bbox_max_x END, "
+    "    n.bbox_max_y = CASE WHEN n.bbox_max_y IS NULL OR row.maxy > n.bbox_max_y THEN row.maxy ELSE n.bbox_max_y END, "
+    "    n.bbox_max_z = CASE WHEN n.bbox_max_z IS NULL OR row.maxz > n.bbox_max_z THEN row.maxz ELSE n.bbox_max_z END")
+
+
+def _apply_sub_bbox(sess, rows):
+    """bbox_min/max_x/y/z on sub-features and boundary surfaces (no center / WKT /
+    R-tree: they are not spatially indexed), union-merged like the top-level bbox so a
+    Section or TrafficSpace continued in another tile grows with it."""
+    sess.run("UNWIND $rows AS row MATCH (n:Entity {id: row.id}) " + _SUB_BBOX_SET, rows=rows)
+
+
+def _apply_bbox_union(sess, rows):
+    """Union-merge feature bboxes (a Road spanning tiles grows with every tile) and
+    derive center/location/bbox_wkt (+ ground_z on Buildings) from the union."""
+    sess.run(
+        "UNWIND $rows AS row MATCH (n:Entity {id: row.id}) "
+        "WITH n, row, [n.bbox_min_x, n.bbox_min_y, n.bbox_max_x, n.bbox_max_y] AS old "
+        "SET n.bbox_min_x = CASE WHEN n.bbox_min_x IS NULL OR row.minx < n.bbox_min_x THEN row.minx ELSE n.bbox_min_x END, "
+        "    n.bbox_min_y = CASE WHEN n.bbox_min_y IS NULL OR row.miny < n.bbox_min_y THEN row.miny ELSE n.bbox_min_y END, "
+        "    n.bbox_min_z = CASE WHEN n.bbox_min_z IS NULL OR row.minz < n.bbox_min_z THEN row.minz ELSE n.bbox_min_z END, "
+        "    n.bbox_max_x = CASE WHEN n.bbox_max_x IS NULL OR row.maxx > n.bbox_max_x THEN row.maxx ELSE n.bbox_max_x END, "
+        "    n.bbox_max_y = CASE WHEN n.bbox_max_y IS NULL OR row.maxy > n.bbox_max_y THEN row.maxy ELSE n.bbox_max_y END, "
+        "    n.bbox_max_z = CASE WHEN n.bbox_max_z IS NULL OR row.maxz > n.bbox_max_z THEN row.maxz ELSE n.bbox_max_z END "
+        "WITH n, old "
+        # an already indexed feature whose extent grew (a Road continued in the next
+        # tile) is flagged; the R-tree passes remove and re-add it
+        "SET n.rtree_stale = CASE WHEN old[0] IS NOT NULL "
+        "      AND old <> [n.bbox_min_x, n.bbox_min_y, n.bbox_max_x, n.bbox_max_y] "
+        "      AND EXISTS { MATCH ()-[:RTREE_REFERENCE]->(n) } THEN true ELSE n.rtree_stale END "
+        "WITH n, old "
+        "SET n.center_x = (n.bbox_min_x + n.bbox_max_x) / 2.0, "
+        "    n.center_y = (n.bbox_min_y + n.bbox_max_y) / 2.0, "
+        "    n.location = point({x: (n.bbox_min_x + n.bbox_max_x) / 2.0, "
+        "                        y: (n.bbox_min_y + n.bbox_max_y) / 2.0}), "
+        "    n.ground_z = CASE WHEN n:Building THEN n.bbox_min_z ELSE n.ground_z END "
+        # a degenerate extent (axis-parallel fence, single pole) gets a ±0.5 mm padded
+        # WKT so it still enters the R-tree; bbox_min/max stay exact
+        # (bbox_wkt is only rewritten when the extent changed: neo4j-spatial normalises
+        #  the WKT text when it indexes a node, and re-ingest must not touch it)
+        "WITH n, old, CASE WHEN n.bbox_max_x > n.bbox_min_x THEN 0.0 ELSE 0.0005 END AS px, "
+        "        CASE WHEN n.bbox_max_y > n.bbox_min_y THEN 0.0 ELSE 0.0005 END AS py "
+        "WHERE n.bbox_wkt IS NULL OR old <> [n.bbox_min_x, n.bbox_min_y, n.bbox_max_x, n.bbox_max_y] "
+        "SET n.bbox_wkt = 'POLYGON((' + toString(n.bbox_min_x - px) + ' ' + toString(n.bbox_min_y - py) + ', ' "
+        "        + toString(n.bbox_max_x + px) + ' ' + toString(n.bbox_min_y - py) + ', ' "
+        "        + toString(n.bbox_max_x + px) + ' ' + toString(n.bbox_max_y + py) + ', ' "
+        "        + toString(n.bbox_min_x - px) + ' ' + toString(n.bbox_max_y + py) + ', ' "
+        "        + toString(n.bbox_min_x - px) + ' ' + toString(n.bbox_min_y - py) + '))'",
+        rows=rows)
+
+
+def _flush_v3_rels(sess, batch):
+    if batch.get("child_rels"):
+        groups = _defaultdict(list)
+        for r in batch["child_rels"]:
+            groups[r["rel"]].append(r)
+        for rel, rows in groups.items():
+            if _SAFE_REL_RE.match(rel):
+                sess.run(f"UNWIND $rows AS row MATCH (a:Entity {{id: row.src}}) "
+                         f"MATCH (b:Entity {{id: row.tgt}}) MERGE (a)-[r:{rel}]->(b) "
+                         f"SET r += row.props", rows=rows)
+    if batch.get("proto_rels"):
+        sess.run("UNWIND $rows AS row MATCH (a:Entity {id: row.src}) "
+                 "MATCH (b:GeometryPrototype {id: row.tgt}) "
+                 "MERGE (a)-[r:HAS_PROTOTYPE {lod: row.lod}]->(b) SET r += row.props",
+                 rows=batch["proto_rels"])
+    if batch.get("solid_member_rels"):
+        sess.run("UNWIND $rows AS row MATCH (a:Entity {id: row.src}) "
+                 "MATCH (b:GeometrySolid {id: row.tgt}) "
+                 "MERGE (a)-[r:HAS_SOLID_MEMBER {order: row.order}]->(b) "
+                 "SET r.via_xlink = row.via_xlink", rows=batch["solid_member_rels"])
+    if batch.get("line_rels"):
+        sess.run("UNWIND $rows AS row MATCH (a:Entity {id: row.src}) "
+                 "MATCH (b:GeometryLineString {id: row.tgt}) "
+                 "MERGE (a)-[r:HAS_LINE {order: row.order}]->(b)", rows=batch["line_rels"])
+    if batch.get("multicurve_rels3"):
+        sess.run("UNWIND $rows AS row MATCH (a:Entity {id: row.src}) "
+                 "MATCH (b:GeometryLineString {id: row.tgt}) "
+                 "MERGE (a)-[r:HAS_LOD_MULTICURVE]->(b) SET r.lod = row.lod, "
+                 "r.order = row.order, r.multi_curve_id = row.multi_curve_id, r.role = row.role",
+                 rows=batch["multicurve_rels3"])
+    if batch.get("point_rels"):
+        sess.run("UNWIND $rows AS row MATCH (a:Entity {id: row.src}) "
+                 "MATCH (b:GeometryLineString {id: row.tgt}) "
+                 "MERGE (a)-[r:HAS_LOD_POINT]->(b) SET r.lod = row.lod", rows=batch["point_rels"])
+    if batch.get("appearance_rels"):
+        sess.run("UNWIND $rows AS row MATCH (a:Entity {id: row.src}) "
+                 "MATCH (b:Appearance {id: row.tgt}) "
+                 "MERGE (a)-[r:HAS_APPEARANCE]->(b) SET r.order = row.order",
+                 rows=batch["appearance_rels"])
+    if batch.get("surface_data_rels"):
+        sess.run("UNWIND $rows AS row MATCH (a:Appearance {id: row.src}) "
+                 "MATCH (b:Entity {id: row.tgt}) "
+                 "MERGE (a)-[r:HAS_SURFACE_DATA]->(b) SET r.order = row.order",
+                 rows=batch["surface_data_rels"])
+
+
+# ── deferred / pending references ─────────────────────────────────────────────
+
+def _resolve_refs3(sess, rows):
+    """MERGE every deferred edge whose two endpoints exist; return the unresolved rows.
+    An Appearance given by reference on a feature (HAS_APPEARANCE_REF) resolves to
+    HAS_APPEARANCE."""
+    unresolved = []
+    # A geometry-property xlink (e.g. veg:PlantCover core:lod0MultiSurface
+    # xlink:href="#<MultiSurface of an AuxiliaryTrafficArea>") may target the primary
+    # MultiSurface of a BoundarySurface, which the model stores as multi_surface_id +
+    # HAS_POLYGON (no node). Materialise exactly those referenced MultiSurfaces as a
+    # GeometryMultiSurface with the same members (BoundarySurface -[:HAS_LOD_SURFACE
+    # {lod, role:'primary'}]-> it), so the xlink becomes a normal edge; exporters write
+    # the surface inline once and the referencing feature as xlink:href.
+    ms_tgts = sorted({r["tgt"] for r in rows if r["rel"] in ("HAS_LOD_SURFACE",)})
+    for j in range(0, len(ms_tgts), 2000):
+        sess.run(
+            "UNWIND $tgts AS t MATCH (s:BoundarySurface {multi_surface_id: t}) "
+            "WHERE NOT EXISTS { MATCH (:GeometryMultiSurface {id: t}) } "
+            "MERGE (m:GeometryMultiSurface {id: t}) "
+            "SET m:Entity, m.lod = s.lod, m.source = s.source, m.materialized_from = s.id "
+            "MERGE (s)-[r:HAS_LOD_SURFACE {lod: s.lod}]->(m) SET r.role = 'primary' "
+            "WITH s, m MATCH (s)-[hp:HAS_POLYGON]->(p) "
+            "MERGE (m)-[r2:HAS_SURFACE_MEMBER {order: hp.order}]->(p) "
+            "SET r2.via_xlink = hp.via_xlink, r2.orientation = hp.orientation",
+            tgts=ms_tgts[j:j + 2000])
+    groups = _defaultdict(list)
+    for i, r in enumerate(rows):
+        rel = "HAS_APPEARANCE" if r["rel"] == "HAS_APPEARANCE_REF" else r["rel"]
+        groups[(rel, tuple(sorted(r["key"])))].append(dict(r, i=i))
+    for (rel, keys), grp in groups.items():
+        if not _SAFE_REL_RE.match(rel):
+            unresolved.extend(grp)
+            continue
+        keymap = ", ".join(f"{k}: row.key.{k}" for k in keys)
+        keymap = f" {{{keymap}}}" if keymap else ""
+        # the target must come from the referenced document (rows parked before `doc`
+        # was recorded resolve as before)
+        stmt = (f"UNWIND $rows AS row MATCH (a:Entity {{id: row.src}}) "
+                f"MATCH (b:Entity {{id: row.tgt}}) "
+                f"WHERE row.doc IS NULL OR b.source = row.doc "
+                f"OR row.doc IN coalesce(b.source_files, []) "
+                f"MERGE (a)-[r:{rel}{keymap}]->(b) "
+                f"SET r += row.props RETURN DISTINCT row.i AS i")
+        done = set()
+        for j in range(0, len(grp), 2000):
+            chunk = grp[j:j + 2000]
+            for attempt in range(5):
+                try:
+                    done.update(rec["i"] for rec in sess.run(stmt, rows=chunk))
+                    break
+                except TransientError:
+                    time.sleep(0.2 * (attempt + 1))
+        unresolved.extend(r for r in grp if r["i"] not in done)
+    for r in unresolved:
+        r.pop("i", None)
+    # a reference into a Dataset with another id prefix (or none): try the fragment with
+    # the target Dataset's prefix instead of ours
+    alt = [r for r in unresolved if r.get("tgt0") and r.get("doc") and not r.get("_alt")]
+    if alt:
+        docs = sorted({r["doc"] for r in alt})
+        pref = {rec["doc"]: rec["p"] or "" for rec in sess.run(
+            "UNWIND $docs AS doc MATCH (d:Dataset) WHERE doc IN coalesce(d.source_files, []) "
+            "RETURN doc, d.id_prefix AS p", docs=docs)}
+        retry = [dict(r, tgt=pref[r["doc"]] + r["tgt0"], _alt=True) for r in alt
+                 if r["doc"] in pref and pref[r["doc"]] + r["tgt0"] != r["tgt"]]
+        if retry:
+            def _k(r):
+                return (r["src"], r["rel"], r.get("tgt0"), r.get("doc"),
+                        json.dumps(r["key"], sort_keys=True))
+            still = {_k(r) for r in _resolve_refs3(sess, retry)}
+            done = {_k(r) for r in retry} - still
+            unresolved = [r for r in unresolved if _k(r) not in done]
+    return unresolved
+
+
+def _store_pending3(sess, unresolved):
+    """Unresolved references (target not in the graph yet — typically a feature in a
+    tile file that is ingested later) are parked on the source node as
+    pending_refs_json + the plumbing label PendingRefs; resolve_pending_refs() retries
+    them after every 3.0 ingest (and via `ingest_citygml.py --resolve-pending`)."""
+    if not unresolved:
+        return
+    by_src = _defaultdict(list)
+    for r in unresolved:
+        by_src[r["src"]].append({k: r[k] for k in ("rel", "tgt", "key", "props", "doc", "tgt0")
+                                 if k in r})
+    ids = list(by_src)
+    existing = {rec["id"]: rec["j"] for rec in sess.run(
+        "UNWIND $ids AS i MATCH (n:Entity {id: i}) RETURN n.id AS id, n.pending_refs_json AS j",
+        ids=ids)}
+    rows = []
+    for src, refs in by_src.items():
+        if src not in existing:
+            continue                       # source node missing: nothing to attach to
+        merged = json.loads(existing[src]) if existing[src] else []
+        seen = {(m["rel"], m["tgt"], json.dumps(m["key"], sort_keys=True)) for m in merged}
+        for ref in refs:
+            k = (ref["rel"], ref["tgt"], json.dumps(ref["key"], sort_keys=True))
+            if k not in seen:
+                merged.append(ref)
+                seen.add(k)
+        rows.append({"id": src, "j": json.dumps(merged)})
+    for j in range(0, len(rows), 2000):
+        sess.run("UNWIND $rows AS row MATCH (n:Entity {id: row.id}) "
+                 "SET n:PendingRefs, n.pending_refs_json = row.j", rows=rows[j:j + 2000])
+
+
+def resolve_pending_refs(sess, doc=None):
+    """Retry parked (pending) cross-file references: all of them, or with `doc` only those
+    into that file (after it was ingested; references parked before `doc` was recorded
+    are retried too). Returns (resolved, remaining) of the references retried."""
+    recs = sess.run("MATCH (n:PendingRefs) RETURN n.id AS id, n.pending_refs_json AS j").data()
+    if not recs:
+        return 0, 0
+    rows, kept = [], _defaultdict(list)
+    for rec in recs:
+        for ref in json.loads(rec["j"] or "[]"):
+            if doc is None or ref.get("doc") in (None, doc):
+                rows.append({"src": rec["id"], **ref})
+            else:
+                kept[rec["id"]].append(ref)
+    if not rows:
+        return 0, 0
+    retried = {r["src"] for r in rows}
+    unresolved = _resolve_refs3(sess, rows)
+    left = _defaultdict(list)
+    for r in unresolved:
+        left[r["src"]].append({k: r[k] for k in ("rel", "tgt", "key", "props", "doc", "tgt0")
+                               if k in r})
+    upd = [{"id": i, "j": json.dumps(kept[i] + left[i])} for i in retried if kept[i] or left[i]]
+    clear = [i for i in retried if not (kept[i] or left[i])]
+    if upd:
+        sess.run("UNWIND $rows AS row MATCH (n:PendingRefs {id: row.id}) "
+                 "SET n.pending_refs_json = row.j", rows=upd)
+    if clear:
+        sess.run("UNWIND $ids AS i MATCH (n:PendingRefs {id: i}) "
+                 "REMOVE n:PendingRefs, n.pending_refs_json", ids=clear)
+    return len(rows) - len(unresolved), len(unresolved)
+
+
+def _backfill_bbox3(sess, dataset_id):
+    """Top-level features of the Dataset that still have no bbox — their only geometry
+    is a geometry-property xlink (e.g. PlantCover lod0MultiSurface → an
+    AuxiliaryTrafficArea's MultiSurface), possibly resolved only now from a later tile —
+    get it from the resolved graph geometry (HAS_LOD_SURFACE/HAS_LOD_SOLID/HAS_BOUNDARY →
+    polygons; never HAS_PROTOTYPE, whose rings are template-local). Returns their ids."""
+    ids = [r["id"] for r in sess.run(
+        "MATCH (d:Dataset {id: $did})<-[:PART_OF]-(n) "
+        "WHERE (n:Building OR n:CityObject) AND n.bbox_wkt IS NULL RETURN n.id AS id",
+        did=dataset_id)]
+    done = []
+    for j in range(0, len(ids), 500):
+        rows = []
+        for rec in sess.run(
+                "UNWIND $ids AS i MATCH (n:Entity {id: i}) "
+                "MATCH (n)-[:HAS_LOD_SURFACE|HAS_LOD_SOLID|HAS_BOUNDARY]->(g)"
+                "-[:HAS_SURFACE_MEMBER|HAS_POLYGON*1..2]->(:GeometryPolygon)"
+                "-[:HAS_EXTERIOR_RING|HAS_INTERIOR_RING]->(r) "
+                "RETURN i AS id, collect([r.pos_list, coalesce(r.srs_dimension, 3)]) AS pl",
+                ids=ids[j:j + 500]):
+            acc = [float("inf")] * 3 + [float("-inf")] * 3
+            for pl, dim in rec["pl"]:
+                vals = (pl or "").split()
+                for k in range(0, len(vals) - dim + 1, dim):
+                    try:
+                        x, y = float(vals[k]), float(vals[k + 1])
+                        z = float(vals[k + 2]) if dim > 2 else 0.0
+                    except ValueError:
+                        continue
+                    acc = [min(acc[0], x), min(acc[1], y), min(acc[2], z),
+                           max(acc[3], x), max(acc[4], y), max(acc[5], z)]
+            if acc[0] != float("inf"):
+                rows.append({"id": rec["id"], "minx": acc[0], "miny": acc[1], "minz": acc[2],
+                             "maxx": acc[3], "maxy": acc[4], "maxz": acc[5]})
+        if rows:
+            _apply_bbox_union(sess, rows)
+            done.extend(r["id"] for r in rows)
+    return done
+
+
+# containment edges below a top-level feature (sub-features, surfaces, openings)
+_BBOX_CHILD_RELS = ("HAS_SECTION", "HAS_INTERSECTION", "HAS_TRAFFIC_SPACE", "HAS_MARKING",
+                    "HAS_HOLE", "HAS_CLEARANCE_SPACE", "HAS_BOUNDARY", "HAS_OPENING",
+                    "HAS_NESTED", "HAS_BRIDGE_PART", "HAS_BUILDING_PART",
+                    "HAS_OUTER_INSTALLATION", "HAS_INTERIOR_INSTALLATION", "HAS_INTERIOR_ROOM")
+_BBOX_GEOM_Q = (
+    "UNWIND $ids AS i MATCH (x:Entity {id: i}) "
+    "CALL (x) { "
+    "  MATCH (x)-[:HAS_POLYGON]->(:GeometryPolygon)-[:HAS_EXTERIOR_RING|HAS_INTERIOR_RING]->(r) "
+    "  RETURN r.pos_list AS pl, r.srs_dimension AS d "
+    "  UNION ALL "
+    "  MATCH (x)-[h:HAS_LOD_SURFACE|HAS_LOD_GEOMETRY]->(m:GeometryMultiSurface) "
+    "  WHERE coalesce(h.role, '') <> 'primary' AND NOT coalesce(m.is_implicit, false) "
+    "  MATCH (m)-[:HAS_SURFACE_MEMBER*1..2]->(:GeometryPolygon)-[:HAS_EXTERIOR_RING|HAS_INTERIOR_RING]->(r) "
+    "  RETURN r.pos_list AS pl, r.srs_dimension AS d "
+    "  UNION ALL "
+    "  MATCH (x)-[:HAS_LOD_SOLID]->(:GeometrySolid)-[:HAS_SURFACE_MEMBER|HAS_SOLID_MEMBER*1..3]->"
+    "        (:GeometryPolygon)-[:HAS_EXTERIOR_RING|HAS_INTERIOR_RING]->(r) "
+    "  RETURN r.pos_list AS pl, r.srs_dimension AS d "
+    "  UNION ALL "
+    "  MATCH (x)-[:HAS_LOD_MULTICURVE|HAS_LOD_POINT]->(l:GeometryLineString) "
+    "  RETURN l.pos_list AS pl, l.srs_dimension AS d "
+    "  UNION ALL "
+    "  MATCH (x)-[:HAS_TERRAIN_INTERSECTION]->()-[:HAS_LINE]->(l:GeometryLineString) "
+    "  RETURN l.pos_list AS pl, l.srs_dimension AS d "
+    "} "
+    "RETURN i AS id, collect([pl, d]) AS geo")
+_BBOX_CHILD_Q = (
+    "UNWIND $ids AS i MATCH (x:Entity {id: i})-[:" + "|".join(_BBOX_CHILD_RELS) + "]->(c) "
+    "WHERE c.bbox_min_x IS NOT NULL "
+    "RETURN i AS id, min(c.bbox_min_x) AS x0, min(c.bbox_min_y) AS y0, min(c.bbox_min_z) AS z0, "
+    "       max(c.bbox_max_x) AS x1, max(c.bbox_max_y) AS y1, max(c.bbox_max_z) AS z1")
+
+
+def backfill_subfeature_bbox(sess, dataset_id=None, top_batch=200, chunk=1000, log=print):
+    """--backfill-bbox: bbox_min/max_x/y/z for sub-features (Section, Intersection,
+    TrafficSpace, AuxiliaryTrafficSpace, Hole, ClearanceSpace, Marking, BridgePart,
+    NestedFeature, BuildingPart, installations, rooms) and BoundarySurfaces/Openings of a
+    graph ingested before the 3.0 codec stored them — the same values the codec now
+    writes at ingest: own geometry (polygons, MultiSurfaces, solids, curves, points,
+    terrain curves; never template-local HAS_PROTOTYPE geometry) ∪ the bbox of the
+    contained sub-features/surfaces.
+
+    Scope: the Dataset `dataset_id`, else every CityGML 3.0 Dataset. Work is done per
+    batch of `top_batch` top-level features that have sub-features; inside a batch the
+    missing nodes are processed DEEPEST FIRST (a child is always deeper than its parent),
+    so every value written is final. Only nodes still missing bbox_min_x are touched:
+    idempotent and resumable (an interrupted run continues where it stopped). Each
+    query handles ≤ `chunk` nodes, so it runs with a 2 GB Neo4j heap."""
+    if dataset_id:
+        dids = [dataset_id]
+    else:
+        dids = [r["id"] for r in sess.run(
+            "MATCH (d:Dataset) WHERE d.citygml_version STARTS WITH '3' RETURN d.id AS id")]
+    rels = "|".join(_BBOX_CHILD_RELS)
+    stats = _Counter()
+    t0 = time.perf_counter()
+    for did in dids:
+        tops = [r["id"] for r in sess.run(
+            "MATCH (d:Dataset {id: $did})<-[:PART_OF]-(f) "
+            f"WHERE EXISTS {{ MATCH (f)-[:{rels}]->() }} RETURN f.id AS id ORDER BY id",
+            did=did)]
+        log(f"  Dataset {did}: {len(tops)} top-level features with sub-features")
+        for bi in range(0, len(tops), top_batch):
+            missing = sess.run(
+                "UNWIND $tops AS t MATCH (f:Entity {id: t}) "
+                f"MATCH p = (f)-[:{rels}*1..8]->(x) WHERE x.bbox_min_x IS NULL "
+                "RETURN x.id AS id, max(length(p)) AS depth",
+                tops=tops[bi:bi + top_batch]).data()
+            by_depth = _defaultdict(list)
+            for r in missing:
+                by_depth[r["depth"]].append(r["id"])
+            for depth in sorted(by_depth, reverse=True):
+                ids = by_depth[depth]
+                for ci in range(0, len(ids), chunk):
+                    part = ids[ci:ci + chunk]
+                    box = {}
+                    for rec in sess.run(_BBOX_GEOM_Q, ids=part):
+                        acc = None
+                        for pl, dim in rec["geo"]:
+                            vals = (pl or "").split()
+                            dim = int(dim or 3)
+                            for k in range(0, len(vals) - dim + 1, dim):
+                                try:
+                                    x, y = float(vals[k]), float(vals[k + 1])
+                                    z = float(vals[k + 2]) if dim > 2 else 0.0
+                                except ValueError:
+                                    continue
+                                if acc is None:
+                                    acc = [x, y, z, x, y, z]
+                                else:
+                                    acc = [min(acc[0], x), min(acc[1], y), min(acc[2], z),
+                                           max(acc[3], x), max(acc[4], y), max(acc[5], z)]
+                        if acc is not None:
+                            box[rec["id"]] = acc
+                    for rec in sess.run(_BBOX_CHILD_Q, ids=part):
+                        cb = [rec["x0"], rec["y0"], rec["z0"], rec["x1"], rec["y1"], rec["z1"]]
+                        if any(v is None for v in cb):
+                            continue
+                        acc = box.get(rec["id"])
+                        box[rec["id"]] = cb if acc is None else [
+                            min(acc[0], cb[0]), min(acc[1], cb[1]), min(acc[2], cb[2]),
+                            max(acc[3], cb[3]), max(acc[4], cb[4]), max(acc[5], cb[5])]
+                    rows = [{"id": i, "minx": b[0], "miny": b[1], "minz": b[2],
+                             "maxx": b[3], "maxy": b[4], "maxz": b[5]} for i, b in box.items()]
+                    if rows:
+                        _run_retry(sess, "UNWIND $rows AS row MATCH (n:Entity {id: row.id}) "
+                                         "WHERE n.bbox_min_x IS NULL " + _SUB_BBOX_SET, rows=rows)
+                    stats["written"] += len(rows)
+                    stats["no_geometry"] += len(part) - len(rows)
+            done = min(bi + top_batch, len(tops))
+            if done % (top_batch * 25) < top_batch or done == len(tops):
+                log(f"    {done}/{len(tops)} top-level features, {stats['written']:,} bboxes "
+                    f"written ({time.perf_counter() - t0:.0f}s)")
+    log(f"  Backfill: {stats['written']:,} sub-feature/surface bboxes written, "
+        f"{stats['no_geometry']:,} without geometry, {time.perf_counter() - t0:.0f}s")
+    return dict(stats)
+
+
+def _create_indexes3(sess):
+    for label in _V3_INDEX_LABELS:
+        try:
+            sess.run(f"CREATE INDEX {label.lower()}_id_idx IF NOT EXISTS FOR (n:{label}) ON (n.id)")
+        except Exception:
+            pass
+    try:
+        sess.run("CREATE INDEX pendingrefs_id_idx IF NOT EXISTS FOR (n:PendingRefs) ON (n.id)")
+    except Exception:
+        pass
+    try:   # xlink targets that are the primary MultiSurface of a BoundarySurface
+        sess.run("CREATE INDEX boundarysurface_multi_surface_id_idx IF NOT EXISTS "
+                 "FOR (n:BoundarySurface) ON (n.multi_surface_id)")
+    except Exception:
+        pass
+
+
+def _reindex_stale(sess, ids=None):
+    """Remove the R-tree entry of features flagged rtree_stale (extent grew after they
+    were indexed) so the following addNodes re-inserts them with the new bbox. Only 3.0
+    ingests set the flag, so this is a no-op on 2.0-only graphs."""
+    q = ("UNWIND $ids AS i MATCH (n:Entity {id: i}) WHERE n.rtree_stale = true "
+         if ids is not None else
+         "MATCH (n) WHERE (n:Building OR n:CityObject) AND n.rtree_stale = true ")
+    stale = sess.run(q + "RETURN n.id AS id, coalesce(n.rtree_layer, 'features') AS layer",
+                     ids=ids or []).data()
+    for r in stale:
+        sess.run("MATCH (n:Entity {id: $i}) WHERE ()-[:RTREE_REFERENCE]->(n) "
+                 "CALL spatial.removeNode($layer, n) YIELD nodeId RETURN nodeId",
+                 i=r["id"], layer=r["layer"]).consume()
+        sess.run("MATCH (n:Entity {id: $i}) REMOVE n.rtree_stale", i=r["id"]).consume()
+    return len(stale)
+
+
+def _index_rtree3(sess, ids, layer):
+    """Register this file's top-level features in the R-tree layer `layer` (own layer per
+    source, GRAPH.md). spatial.addNodes is not idempotent: only unindexed features are
+    added; features whose extent grew since they were indexed (rtree_stale, e.g. a Road
+    continued in this tile) are removed and re-added."""
+    if not ids or not _ensure_spatial_layer(sess, layer):
+        return 0
+    total = 0
+    for i in range(0, len(ids), 5000):
+        chunk = ids[i:i + 5000]
+        try:
+            _reindex_stale(sess, chunk)
+            rec = sess.run(
+                "UNWIND $ids AS i MATCH (n:Entity {id: i}) "
+                "WHERE n.bbox_wkt IS NOT NULL AND NOT ()-[:RTREE_REFERENCE]->(n) "
+                "WITH collect(n) AS nodes CALL spatial.addNodes($layer, nodes) YIELD count "
+                "RETURN count", ids=chunk, layer=layer).single()
+            total += rec["count"] if rec else 0
+        except Exception as exc:
+            print(f"  WARNING: spatial indexing failed ({exc})")
+            break
+    return total
+
+
+def ingest_citygml3(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = False,
+                    dataset_id: str = None, dataset_name: str = None,
+                    target_crs: str = None, source_crs: str = None,
+                    skip_spatial_index: bool = False, defer_code_hubs: bool = False,
+                    source_type: str = None, method: str = None, method_version: str = None,
+                    rtree_layer: str = None, id_prefix: str = None, check_ids: bool = True,
+                    district: str = None):
+    """CityGML 3.0 → Neo4j (see the codec notes above). Same call contract and return
+    shape as ingest(); ingest() dispatches here when the root namespace is 3.0."""
+    source = gml_path.name
+    layer = rtree_layer or "features"
+    prov = {k: v for k, v in (("source_type", source_type), ("method", method),
+                              ("method_version", method_version)) if v}
+    dataset_id = dataset_id or _slug(gml_path.stem)
+    ds_display_name = dataset_name or source
+    ctx = _Ctx3(source, dataset_id, prov, layer, id_prefix)
+    _tls.srs_dim3 = None
+
+    reproj_target = _epsg_from_srs(target_crs) if target_crs else None
+    if reproj_target:
+        src_srs = source_crs or _peek_srsname(gml_path)
+        if not src_srs:
+            raise SystemExit(f"ERROR: --target-crs set but no source CRS found in "
+                             f"{gml_path.name}; pass --source-crs.")
+        _tls.reproj = _Reprojector(src_srs, reproj_target)
+        print(f"  Reprojecting: {_epsg_from_srs(src_srs) or src_srs} -> {reproj_target}")
+    else:
+        _tls.reproj = None
+
+    crs, srs_dim, root_lc, root_uc = None, 3, None, None
+    batch = _new_batch()
+    t0 = time.perf_counter()
+
+    with driver.session(database="neo4j") as sess:
+        with _SHARED_NODE_LOCK:
+            _create_indexes(sess)
+            _create_indexes3(sess)
+            sess.run("MERGE (n:Dataset {id: $id}) SET n.name = $name, n.source = $src",
+                     id=dataset_id, name=ds_display_name, src=ds_display_name)
+            claimed = _claim_dataset_file(sess, dataset_id, source)
+            try:
+                _record_id_prefix(sess, dataset_id, source, id_prefix)
+                if check_ids:
+                    _check_id_scope(sess, gml_path, dataset_id, GML3_ID, id_prefix or "")
+            except IdScopeError:
+                if claimed:
+                    _release_dataset_file(sess, dataset_id, source)
+                raise
+
+        batch_queue: queue.Queue = queue.Queue(maxsize=num_writers * 2)
+        flush_errors: list = []
+
+        def _writer():
+            with driver.session(database="neo4j") as wsess:
+                while True:
+                    item = batch_queue.get()
+                    if item is None:
+                        batch_queue.task_done()
+                        break
+                    try:
+                        for attempt in range(5):
+                            try:
+                                _flush_batch(wsess, item)
+                                break
+                            except TransientError:
+                                if attempt == 4:
+                                    raise
+                                time.sleep(0.2 * (attempt + 1))
+                    except Exception as exc:
+                        flush_errors.append(exc)
+                    finally:
+                        batch_queue.task_done()
+
+        writers = [threading.Thread(target=_writer, daemon=True) for _ in range(num_writers)]
+        for w in writers:
+            w.start()
+
+        member_tag = _P3.city_object_member
+        app_member_tag = _P3.appearance_member
+        env_tag = f"{{{_GML3}}}Envelope"
+        bounded_by_tag = f"{{{_GML3}}}boundedBy"
+        app_order = 0
+        root_gml_id = None
+        tags3 = [member_tag, app_member_tag, env_tag]
+        events = (_iter_prefixed(gml_path, tags3, id_prefix, GML3_ID) if id_prefix else
+                  etree.iterparse(str(gml_path), events=("end",), tag=tags3, huge_tree=True))
+        for _, el in events:
+            if root_gml_id is None and el.tag != env_tag and el.getparent() is not None:
+                root_gml_id = el.getparent().get(GML3_ID) or ""
+            if el.tag == env_tag:
+                parent = el.getparent()
+                if parent is not None and parent.tag == bounded_by_tag and \
+                        parent.getparent() is not None and parent.getparent().getparent() is None:
+                    crs = el.get("srsName")
+                    srs_dim = int(el.get("srsDimension", 3))
+                    _tls.srs_dim3 = int(el.get("srsDimension")) if el.get("srsDimension") else None
+                    root_lc = _t3(el, "gml:lowerCorner")
+                    root_uc = _t3(el, "gml:upperCorner")
+                continue
+            child = _first_child3(el)
+            if el.tag == app_member_tag:
+                if child is not None and _ln3(child) == "Appearance":
+                    ctx.local_ids = set()
+                    aid = _collect_appearance3(child, f"app_{_slug(source)}_{app_order}",
+                                               source, batch, ctx)
+                    ctx.dataset_appearances.append({"id": aid, "order": app_order})
+                    app_order += 1
+            elif child is None:
+                ctx.unsupported["cityObjectMember by reference"] += 1
+            else:
+                _collect_member3(child, source, batch, ctx)
+            if (len(batch["buildings3"]) + len(batch["city_objects3"]) >= BATCH_SIZE
+                    or len(batch["polygons"]) >= _V3_BATCH_POLYGONS):
+                batch_queue.put(batch)
+                batch = _new_batch()
+            el.clear()
+            while el.getprevious() is not None:
+                del el.getparent()[0]
+
+        if any(batch[k] for k in batch):
+            batch_queue.put(batch)
+        for _ in writers:
+            batch_queue.put(None)
+        for w in writers:
+            w.join()
+        if flush_errors:
+            raise flush_errors[0]
+        t_parse = time.perf_counter() - t0
+
+        # ── implicit-geometry instances: bbox = matrix·(prototype extent) + ref point
+        if ctx.implicit_jobs:
+            missing = {p for _f, _m, _r, p in ctx.implicit_jobs if p not in ctx.proto_bbox}
+            if missing:
+                for rec in sess.run(
+                        "UNWIND $ids AS i MATCH (p:GeometryPrototype {id: i}) "
+                        "WHERE p.local_min_x IS NOT NULL RETURN p.id AS id, "
+                        "[p.local_min_x, p.local_min_y, p.local_min_z, p.local_max_x, "
+                        " p.local_max_y, p.local_max_z] AS bb", ids=list(missing)):
+                    ctx.proto_bbox[rec["id"]] = rec["bb"]
+            rows = []
+            for fid, m, ref, pid in ctx.implicit_jobs:
+                bb = ctx.proto_bbox.get(pid)
+                if bb is None:
+                    continue
+                pts = []
+                for x in (bb[0], bb[3]):
+                    for y in (bb[1], bb[4]):
+                        for z in (bb[2], bb[5]):
+                            pts.append((m[0] * x + m[1] * y + m[2] * z + m[3] + ref[0],
+                                        m[4] * x + m[5] * y + m[6] * z + m[7] + ref[1],
+                                        m[8] * x + m[9] * y + m[10] * z + m[11] + ref[2]))
+                wb = [min(p[0] for p in pts), min(p[1] for p in pts), min(p[2] for p in pts),
+                      max(p[0] for p in pts), max(p[1] for p in pts), max(p[2] for p in pts)]
+                tmp = {"bbox_union": []}
+                _add_bbox3(tmp, ctx, fid, wb)
+                rows.extend(tmp["bbox_union"])
+            for j in range(0, len(rows), 2000):
+                _apply_bbox_union(sess, rows[j:j + 2000])
+
+        # ── CityModel-level appearances
+        if ctx.dataset_appearances:
+            sess.run("UNWIND $rows AS row MATCH (d:Dataset {id: $did}) "
+                     "MATCH (a:Appearance {id: row.id}) MERGE (d)-[r:HAS_APPEARANCE]->(a) "
+                     "SET r.order = row.order", rows=ctx.dataset_appearances, did=dataset_id)
+
+        # ── deferred references (xlinks, relations, predecessor/successor, targets)
+        unresolved = _resolve_refs3(sess, ctx.deferred)
+        _store_pending3(sess, unresolved)
+        resolved_pending, still_pending = resolve_pending_refs(sess, doc=source)
+
+        # ── PART_OF (top-level features only; sub-features never)
+        for i in range(0, len(ctx.top_ids), 1000):
+            _run_retry(sess, "UNWIND $ids AS fid MATCH (n:Entity {id: fid}) "
+                             "MATCH (d:Dataset {id: $did}) MERGE (n)-[:PART_OF]->(d)",
+                       ids=ctx.top_ids[i:i + 1000], did=dataset_id)
+
+        backfilled = _backfill_bbox3(sess, dataset_id)
+
+        if ctx.building_ids and not defer_code_hubs:
+            _derive_code_hubs(sess, source_filter=source)
+
+        # ── Dataset metadata (coalesce / bbox union: safe for tiled datasets)
+        cm_name, cm_desc, cm_schema_loc = _read_citymodel_header(gml_path)
+        if not crs:
+            crs = _peek_srsname(gml_path)
+        stored_crs = reproj_target or crs
+        lod = f"LOD{ctx.max_lod}" if ctx.max_lod >= 0 else "LOD0"
+        _run_retry(sess,
+                   "MATCH (n:Dataset {id: $id}) SET n.format = coalesce(n.format, $format), "
+                   "n.citygml_version = coalesce(n.citygml_version, '3.0'), "
+                   "n.gml_version = coalesce(n.gml_version, '3.2'), "
+                   "n.crs = coalesce(n.crs, $crs), n.srs_dimension = coalesce(n.srs_dimension, $sd), "
+                   "n.lod = coalesce(n.lod, $lod), n.source_crs = coalesce(n.source_crs, $scrs), "
+                   "n.rtree_layer = coalesce(n.rtree_layer, $layer)",
+                   id=dataset_id, format="CityGML 3.0", crs=stored_crs, sd=srs_dim, lod=lod,
+                   scrs=(crs if reproj_target else None), layer=layer)
+        for k, v in list(prov.items()) + [("gml_name", cm_name), ("gml_description", cm_desc),
+                                          ("schema_location", cm_schema_loc),
+                                          ("gml_id", root_gml_id)]:
+            if v:
+                _run_retry(sess, f"MATCH (n:Dataset {{id: $id}}) SET n.{k} = coalesce(n.{k}, $v)",
+                           id=dataset_id, v=v)
+        if root_lc and root_uc:
+            lc, uc = _parse_corner(root_lc), _parse_corner(root_uc)
+            _run_retry(sess, "MATCH (n:Dataset {id: $id}) SET "
+                             "n.bbox_lower_corner = coalesce(n.bbox_lower_corner, $lt), "
+                             "n.bbox_upper_corner = coalesce(n.bbox_upper_corner, $ut)",
+                       id=dataset_id, lt=root_lc, ut=root_uc)
+            box = [lc[0], lc[1], lc[2], uc[0], uc[1], uc[2]]
+        else:
+            box = ctx.ds_bbox if ctx.ds_bbox[0] != float("inf") else None
+        if box:
+            _run_retry(sess,
+                       "MATCH (n:Dataset {id: $id}) SET "
+                       "n.bbox_min_x = CASE WHEN n.bbox_min_x IS NULL OR $b[0] < n.bbox_min_x THEN $b[0] ELSE n.bbox_min_x END, "
+                       "n.bbox_min_y = CASE WHEN n.bbox_min_y IS NULL OR $b[1] < n.bbox_min_y THEN $b[1] ELSE n.bbox_min_y END, "
+                       "n.bbox_min_z = CASE WHEN n.bbox_min_z IS NULL OR $b[2] < n.bbox_min_z THEN $b[2] ELSE n.bbox_min_z END, "
+                       "n.bbox_max_x = CASE WHEN n.bbox_max_x IS NULL OR $b[3] > n.bbox_max_x THEN $b[3] ELSE n.bbox_max_x END, "
+                       "n.bbox_max_y = CASE WHEN n.bbox_max_y IS NULL OR $b[4] > n.bbox_max_y THEN $b[4] ELSE n.bbox_max_y END, "
+                       "n.bbox_max_z = CASE WHEN n.bbox_max_z IS NULL OR $b[5] > n.bbox_max_z THEN $b[5] ELSE n.bbox_max_z END",
+                       id=dataset_id, b=box)
+
+        # ── District / City / LOCATED_IN: only when buildings were ingested (a
+        #    street-space tile would otherwise create one District per tile file) and the
+        #    file names its municipality (Gemeindeschluessel) or --district names it; a
+        #    District named after a file says nothing
+        if ctx.building_ids and not (ctx.gemeinde_key or district):
+            print("  No Gemeindeschluessel in the file: no District / LOCATED_IN "
+                  "(name one with --district).")
+        if ctx.building_ids and (ctx.gemeinde_key or district):
+            district_name, city_name = _resolve_municipality(
+                ctx.gemeinde_key, dataset_name or gml_path.stem)
+            if district:
+                district_name = district
+                city_name = city_name if ctx.gemeinde_key else district
+            district_id, city_id = _slug(district_name), _slug(city_name)
+            with _SHARED_NODE_LOCK:
+                sess.run("MERGE (n:City {id: $id}) SET n.name = $name", id=city_id, name=city_name)
+                sess.run("MERGE (n:District {id: $id}) SET n.name = $name",
+                         id=district_id, name=district_name)
+            _run_retry(sess, "MATCH (a:District {id: $did}), (b:City {id: $cid}) "
+                             "MERGE (a)-[:PART_OF]->(b)", did=district_id, cid=city_id)
+            _run_retry(sess, "MATCH (a:Dataset {id: $dsid}), (b:District {id: $did}) "
+                             "MERGE (a)-[:COVERS]->(b)", dsid=dataset_id, did=district_id)
+            for i in range(0, len(ctx.building_ids), 1000):
+                _run_retry(sess, "UNWIND $ids AS bid MATCH (b:Building {id: bid}) "
+                                 "MATCH (d:District {id: $did}) MERGE (b)-[:LOCATED_IN]->(d)",
+                           ids=ctx.building_ids[i:i + 1000], did=district_id)
+
+        proximity_edges = _create_proximity_edges_native(sess) if nearby_edges else 0
+        spatial_indexed = 0
+        if not skip_spatial_index:
+            spatial_indexed = _index_rtree3(sess, ctx.top_ids + backfilled, layer)
+            print(f"  Spatial R-tree entries added to layer '{layer}': {spatial_indexed}")
+
+    top = {k[4:]: v for k, v in ctx.stats.items() if k.startswith("top:")}
+    sub = {k[4:]: v for k, v in ctx.stats.items() if k.startswith("sub:")}
+    surf = {k[8:]: v for k, v in ctx.stats.items() if k.startswith("surface:")}
+    other = {k: v for k, v in ctx.stats.items() if ":" not in k}
+    print(f"  CityGML 3.0: {sum(top.values())} top-level features in {t_parse:.1f}s "
+          f"(deferred refs {len(ctx.deferred)}, unresolved→pending {len(unresolved)}, "
+          f"pending resolved now {resolved_pending}, still pending {still_pending})")
+    for name, d in (("top-level", top), ("sub-features", sub), ("surfaces", surf), ("other", other)):
+        if d:
+            print(f"    {name}: " + ", ".join(f"{k} {v}" for k, v in sorted(d.items())))
+    if ctx.unsupported:
+        print("  NOT ingested (reported, not silently dropped): " +
+              ", ".join(f"{k} ×{v}" for k, v in sorted(ctx.unsupported.items())))
+    return {
+        "source": source, "format": "CityGML 3.0", "crs": crs, "srs_dimension": srs_dim,
+        "lod": f"LOD{ctx.max_lod}" if ctx.max_lod >= 0 else "LOD0",
+        "features_total": sum(top.values()),
+        "features_by_type": dict(sorted(top.items())),
+        "sub_features_by_type": dict(sorted(sub.items())),
+        "surfaces_by_type": dict(sorted(surf.items())),
+        "geometry_and_links": dict(sorted(other.items())),
+        "deferred_refs": len(ctx.deferred), "pending_refs": still_pending,
+        "unsupported": dict(sorted(ctx.unsupported.items())),
+        "rtree_layer": layer, "proximity_edges": proximity_edges,
+        "spatial_indexed": spatial_indexed,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):   # a cp1252 console must not crash on non-ASCII output
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(errors="replace")
     import argparse
 
-    parser = argparse.ArgumentParser(description="Ingest CityGML 2.0 (all modules) into Neo4j.")
+    parser = argparse.ArgumentParser(description="Ingest CityGML 2.0 or 3.0 (all modules) into "
+                                     "Neo4j; the codec is chosen per file from the root namespace.")
     parser.add_argument("paths", nargs="*",
                         help="One or more .gml files and/or directories of .gml files "
                              "(a directory is expanded to the .gml files it contains).")
@@ -3337,7 +6196,85 @@ if __name__ == "__main__":
              "Neo4j commits also serialize on one tx log. The page cache, not writer count, "
              "is the dominant throughput lever.",
     )
+    parser.add_argument("--source-type", default=None,
+                        choices=["authoritative", "crowdsourced", "predicted", "reconstructed",
+                                 "sensed", "derived"],
+                        help="Provenance trust class (GRAPH.md provenance rules), written as "
+                             "source_type on the Dataset and on every feature / sub-feature / "
+                             "surface / prototype / appearance node of the ingested files "
+                             "(e.g. --source-type reconstructed for the street-space tiles).")
+    parser.add_argument("--method", default=None,
+                        help="Method / model id of derived data, stored as `method` beside "
+                             "source_type (e.g. --method streetspace-recon).")
+    parser.add_argument("--method-version", default=None,
+                        help="Version of --method, stored as `method_version`. --method and "
+                             "--method-version are required for predicted, reconstructed and "
+                             "derived data (GRAPH.md provenance rules).")
+    parser.add_argument("--id-prefix", default=None,
+                        help="Prefix every gml:id (and every reference to one) of these files "
+                             "(letters, digits, '_', '-', '.', e.g. lgv_), "
+                             "for a source that reuses another source's ids (e.g. a model of "
+                             "the same buildings with the cadastral ids). Recorded on the "
+                             "Dataset; export_citygml strips it again. Every file of a Dataset "
+                             "uses the same prefix.")
+    parser.add_argument("--no-id-check", action="store_true",
+                        help="Skip the pre-flight check that refuses a file whose gml:ids "
+                             "belong to nodes of another source (they would be merged and "
+                             "overwritten). Only for files known to be independent.")
+    parser.add_argument("--district", default=None,
+                        help="District name for the buildings of these files when the files "
+                             "carry no Gemeindeschluessel (or to override it). Without it, a "
+                             "CityGML 3.0 file without one gets no District.")
+    parser.add_argument("--rtree-layer", default=None,
+                        help="Neo4j Spatial R-tree layer for the top-level features of these "
+                             "files (default 'features'). Give every non-authoritative source its "
+                             "own layer, e.g. --rtree-layer streetspace or citygml3; features of "
+                             "another layer never leak into 'features'.")
+    parser.add_argument("--resolve-pending", action="store_true",
+                        help="Only retry the parked cross-file references (PendingRefs: "
+                             "predecessor/successor/relatedTo/xlinks into tiles that were not "
+                             "ingested yet) and exit. Runs automatically after every 3.0 file.")
+    parser.add_argument("--backfill-bbox", action="store_true",
+                        help="Only compute bbox_min/max_x/y/z on sub-features and boundary "
+                             "surfaces that miss them (graphs ingested before the 3.0 codec "
+                             "stored them) and exit; scoped to --dataset, else to every CityGML "
+                             "3.0 Dataset. Idempotent and resumable.")
+    parser.add_argument("--dataset", default=None,
+                        help="Dataset id for --backfill-bbox (default: all CityGML 3.0 Datasets).")
+    parser.add_argument("--uri", default=neo4j_uri(),
+                        help="Neo4j bolt URI (default $NEO4J_URI or bolt://localhost:7687).")
+    parser.add_argument("--user", default=neo4j_auth()[0],
+                        help="Neo4j user (default $NEO4J_USER or neo4j).")
+    parser.add_argument("--password", default=neo4j_auth()[1],
+                        help="Neo4j password (default $NEO4J_PASSWORD or neo4jneo4j).")
     args = parser.parse_args()
+    if args.source_type in ("predicted", "reconstructed", "derived") and not (
+            args.method and args.method_version):
+        parser.error(f"--source-type {args.source_type} needs --method and --method-version")
+    if args.id_prefix and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_.-]*", args.id_prefix):
+        # prefixed ids and the ids pykci derives from them must stay valid gml:ids (NCName)
+        parser.error("--id-prefix must start with a letter or '_' and contain only letters, "
+                     "digits, '_', '-' and '.' (no ':'), e.g. lgv_")
+    _opts = dict(source_type=args.source_type, method=args.method,
+                 method_version=args.method_version, rtree_layer=args.rtree_layer,
+                 id_prefix=args.id_prefix, check_ids=not args.no_id_check,
+                 district=args.district)
+
+    if args.backfill_bbox and not args.paths:
+        _drv = GraphDatabase.driver(args.uri, auth=(args.user, args.password),
+                                    notifications_disabled_classifications={"DEPRECATION", "UNRECOGNIZED"})
+        with _drv.session(database="neo4j") as _s:
+            backfill_subfeature_bbox(_s, args.dataset)
+        _drv.close()
+        sys.exit(0)
+
+    if args.resolve_pending and not args.paths:
+        _drv = GraphDatabase.driver(args.uri, auth=(args.user, args.password))
+        with _drv.session(database="neo4j") as _s:
+            _res, _left = resolve_pending_refs(_s)
+        _drv.close()
+        print(f"Pending references resolved: {_res}, still pending: {_left}")
+        sys.exit(0)
 
     # Expand paths (files and/or directories) into a flat, sorted list of .gml files.
     candidates = []
@@ -3364,8 +6301,8 @@ if __name__ == "__main__":
 
     print("Connecting to Neo4j …")
     driver = GraphDatabase.driver(
-        neo4j_uri(),
-        auth=neo4j_auth(),
+        args.uri,
+        auth=(args.user, args.password),
         max_connection_pool_size=pool_size,
         notifications_disabled_classifications={"DEPRECATION", "UNRECOGNIZED"},
     )
@@ -3396,7 +6333,7 @@ if __name__ == "__main__":
                          dataset_id=shared_id, dataset_name=args.dataset_name,
                          target_crs=args.target_crs, source_crs=args.source_crs,
                          id_registry=shared_registry, skip_spatial_index=True,
-                         defer_code_hubs=True)
+                         defer_code_hubs=True, **_opts)
             progress("ingest.file", done=len(results) + 1, total=len(candidates),
                      unit="files", file=f.name)
             return res
@@ -3427,11 +6364,11 @@ if __name__ == "__main__":
         with driver.session(database="neo4j") as sess:
             print("Populating spatial R-tree index on bounding boxes (final pass) …")
             progress("ingest.spatial_index", message="building spatial R-tree (final pass)")
-            if _ensure_spatial_layer(sess):
+            if _ensure_spatial_layer(sess, args.rtree_layer or "features"):
                 # CityObject footprints are added to the R-tree AFTER OSM fusion,
                 # not here — see the note at the single-file call site above and
                 # ingest_osm.py's post-fusion CityObject-index step.
-                _total_spatial = _index_features_spatial(sess)
+                _total_spatial = _index_features_spatial(sess, args.rtree_layer or "features")
                 print(f"Spatial R-tree entries: {_total_spatial}")
                 results["_spatial_indexed_total"] = _total_spatial
             print("Deriving BuildingFunction/RoofType hubs + edges (final pass) …")
@@ -3448,7 +6385,8 @@ if __name__ == "__main__":
                 print(f"Ingesting {f} ...")
                 futures[pool.submit(ingest, f, driver, num_writers=args.writers,
                                     nearby_edges=do_nearby_edges,
-                                    target_crs=args.target_crs, source_crs=args.source_crs)] = f
+                                    target_crs=args.target_crs, source_crs=args.source_crs,
+                                    **_opts)] = f
             for fut in as_completed(futures):
                 gml_f = futures[fut]
                 try:
@@ -3459,6 +6397,13 @@ if __name__ == "__main__":
                 progress("ingest.file", done=len(results), total=len(candidates),
                          unit="files", file=gml_f.name)
 
+    # Final pass over parked cross-file references (3.0 tiles ingested in parallel or
+    # out of order); a no-op when nothing is pending (always for 2.0-only runs).
+    with driver.session(database="neo4j") as sess:
+        if sess.run("MATCH (n:PendingRefs) RETURN count(n) AS c").single()["c"]:
+            _res, _left = resolve_pending_refs(sess)
+            print(f"Pending references resolved: {_res}, still pending: {_left}")
+            results["_pending_refs"] = {"resolved": _res, "pending": _left}
     driver.close()
     print("Done.")
     print(json.dumps(results, indent=2))

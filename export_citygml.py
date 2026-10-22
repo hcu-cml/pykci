@@ -47,10 +47,14 @@ import sys
 import uuid
 from pathlib import Path
 
+
 from lxml import etree
 from neo4j import GraphDatabase
 
 from pykci_runtime import neo4j_auth, neo4j_uri, progress
+
+NEO4J_URI = neo4j_uri()
+NEO4J_USER, NEO4J_PASSWORD = neo4j_auth()
 
 # ---------------------------------------------------------------------------
 # Namespace declarations
@@ -127,6 +131,8 @@ EXPORT_BATCH_SIZE = 100
 # Active dataset CRS, set at export() start so deep writers (e.g. per-surface
 # envelopes) can emit srsName/srsDimension without threading it through.
 _EXPORT_CRS: dict = {}
+# GeometryPrototype ids already written inline in the current document.
+_EMITTED_PROTOTYPES: set = set()
 
 # ---------------------------------------------------------------------------
 # Module registry for CityObject export
@@ -579,9 +585,9 @@ def _process_surface_rows(rows, id_key):
 # ---------------------------------------------------------------------------
 
 def query_dataset(sess, dataset=None, feature_ids=None):
-    """The Dataset to export from: by id/name/source when given, else the
-    Dataset of the first selected feature, else the first Dataset (historical
-    behaviour for a single-dataset graph)."""
+    """The Dataset to export: by id/name/source when `dataset` is given; else the Dataset
+    of the first selected feature; else the only Dataset. Several Datasets without either
+    stop with an error (before, 'MATCH (d:Dataset) LIMIT 1' exported an arbitrary one). Returns {} when nothing matches."""
     if dataset:
         row = sess.run(
             "MATCH (d:Dataset) WHERE d.id = $ds OR d.name = $ds OR d.source = $ds "
@@ -595,8 +601,11 @@ def query_dataset(sess, dataset=None, feature_ids=None):
         ).single()
         if row:
             return dict(row["d"])
-    row = sess.run("MATCH (d:Dataset) RETURN d LIMIT 1").single()
-    return dict(row["d"]) if row else {}
+    rows = sess.run("MATCH (d:Dataset) RETURN d ORDER BY d.id").data()
+    if len(rows) > 1:
+        raise SystemExit("ERROR: several Datasets in the graph — pass --dataset one of: "
+                         + ", ".join(str(r["d"].get("id")) for r in rows))
+    return dict(rows[0]["d"]) if rows else {}
 
 
 def split_feature_ids(sess, ids):
@@ -635,21 +644,32 @@ def query_selection_envelope(sess, ids, srs_dim):
             f"{row['x1']!r} {row['y1']!r} {row['z1']!r}")
 
 
-def query_all_building_ids(sess, source, bbox_wkt=None):
+def query_all_building_ids(sess, source, bbox_wkt=None, dataset_id=None, layer="features"):
+    """Buildings of the Dataset. Selection is by PART_OF the Dataset (a --dataset-name ingest stores Dataset.source = <dataset name> but
+    Building.source = <tile file>, so the old `source` filter exported no buildings);
+    the `source` match remains only for callers that pass no dataset id."""
     if bbox_wkt:
         try:
             rows = sess.run(
                 """
-                CALL spatial.intersects('features', $wkt) YIELD node AS b
-                WHERE b:Building AND b.source = $src
+                CALL spatial.intersects($layer, $wkt) YIELD node AS b
+                WITH b WHERE b:Building AND
+                     (($did IS NOT NULL AND (b)-[:PART_OF]->(:Dataset {id: $did}))
+                      OR ($did IS NULL AND b.source = $src))
                 RETURN DISTINCT b.id AS id ORDER BY id
                 """,
-                wkt=bbox_wkt, src=source,
+                wkt=bbox_wkt, src=source, did=dataset_id, layer=layer,
             )
             return [r["id"] for r in rows]
         except Exception as exc:
             print(f"WARNING: spatial.intersects unavailable ({exc}), falling back.")
 
+    if dataset_id:
+        rows = sess.run(
+            "MATCH (b:Building)-[:PART_OF]->(:Dataset {id: $did}) RETURN b.id AS id ORDER BY b.id",
+            did=dataset_id,
+        )
+        return [r["id"] for r in rows]
     rows = sess.run(
         "MATCH (b:Building {source: $src}) RETURN b.id AS id ORDER BY b.id",
         src=source,
@@ -1032,7 +1052,12 @@ def _enrich_building_cores(sess, cores_map, label, crs, srs_dim):
 # CityObject graph queries
 # ---------------------------------------------------------------------------
 
-def query_all_city_object_ids(sess, source):
+def query_all_city_object_ids(sess, source, dataset_id=None):
+    if dataset_id:
+        rows = sess.run(
+            "MATCH (n:CityObject)-[:PART_OF]->(:Dataset {id: $did}) "
+            "RETURN n.id AS id ORDER BY n.feature_type, n.id", did=dataset_id)
+        return [r["id"] for r in rows]
     rows = sess.run(
         "MATCH (n:CityObject {source: $src}) RETURN n.id AS id ORDER BY n.feature_type, n.id",
         src=source,
@@ -1507,6 +1532,97 @@ def _write_nested_feature(parent_el, nf, ns_uri, crs, srs_dim):
 # CityObject XML element construction
 # ---------------------------------------------------------------------------
 
+def attach_prototypes(sess, ms_map):
+    """Attach the GeometryPrototype (street-tree pattern: implicit GeometryMultiSurface
+    -[:HAS_PROTOTYPE]-> GeometryPrototype) to each implicit MS entry, with its ordered
+    face rings, so the template can be written inline once."""
+    ids = [e["ms"]["id"] for lst in ms_map.values() for e in lst if e["ms"].get("is_implicit")]
+    if not ids:
+        return
+    protos = {}
+    for r in sess.run(
+            "MATCH (ms:GeometryMultiSurface)-[:HAS_PROTOTYPE]->(p:GeometryPrototype) "
+            "WHERE ms.id IN $ids RETURN ms.id AS ms, p", ids=ids):
+        protos[r["ms"]] = dict(r["p"])
+    faces = {}
+    pids = sorted({p["id"] for p in protos.values()})
+    for r in sess.run(
+            "MATCH (p:GeometryPrototype)-[m:HAS_SURFACE_MEMBER]->(poly)-[:HAS_EXTERIOR_RING]->(rg) "
+            "WHERE p.id IN $ids RETURN p.id AS pid, coalesce(m.order, 0) AS o, poly.id AS poly, "
+            "rg AS ring ORDER BY pid, o", ids=pids):
+        faces.setdefault(r["pid"], []).append({"poly": r["poly"], "ring": dict(r["ring"])})
+    for lst in ms_map.values():
+        for e in lst:
+            pr = protos.get(e["ms"]["id"])
+            if pr is not None:
+                e["prototype"] = dict(pr, faces=faces.get(pr["id"], []))
+
+
+def _write_prototype_inline(rel_geom, proto):
+    """A GeometryPrototype's template geometry, inline (TriangulatedSurface or
+    MultiSurface), carrying the prototype id so later instances can reference it."""
+    if proto.get("geometry_type") == "TriangulatedSurface":
+        ts = _sub(rel_geom, f"{GML}TriangulatedSurface")
+        ts.set(f"{GML}id", proto["id"])
+        if proto.get("srs_name"):
+            ts.set("srsName", proto["srs_name"])
+        patches = _sub(ts, f"{GML}trianglePatches")
+        for f in proto.get("faces", []):
+            lr = _sub(_sub(_sub(patches, f"{GML}Triangle"), f"{GML}exterior"), f"{GML}LinearRing")
+            if f["ring"].get("id"):
+                lr.set(f"{GML}id", f["ring"]["id"])
+            _sub(lr, f"{GML}posList", f["ring"].get("pos_list", ""),
+                 srsDimension=str(f["ring"].get("srs_dimension", 3)))
+        return
+    ms = _sub(rel_geom, f"{GML}MultiSurface")
+    ms.set(f"{GML}id", proto["id"])
+    for f in proto.get("faces", []):
+        _write_polygon(ms, {"props": {"id": f["poly"]}, "ext_ring": f["ring"], "int_rings": []})
+
+
+def query_co_network_lines(sess, co_ids):
+    """2.0 tran:lod0Network curves (HAS_LOD_MULTICURVE {role:'network'})."""
+    out = {}
+    for r in sess.run(
+            "MATCH (n:CityObject)-[r:HAS_LOD_MULTICURVE {role: 'network'}]->(ls:GeometryLineString) "
+            "WHERE n.id IN $ids RETURN n.id AS id, ls, coalesce(r.order, 0) AS o ORDER BY id, o",
+            ids=co_ids):
+        out.setdefault(r["id"], []).append(dict(r["ls"]))
+    return out
+
+
+def _write_traffic_area(parent_el, surf_data, prop, crs, srs_dim):
+    """2.0 tran:trafficArea/TrafficArea (or auxiliary…) from a BoundarySurface:
+    CityObject head, class/function*/usage*/surfaceMaterial, then lodN MultiSurface."""
+    sp   = surf_data["props"]
+    kind = sp.get("surface_type", "TrafficArea")
+    TR   = f"{{{_TRAN_NS}}}"
+    el   = _sub(_sub(parent_el, f"{TR}{prop}"), f"{TR}{kind}")
+    el.set(f"{GML}id", sp["id"])
+    if sp.get("gml_description"):
+        _sub(el, f"{GML}description", sp["gml_description"])
+    if sp.get("gml_name"):
+        _sub(el, f"{GML}name", sp["gml_name"])
+    if sp.get("creation_date"):
+        _sub(el, f"{CG}creationDate", sp["creation_date"])
+    _emit_common_extras(el, sp)
+    if sp.get("relative_to_terrain"):
+        _sub(el, f"{CG}relativeToTerrain", sp["relative_to_terrain"])
+    if sp.get("relative_to_water"):
+        _sub(el, f"{CG}relativeToWater", sp["relative_to_water"])
+    _gen_string_attrs(el, sp, _load_gen_map(sp))
+    for key, local in (("class", "class"), ("function", "function"), ("usage", "usage"),
+                       ("surface_material", "surfaceMaterial")):
+        vals = sp.get(f"{key}_list") or ([sp[key]] if sp.get(key) else [])
+        for v in vals:
+            c = _sub(el, f"{TR}{local}", v)
+            if sp.get(f"{key}_codespace"):
+                c.set("codeSpace", sp[f"{key}_codespace"])
+    if surf_data.get("members"):
+        _write_multisurface(el, f"{TR}lod{sp.get('lod', '2')}MultiSurface",
+                            sp.get("multi_surface_id"), surf_data["members"])
+
+
 def build_city_object_element(co_id, core, ms_list, surfaces, crs, srs_dim):
     """
     Build a cityObjectMember element for any non-building CityGML feature type.
@@ -1571,6 +1687,22 @@ def build_city_object_element(co_id, core, ms_list, surfaces, crs, srs_dim):
             if props.get(f"{prop_key}_codespace"):
                 el.set("codeSpace", props[f"{prop_key}_codespace"])
 
+    # Transportation (2.0-sourced): trafficArea* / auxiliaryTrafficArea* / lod0Network*
+    # come after the codes and before the lodN MultiSurfaces.
+    if ns_uri == _TRAN_NS:
+        for prop, kind in (("trafficArea", "TrafficArea"),
+                           ("auxiliaryTrafficArea", "AuxiliaryTrafficArea")):
+            for surf_data in surfaces:
+                if surf_data["props"].get("surface_type") == kind:
+                    _write_traffic_area(feat_el, surf_data, prop, crs, srs_dim)
+        if core.get("network"):
+            gc = _sub(_sub(feat_el, f"{NB}lod0Network"), f"{GML}CompositeCurve")
+            for ls in core["network"]:
+                ls_el = _sub(_sub(gc, f"{GML}curveMember"), f"{GML}LineString")
+                ls_el.set(f"{GML}id", ls["id"])
+                _sub(ls_el, f"{GML}posList", ls["pos_list"],
+                     srsDimension=str(ls.get("srs_dimension", 3)))
+
     # ── Geometry ──────────────────────────────────────────────────────────────
 
     # Solids (solid_or_surface only) — one lod{N}Solid per stored solid; members
@@ -1601,9 +1733,16 @@ def build_city_object_element(co_id, core, ms_list, surfaces, crs, srs_dim):
                 _sub(impl_el, f"{CG}transformationMatrix", mat_str)
             rel_geom  = _sub(impl_el, f"{CG}relativeGMLGeometry")
             proto     = ms_props.get("prototype_href")
-            if proto:
-                # referencing instance: re-emit the xlink:href to the shared prototype
-                _sub(rel_geom, f"{GML}MultiSurface").set(f"{XLINK}href", f"#{proto}")
+            gproto    = ms_entry.get("prototype")
+            if gproto is not None and gproto["id"] not in _EMITTED_PROTOTYPES:
+                # GeometryPrototype (street-tree pattern) not yet in this document:
+                # write the template inline once
+                _write_prototype_inline(rel_geom, gproto)
+                _EMITTED_PROTOTYPES.add(gproto["id"])
+            elif proto:
+                # referencing instance: the xlink belongs on the geometry PROPERTY
+                # (<gml:MultiSurface xlink:href> is invalid GML)
+                rel_geom.set(f"{XLINK}href", f"#{proto}")
             else:
                 ms_el = _sub(rel_geom, f"{GML}MultiSurface")
                 ms_el.set(f"{GML}id", ms_props.get("id") or _new_id())
@@ -1643,32 +1782,38 @@ def build_city_object_element(co_id, core, ms_list, surfaces, crs, srs_dim):
 # Export entry point
 # ---------------------------------------------------------------------------
 
-def export(out_path, bbox_wkt=None, dataset=None, ids=None):
-    """Write the graph back to CityGML 2.0.
+def export(out_path, bbox_wkt=None, dataset=None, ids=None, driver=None):
+    """Legacy CityGML 2.0 writer (2.0-sourced data → 2.0).
 
     out_path : target .gml file
     bbox_wkt : optional WKT polygon (dataset CRS): Buildings intersecting it
-    dataset  : optional Dataset id/name/source (default: the only/first Dataset)
-    ids      : optional list of top-level feature ids (Building / CityObject
-               gml:ids as stored in the graph); exports exactly those features,
-               with a tight envelope around them; overrides bbox_wkt
+    dataset  : optional Dataset id/name/source (default: the only Dataset, or the Dataset
+               of the selected ids)
+    ids      : optional list of top-level feature ids (Building / CityObject gml:ids as
+               stored in the graph); exports exactly those features, with a tight
+               envelope around them; overrides bbox_wkt
+    driver   : optional open Neo4j driver (default: one from the NEO4J_* environment)
     """
-    driver = GraphDatabase.driver(
-        neo4j_uri(),
-        auth=neo4j_auth(),
-        # UNRECOGNIZED: the queries probe optional structure (Opening, BuildingPart,
-        # orientation, …) that a given city may not have
-        notifications_disabled_classifications={"DEPRECATION", "UNRECOGNIZED"},
-    )
+    own_driver = driver is None
+    if own_driver:
+        driver = GraphDatabase.driver(
+            neo4j_uri(),
+            auth=neo4j_auth(),
+            # UNRECOGNIZED: the queries probe optional structure (Opening, BuildingPart,
+            # orientation, …) that a given city may not have
+            notifications_disabled_classifications={"DEPRECATION", "UNRECOGNIZED"},
+        )
     driver.verify_connectivity()
     print("Connected to Neo4j.")
+    _EMITTED_PROTOTYPES.clear()
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     with driver.session(database="neo4j") as sess:
         ds      = query_dataset(sess, dataset=dataset, feature_ids=ids)
         if not ds:
-            driver.close()
+            if own_driver:
+                driver.close()
             raise SystemExit(f"ERROR: no Dataset found{f' matching {dataset!r}' if dataset else ''}.")
         crs     = ds.get("crs")
         srs_dim = int(ds.get("srs_dimension", 3))
@@ -1702,11 +1847,13 @@ def export(out_path, bbox_wkt=None, dataset=None, ids=None):
             if bbox_wkt:
                 print(f"Spatial filter active: {bbox_wkt}")
 
-            bldg_ids = query_all_building_ids(sess, source, bbox_wkt=bbox_wkt)
+            bldg_ids = query_all_building_ids(sess, source, bbox_wkt=bbox_wkt,
+                                              dataset_id=ds.get("id"),
+                                              layer=ds.get("rtree_layer") or "features")
             # With a bbox filter only the intersecting Buildings are exported (as
             # before); CityObjects are not bbox-filtered, so they would otherwise
             # bring in the whole city around a small spatial selection.
-            co_ids   = [] if bbox_wkt else query_all_city_object_ids(sess, source)
+            co_ids   = [] if bbox_wkt else query_all_city_object_ids(sess, source, dataset_id=ds.get("id"))
 
         total_bldg = len(bldg_ids)
         total_co   = len(co_ids)
@@ -1754,7 +1901,9 @@ def export(out_path, bbox_wkt=None, dataset=None, ids=None):
             batch_ids  = co_ids[batch_start:batch_start + EXPORT_BATCH_SIZE]
             cores_map  = query_city_objects_core_batch(sess, batch_ids)
             ms_map     = query_city_objects_ms_batch(sess, batch_ids)
+            attach_prototypes(sess, ms_map)
             surf_map   = query_city_objects_surfaces_batch(sess, batch_ids)
+            net_map    = query_co_network_lines(sess, batch_ids)
 
             co_solid_index = {}
             for core in cores_map.values():
@@ -1775,6 +1924,7 @@ def export(out_path, bbox_wkt=None, dataset=None, ids=None):
                 if core is None:
                     continue
                 core["nested"]        = nested_map.get(co_id, [])
+                core["network"]       = net_map.get(co_id, [])
                 core["group_members"] = groups_map.get(co_id, [])
                 ms_list  = ms_map.get(co_id, [])
                 surfaces = surf_map.get(co_id, [])
@@ -1797,7 +1947,8 @@ def export(out_path, bbox_wkt=None, dataset=None, ids=None):
                            xml_declaration=True, encoding="UTF-8")
         )
 
-    driver.close()
+    if own_driver:
+        driver.close()
 
     size_kb = out_path.stat().st_size // 1024
     all_type_counts = {"Building": exported_bldg, **co_type_counts}
@@ -1833,28 +1984,59 @@ def _read_ids_file(path: Path) -> list[str]:
 
 
 def _bbox_to_wkt(bbox: str) -> str:
+    """A WKT polygon as given, or minx,miny,maxx,maxy → WKT polygon."""
+    if bbox.strip().upper().startswith("POLYGON"):
+        return bbox.strip()
     minx, miny, maxx, maxy = (float(v) for v in bbox.split(","))
     return (f"POLYGON(({minx} {miny}, {maxx} {miny}, {maxx} {maxy}, "
             f"{minx} {maxy}, {minx} {miny}))")
 
 
-if __name__ == "__main__":
+def main(argv=None):
     ap = argparse.ArgumentParser(
-        description="Export the Neo4j graph (or a selection of it) back to CityGML 2.0.")
-    ap.add_argument("--out", default=None,
-                    help="Output .gml path (default: output/citygml/<dataset-stem>_export.gml)")
+        description="Export a pykci Dataset from Neo4j as CityGML 2.0 (default) or 3.0. "
+                    "2.0-sourced data → 2.0 uses the legacy writer (unchanged output); every "
+                    "other combination uses the strict profile-driven writer "
+                    "(citygml_writer.py), which writes the XSD content-model order and a loss "
+                    "report for whatever the target version cannot express.")
+    ap.add_argument("--version", default="2", choices=["2", "3", "2.0", "3.0"],
+                    help="target CityGML version (default 2)")
     ap.add_argument("--dataset", default=None,
-                    help="Dataset id/name/source to export (default: the only/first Dataset, "
-                         "or the Dataset of the selected --ids)")
+                    help="Dataset id, name or source (required when the graph holds several)")
+    ap.add_argument("--out", default=None,
+                    help="output .gml (default output/citygml/<stem>_export[_v3].gml)")
+    ap.add_argument("--bbox", default=None,
+                    help="WKT POLYGON or minx,miny,maxx,maxy in the dataset CRS: only features "
+                         "whose R-tree bbox intersects it (layer = Dataset.rtree_layer or 'features')")
     ap.add_argument("--ids", default=None,
                     help="Comma-separated top-level feature ids (Building/CityObject); "
                          "export exactly these features")
     ap.add_argument("--ids-file", default=None,
                     help="File with feature ids: .json list, or one per line / first CSV column")
-    ap.add_argument("--bbox", default=None,
-                    help="minx,miny,maxx,maxy in the dataset CRS; export the Buildings "
-                         "intersecting this box (needs Neo4j Spatial)")
-    args = ap.parse_args()
+    ap.add_argument("--clip", default=None, action=argparse.BooleanOptionalAction,
+                    help="with --bbox (default on): write only the transportation sub-features "
+                         "(Sections, Intersections, spaces, areas, markings, …) whose bbox "
+                         "meets the box; a Road/Section/space is written when a descendant "
+                         "is kept. --no-clip writes every selected feature whole (strict writer)")
+    ap.add_argument("--profile", action="store_true",
+                    help="print elapsed time and peak RSS after each export phase")
+    ap.add_argument("--batch", type=int, default=200,
+                    help="top-level features loaded and streamed per batch (strict writer)")
+    ap.add_argument("--writer", default="auto", choices=["auto", "legacy", "strict"],
+                    help="auto: legacy for 2.0-sourced → 2.0, strict otherwise")
+    ap.add_argument("--v2-subfeatures", default="drop", choices=["drop", "genattrs"],
+                    help="3.0 → 2.0: Sections/Intersections/TrafficSpaces/Markings/relations "
+                         "are dropped (loss report) or kept as gen:stringAttributes "
+                         "(citygml3_*) on the traffic areas / the road")
+    ap.add_argument("--keep-id-prefix", action="store_true",
+                    help="write the ids of a Dataset ingested with --id-prefix as stored "
+                         "(default: the prefix is stripped, as in the source files)")
+    ap.add_argument("--loss-report", default=None,
+                    help="loss-report JSON (default <out>.loss.json; strict writer only)")
+    ap.add_argument("--uri", default=NEO4J_URI)
+    ap.add_argument("--user", default=NEO4J_USER)
+    ap.add_argument("--password", default=NEO4J_PASSWORD)
+    args = ap.parse_args(argv)
 
     sel_ids = []
     if args.ids:
@@ -1864,18 +2046,72 @@ if __name__ == "__main__":
     sel_ids = list(dict.fromkeys(sel_ids))          # de-duplicate, keep order
     if (args.ids or args.ids_file) and not sel_ids:
         sys.exit("ERROR: --ids/--ids-file given but no ids found.")
+    bbox_wkt = _bbox_to_wkt(args.bbox) if args.bbox else None
 
-    out = Path(args.out) if args.out else None
-    if out is None:
-        drv = GraphDatabase.driver(neo4j_uri(), auth=neo4j_auth())
-        drv.verify_connectivity()
+    target = "3.0" if args.version.startswith("3") else "2.0"
+    drv = GraphDatabase.driver(args.uri, auth=(args.user, args.password),
+                               notifications_disabled_classifications={"DEPRECATION", "UNRECOGNIZED"})
+    drv.verify_connectivity()
+    with drv.session(database="neo4j") as sess:
+        ds = query_dataset(sess, args.dataset, feature_ids=sel_ids or None)
+    if not ds:
+        raise SystemExit("ERROR: no Dataset in the graph.")
+    src_version = str(ds.get("citygml_version") or
+                      ("3.0" if "3.0" in str(ds.get("format", "")) else "2.0"))
+    writer = args.writer
+    if writer == "auto":
+        # the legacy writer cannot strip an --id-prefix: such Datasets use the strict one
+        writer = "legacy" if (target == "2.0" and src_version.startswith("2")
+                              and not ds.get("id_prefix")) else "strict"
+    elif writer == "legacy" and ds.get("id_prefix") and not args.keep_id_prefix:
+        raise SystemExit(f"ERROR: Dataset {ds.get('id')} was ingested with --id-prefix "
+                         f"'{ds['id_prefix']}', which only the strict writer strips; use "
+                         "--writer strict, or --keep-id-prefix to write the prefixed ids.")
+    stem = Path(ds.get("source") or ds.get("name") or "dataset").stem
+    sel = "_selection" if (sel_ids or bbox_wkt) else ""
+    out = Path(args.out) if args.out else \
+        Path("output/citygml") / (stem + sel + ("_export_v3.gml" if target == "3.0" else "_export.gml"))
+    print(f"Dataset {ds.get('id')} (CityGML {src_version}) → CityGML {target} "
+          f"[{writer} writer] → {out}")
+    if writer == "legacy":
+        if target == "3.0":
+            raise SystemExit("ERROR: the legacy writer writes CityGML 2.0 only.")
+        export(out, bbox_wkt, dataset=ds.get("id"), ids=sel_ids or None, driver=drv)
+    else:
+        import time
+        from citygml_writer import export_document
+        t0 = time.perf_counter()
         with drv.session(database="neo4j") as sess:
-            ds = query_dataset(sess, dataset=args.dataset, feature_ids=sel_ids or None)
-        drv.close()
-        src = ds.get("source") or ds.get("name") or "dataset"
-        suffix = "_selection_export.gml" if (sel_ids or args.bbox) else "_export.gml"
-        out = Path("output/citygml") / (Path(src).stem + suffix)
-
-    export(out, bbox_wkt=_bbox_to_wkt(args.bbox) if args.bbox else None,
-           dataset=args.dataset, ids=sel_ids or None)
+            counts, loss = export_document(sess, ds, target, out,
+                                           {"v2_subfeatures": args.v2_subfeatures,
+                                            "keep_id_prefix": args.keep_id_prefix},
+                                           feature_ids=sel_ids or None,
+                                           bbox_wkt=None if sel_ids else bbox_wkt, clip=args.clip,
+                                           batch=args.batch)
+        rep = Path(args.loss_report) if args.loss_report else out.with_suffix(".loss.json")
+        rep.write_text(json.dumps({"dataset": ds.get("id"), "source_version": src_version,
+                                   "target_version": target, "writer": writer,
+                                   "written": counts, "loss": loss}, indent=2,
+                                  ensure_ascii=False), encoding="utf-8")
+        print(f"Written: {out} ({out.stat().st_size // 1024:,} KB) in "
+              f"{time.perf_counter() - t0:.1f}s")
+        for k, v in sorted(counts.items()):
+            print(f"    {k}: {v}")
+        print(f"  Loss report ({loss['total']} items): {rep}")
+        for k, v in sorted(loss["by_category"].items(), key=lambda kv: -kv[1])[:25]:
+            print(f"    {v:>7}  {k}")
+        for k, v in sorted(loss.get("export_stats", {}).items()):
+            print(f"  {k}: {v:,}")
+        if args.profile:
+            for ph in loss.get("profile", []):
+                rss = ph['peak_rss_mb'] if ph['peak_rss_mb'] is not None else '?'
+                print(f"  [profile] {ph['t_s']:>8.2f} s  peak RSS {rss:>6} MB  {ph['phase']}")
+    drv.close()
     print("Done.")
+
+
+if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):   # a cp1252 console must not crash on non-ASCII output
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(errors="replace")
+    main()

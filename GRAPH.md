@@ -94,7 +94,7 @@ This is a **binding rule for all current and future mapping functions**: before 
 | **Crowd-sourced** | OSM `osm_height`, `osm_building`, POIs | `(:OsmFeature)` node + `ENRICHED_BY`/`HAS_POI` edge; scalars under the `osm_*` prefix |
 | **ML-predicted** | roof materials (5 classes, partial ~50% coverage, Hamburg) | `predicted_roof_material` gen-attr scalar on `Building` — *should additionally carry confidence + coverage; see rules below* |
 | **Reconstructed** | LoD3 building models from facade images (few, Hamburg) | LoD3 geometry edges — *should carry method + a provenance node; see rules below* |
-| **Sensed / live** | live values of sensors and live feeds (traffic counts, free parking spaces, charge-point status); potholes, street condition (planned) | `live_*` scalars beside the feature's other values, `source_type: 'sensed'` on nodes that hold only sensed data |
+| **Sensed / live** | live values of sensors and live feeds (traffic counts, free parking spaces, charge-point status); potholes, street condition (planned) | `live_*` scalars beside the feature's other values (for a CityGML 3.0 feature with a `(:Dynamizer)`, on the Dynamizer of the sensed attribute, never on the feature's own keys); `source_type: 'sensed'` on nodes that hold only sensed data, `live_source_type: 'sensed'` and `live_source` where the node's other keys come from another source |
 | **Derived / computed** | values a pipeline step computes from other data: aggregates, averaged or interpolated positions, matched links | `source_type: 'derived'` with `method` and `method_version` on a node or edge that is computed as a whole; on a node that otherwise holds a source's values, the computed keys are listed in `derived_keys` |
 
 ### Existing provenance mechanisms (reuse these — do not invent parallel ones)
@@ -120,6 +120,7 @@ When adding a new data source (e.g. potholes, energy models, sensor feeds, a new
 - [ ] **Prefer a provenance node + explicit edge** over a silent scalar when the source is external or the mapping is uncertain (follow the `OsmFeature` + `ENRICHED_BY` pattern).
 - [ ] **Stay compact.** Promoted keys for the documented, queryable attributes; a single JSON long tail for the rest. Reuse the existing geometry chain (`GeometryPolygon`/`GeometryRing`/`GeometryLineString`) — never add a parallel geometry model.
 - [ ] **Use a stable, source-prefixed id scheme** (`<src>:<type>/<id>`, as OSM uses `osm:way/123`) so re-ingestion is idempotent (`MERGE`) and one source's nodes can be reset cleanly without touching the authoritative graph.
+- [ ] **Keep each source's ids to itself.** Nodes are `MERGE`d on their id, so two sources with the same id would share (and overwrite) one node. `ingest_citygml.py` refuses a file whose gml:ids belong to nodes of another source; a source that reuses another source's ids (a second model of the same buildings with the cadastral ids) is ingested with `--id-prefix`.
 - [ ] **Keep authoritative spatial indexing intact.** Index a new source in its own R-tree layer if it should not pollute authoritative spatial queries.
 
 ---
@@ -139,6 +140,10 @@ CityGML files require special handling to preserve all geometric and spatial inf
 - `gen:stringAttribute` values — iterate and store **all** of them; never select by name. Property keys are derived with a **Unicode-aware** slug (`_attr_key`), not the ASCII-only `_slug`, so non-Latin attribute names (e.g. the Japanese names in Tokyo PLATEAU such as `地区計画`, `延べ面積換算係数`) are preserved as **distinct, queryable keys** (address them with backticks in Cypher) instead of all collapsing to `____`. The original verbatim name is also kept in `_gen_attrs_map` for lossless export. For pure-ASCII names `_attr_key` matches the old `_slug` output, so existing datasets are unchanged.
 - District / city — derived from `Gemeindeschluessel` gen:stringAttribute (prefix-matched against known keys) or from the filename stem as fallback.
 - `format` version — read from the `xmlns` namespace URI of the root `CityModel` element.
+- **Codec selection** — the same namespace decides the codec: a CityGML 3.0 root
+  (`http://www.opengis.net/citygml/3.0`) is read by the 3.0 codec, everything else by the
+  unchanged 2.0 codec. Both write the one model documented here (see
+  [CITYGML3.md](CITYGML3.md) for the mapping table and loss policy).
 
 ### CityGML 2.0 modules
 
@@ -147,7 +152,7 @@ CityGML 2.0 defines 14 modules. 10 are ingested as graph nodes; the remaining 4 
 | Module | Neo4j label(s) | Geometry style | Supported |
 | ------ | -------------- | -------------- | --------- |
 | Building | `Building` | Solid + BoundarySurfaces | ✓ |
-| Transportation | `Road` `Railway` `Track` `Square` `TransportationComplex` | lod*MultiSurface | ✓ |
+| Transportation | `Road` `Railway` `Track` `Square` `TransportationComplex` | lod*MultiSurface; `tran:trafficArea`/`auxiliaryTrafficArea` → `BoundarySurface:TrafficArea` (HAS_BOUNDARY {prop}); `tran:lod0Network` → HAS_LOD_MULTICURVE {role:'network'} | ✓ |
 | Vegetation | `SolitaryVegetationObject` `PlantCover` | lod*Geometry / ImplicitGeometry | ✓ |
 | WaterBody | `WaterBody` | Solid or lod*MultiSurface + BoundarySurfaces | ✓ |
 | LandUse | `LandUse` | lod*MultiSurface | ✓ |
@@ -156,12 +161,65 @@ CityGML 2.0 defines 14 modules. 10 are ingested as graph nodes; the remaining 4 
 | Bridge | `Bridge` | Solid or lod*MultiSurface + BoundarySurfaces | ✓ |
 | Tunnel | `Tunnel` | Solid or lod*MultiSurface + BoundarySurfaces | ✓ |
 | CityObjectGroup | `CityObjectGroup` | lod*Geometry | ✓ |
-| Appearance | — | — | — |
+| Appearance | — (2.0 appearance not ingested; 3.0 appearance is, see below) | — | — |
 | Generics | — | gen:*Attribute values stored on feature nodes | — |
 | TexturedSurface | — | deprecated in CityGML 2.0 | — |
 | Core | — | abstract base types, not stored directly | — |
 
 All concrete feature types (`Building` + all `CityObject` subtypes) that carry a `gml:boundedBy` envelope are registered in the **Neo4j Spatial R-tree** (layer `features`) after ingestion, enabling `spatial.bbox`, `spatial.intersects`, and `spatial.withinDistance` queries across the full dataset regardless of feature type.
+
+### CityGML 3.0 modules (3.0 codec)
+
+| 3.0 class | Neo4j label(s) | Notes |
+| --------- | -------------- | ----- |
+| `bldg:Building` / `BuildingPart` | `Building` / `BuildingPart` | same pattern as 2.0; `con:` surfaces → `BoundarySurface`; `con:height` → `measured_height`; `con:dateOfConstruction` → `year_of_construction` |
+| `tran:Road` `Railway` `Track` `Square` `Waterway` | `CityObject` + type | top-level transportation spaces |
+| `tran:Section` / `Intersection` | `Section:TransportationSpace` / `Intersection:TransportationSpace` | sub-features |
+| `tran:TrafficSpace` / `AuxiliaryTrafficSpace` | `TrafficSpace` / `AuxiliaryTrafficSpace` | sub-features (`granularity`, `traffic_direction`, …) |
+| `tran:TrafficArea` / `AuxiliaryTrafficArea` / `HoleSurface` | `BoundarySurface:TrafficArea` … | thematic surfaces (also 2.0 `tran:trafficArea`) |
+| `tran:Marking` / `Hole` / `ClearanceSpace` | `Marking` / `Hole` / `ClearanceSpace` | sub-features |
+| `frn:CityFurniture`, `veg:SolitaryVegetationObject`, `veg:PlantCover` | `CityObject` + type | all core LoD geometries, implicit → `GeometryPrototype` |
+| `brid:Bridge` / `BridgePart` | `CityObject:Bridge` / `BridgePart` | `BridgeConstructiveElement` / `BridgeInstallation` → `NestedFeature` |
+| `con:OtherConstruction`, `wtr:WaterBody`, `luse:LandUse` | `CityObject` + type | WaterSurface / WaterGroundSurface / `core:ClosureSurface` → `BoundarySurface` |
+| `gen:GenericOccupiedSpace` / `GenericUnoccupiedSpace` / `GenericLogicalSpace` / `GenericThematicSurface` | `CityObject` + type | |
+| `core:CityObjectRelation` | edge `RELATED_TO` | |
+| `app:Appearance` (+ X3DMaterial / ParameterizedTexture / GeoreferencedTexture) | `Appearance`, `X3DMaterial`, `ParameterizedTexture`, `GeoreferencedTexture` | CityModel-level and feature-level |
+
+**Sub-feature discipline (binding):** every node below a top-level feature (Section,
+Intersection, TrafficSpace, AuxiliaryTrafficSpace, Hole, ClearanceSpace, Marking,
+BridgePart, BoundarySurface, Opening, NestedFeature, Appearance, …) carries **no
+`CityObject` label and no `PART_OF Dataset`** (the BuildingPart precedent); it is reached
+only by traversal from its top-level feature, so `MATCH (n:CityObject)` counts, the
+exporters, the R-tree and the OSM matcher see top-level features only.
+
+**Merge across files (street-space tiles):** 3.0 features MERGE on `gml:id`. The same
+Road / Section / TrafficSpace id may arrive from many tile files with different
+children; children accumulate (MERGE on ids and edge keys), the generic-attribute map
+and the bbox are unioned, `source` is the last file and `source_files` lists all files.
+Children without `gml:id` get deterministic content-hash ids (`synthetic_id = true`; the
+3.0 writer does not emit them). Re-ingesting a file is idempotent.
+
+**Source scope of gml:ids (2.0 and 3.0):** only files of the same Dataset may share ids.
+`Dataset.source_files` lists the files ingested into a Dataset (an older Dataset gets the
+sources of its members). Before anything of a file is written, a pre-flight pass looks up
+its gml:ids; one that belongs to a node whose `source` is not a file of the Dataset stops
+the ingest with an error naming examples (skipped when the graph holds no other Dataset;
+`--no-id-check` skips it). `--id-prefix <p>` gives a source that reuses another source's
+ids its own id space: every gml:id and every reference to one gets the prefix while
+parsing, the prefix is recorded as `Dataset.id_prefix` (the same for every file of the
+Dataset; letters, digits, `_`, `-`, `.`), and the strict writer strips it on export.
+
+**Pending references:** predecessor/successor, `relatedTo`, xlinked geometry and
+appearance targets are resolved by the fragment id after parsing
+(`xlink:href="tile_b.gml#road_1"` → `road_1`), and only to a node of the referenced
+document: `#road_1` to a node from this file, `tile_b.gml#road_1` to a node whose `source`
+(or `source_files`) is `tile_b.gml`, also in another Dataset; an id that only happens to
+match elsewhere is not linked. A reference into a Dataset with another `id_prefix` is
+resolved with that Dataset's prefix. A reference whose target is not in the graph yet is
+parked on the source node (`pending_refs_json` + plumbing label `PendingRefs`), retried
+when its document is ingested, at the end of every CLI run and by
+`ingest_citygml.py --resolve-pending`; the 3.0 writer re-emits still-pending ones with
+their original href.
 
 ### Graph schema (complete)
 
@@ -250,6 +308,60 @@ All concrete feature types (`Building` + all `CityObject` subtypes) that carry a
 (GenericCityObject)        -[:PART_OF]->                        (Dataset)
 (GenericCityObject)        -[:HAS_LOD_SURFACE {lod}]->          (GeometryMultiSurface)
 
+── Transportation module, CityGML 3.0 spaces (sub-features: no CityObject, no PART_OF) ──
+(Road|Railway|Track|Square|Waterway) -[:HAS_SECTION {order}]->      (Section:TransportationSpace)
+(Road|Railway|Track|Waterway|Section) -[:HAS_INTERSECTION {order}]-> (Intersection:TransportationSpace)
+(Road|…|Section|Intersection) -[:HAS_TRAFFIC_SPACE {order, auxiliary}]-> (TrafficSpace|AuxiliaryTrafficSpace)
+(Road|…|Section|Intersection) -[:HAS_MARKING {order}]->      (Marking)
+(Road|…|Section|Intersection) -[:HAS_HOLE {order}]->         (Hole)
+(TrafficSpace)             -[:HAS_CLEARANCE_SPACE {order}]->  (ClearanceSpace)
+(TrafficSpace)             -[:PREDECESSOR|SUCCESSOR {order, href?, source}]-> (TrafficSpace)  # href = cross-tile xlink verbatim
+(TrafficSpace|AuxiliaryTrafficSpace|Road|…) -[:HAS_BOUNDARY {order, prop}]-> (BoundarySurface:TrafficArea|AuxiliaryTrafficArea)
+                           # prop 'boundary' = 3.0 core:boundary; prop 'trafficArea'/'auxiliaryTrafficArea' = 2.0 areas on the Road
+(Hole|ClearanceSpace)      -[:HAS_BOUNDARY {order}]->         (BoundarySurface:HoleSurface)
+(any space|Marking|BoundarySurface) -[:HAS_LOD_MULTICURVE {lod, order, multi_curve_id, role}]-> (GeometryLineString)
+                           # 3.0 lod0/2/3MultiCurve (role null) · 2.0 tran:lod0Network (role 'network')
+(any space)                -[:HAS_LOD_POINT {lod}]->          (GeometryLineString {geometry_type:'Point'})   # core:lod0Point
+(any 3.0 space|Marking|BoundarySurface) -[:HAS_LOD_SURFACE {lod, role?, via_xlink?}]-> (GeometryMultiSurface)
+(any 3.0 space)            -[:HAS_LOD_SOLID]->                (GeometrySolid)
+(any 3.0 physical space)   -[:HAS_TERRAIN_INTERSECTION]->     (TerrainIntersection {lod, multi_curve_id})
+
+── Bridge module, CityGML 3.0 ─────────────────────────────────────────────────────
+(Bridge)                   -[:HAS_BRIDGE_PART {order}]->      (BridgePart)            # recursive AbstractBridge, like BuildingPart
+(Bridge|BridgePart)        -[:HAS_NESTED {prop, order}]->     (NestedFeature)         # prop 'bridgeConstructiveElement' | 'bridgeInstallation'
+
+── CityObjectRelation (3.0) ───────────────────────────────────────────────────────
+(Entity)                   -[:RELATED_TO {order, relation_type, relation_type_codespace,
+                              relation_id?, gen_attrs_json?, href?, source}]-> (Entity)     # 'equal' | 'carries' | 'regulates' | 'mountedOn' …
+
+── Dynamizer (3.0 dynamizer module) ───────────────────────────────────────────────
+(Entity)                   -[:HAS_DYNAMIZER {order}]-> (Dynamizer)          # sub-feature: no CityObject, no PART_OF
+  Dynamizer {id, attribute_ref (XPath into the owner), attribute_name (its gen:name), start_time, end_time,
+             connection_type ('OGC SensorThings API'), observation_property, uom, sensor_id, sensor_name,
+             datastream_id, base_url, mqtt_server, mqtt_topic, link_to_observation, link_to_sensor_description,
+             sensor_location, dynamic_data_type + dynamic_data_xml (verbatim timeseries), first/last_timestamp,
+             live_result, live_previous_result, live_phenomenon_time, live_result_time, live_updated_at,
+             live_seq, live_source, live_source_type:'sensed'}           # live_* only from a live job
+(LiveFeed {id:'sta:<host>', connected, received, written, last_flush_at})  # state of the live sync
+
+── Implicit geometry (generalised street-tree pattern) ─────────────────────────────
+(feature)                  -[:HAS_PROTOTYPE {lod, transformation_matrix, reference_point,
+                              reference_point_id?, mime_type?, library_object?, via_xlink}]-> (GeometryPrototype)
+(GeometryPrototype)        -[:HAS_SURFACE_MEMBER {order}]->   (GeometryPolygon)       # MultiSurface / Solid shell / TriangulatedSurface template
+(GeometryPrototype)        -[:HAS_SOLID_MEMBER {order}]->     (GeometrySolid)         # CompositeSolid / MultiSolid template
+(GeometryPrototype)        -[:HAS_LINE {order}]->             (GeometryLineString)    # MultiCurve template
+(GeometrySolid {geometry_type:'CompositeSolid'|'MultiSolid'}) -[:HAS_SOLID_MEMBER {order, via_xlink}]-> (GeometrySolid)
+# two variants exist: the 3.0 codec puts the placement on the feature's HAS_PROTOTYPE edge
+# (above); the 2.0 ingest and the street trees keep one implicit MultiSurface per instance:
+# (SolitaryVegetationObject)-[:HAS_LOD_SURFACE]->(GeometryMultiSurface{is_implicit,…})-[:HAS_PROTOTYPE]->(GeometryPrototype)
+# build_3dtiles draws both.
+
+── Appearance (3.0) ───────────────────────────────────────────────────────────────
+(Dataset|Entity|GeometryPrototype) -[:HAS_APPEARANCE {order}]-> (Appearance)
+(Appearance)               -[:HAS_SURFACE_DATA {order}]->     (X3DMaterial|ParameterizedTexture|GeoreferencedTexture)
+(X3DMaterial|ParameterizedTexture|GeoreferencedTexture) -[:TARGETS {order, texture_coordinates_json?,
+                              world_to_texture?, texture_association_id?}]-> (GeometryPolygon|GeometryMultiSurface|GeometrySolid|GeometryPrototype)
+
 ── Geometry (shared by all feature types) ───────────────────────────────────────
 (GeometrySolid)            -[:HAS_SURFACE_MEMBER {order, via_xlink, orientation}]-> (GeometryPolygon | GeometryCompositeSurface)
 (GeometryMultiSurface)     -[:HAS_SURFACE_MEMBER {order, via_xlink, orientation}]-> (GeometryPolygon)
@@ -258,6 +370,9 @@ All concrete feature types (`Building` + all `CityObject` subtypes) that carry a
 (GeometryPolygon)          -[:HAS_EXTERIOR_RING]->              (GeometryRing)
 (GeometryPolygon)          -[:HAS_INTERIOR_RING {ring_index}]-> (GeometryRing)
 (TerrainIntersection)      -[:HAS_LINE {order}]->               (GeometryLineString)
+(BoundarySurface)          -[:HAS_LOD_SURFACE {lod, role:'primary'}]-> (GeometryMultiSurface {materialized_from})
+                           # only when another feature xlinks the surface's MultiSurface (e.g. 3.0 PlantCover
+                           # lod0MultiSurface → an AuxiliaryTrafficArea's MultiSurface); exporters ignore it
 ```
 
 ── OSM enrichment (see [OSM_INTEGRATION.md](OSM_INTEGRATION.md)) ──────────────────
@@ -293,7 +408,7 @@ All non-Building feature nodes carry two labels: the module-specific label (e.g.
 - `MATCH (n:Bridge)` — works when APOC was available at ingest time
 - `MATCH (n:CityObject {feature_type: 'Bridge'})` — always works
 
-**Shared `Entity` label (ingestion index anchor).** Every node that can be the source or target of a *generic*, label-agnostic relationship — one whose endpoint label is not known when the edge batch is flushed (e.g. `HAS_LOD_SOLID`, `HAS_BOUNDARY`, `HAS_LOD_GEOMETRY`, `HAS_NESTED`, `HAS_SURFACE_MEMBER`, `HAS_GROUP_MEMBER`) — also carries the extra label `Entity`. This includes `Building`, `BuildingPart`, every `CityObject`/module feature, `Room`, `BuildingInstallation`, `BuildingFurniture`, `Opening`, `NestedFeature`, `BoundarySurface`, `GeometrySolid`, `GeometryMultiSurface`, `GeometryCompositeSurface`, `GeometryPolygon`, `BuildingFunction`, and `RoofType`. The `Building → BuildingPart`, `HAS_INTERIOR_INSTALLATION`, and `HAS_LOD_MULTICURVE` edges all resolve their source through the `Entity(id)` index, so the same flush works whether the parent is a `Building` or a nested `BuildingPart`. It lets those edge-creation `MATCH (a:Entity {id: …})` lookups resolve through a single `Entity(id)` index instead of an all-nodes scan (Neo4j `id` indexes are per-label, so a label-less `MATCH (a {id})` cannot use any of them — the root cause of slow large-file ingestion). `Entity` is purely a plumbing/index label, orthogonal to the semantic labels; ignore it in domain queries. The high-cardinality leaf nodes that are never a generic edge endpoint — `GeometryRing`, `GeometryLineString`, `TerrainIntersection`, and `Dataset` — deliberately do **not** carry `Entity`, keeping the index small.
+**Shared `Entity` label (ingestion index anchor).** Every node that can be the source or target of a *generic*, label-agnostic relationship — one whose endpoint label is not known when the edge batch is flushed (e.g. `HAS_LOD_SOLID`, `HAS_BOUNDARY`, `HAS_LOD_GEOMETRY`, `HAS_NESTED`, `HAS_SURFACE_MEMBER`, `HAS_GROUP_MEMBER`) — also carries the extra label `Entity`. This includes `Building`, `BuildingPart`, every `CityObject`/module feature, `Room`, `BuildingInstallation`, `BuildingFurniture`, `Opening`, `NestedFeature`, `BoundarySurface`, `GeometrySolid`, `GeometryMultiSurface`, `GeometryCompositeSurface`, `GeometryPolygon`, `BuildingFunction`, and `RoofType`, plus the 3.0 nodes `Section`, `Intersection`, `TrafficSpace`, `AuxiliaryTrafficSpace`, `Hole`, `ClearanceSpace`, `Marking`, `BridgePart`, `GeometryPrototype`, `Appearance`, `X3DMaterial`, `ParameterizedTexture`, and `GeoreferencedTexture`. `PendingRefs` is a second plumbing label (nodes holding parked cross-file references). The `Building → BuildingPart`, `HAS_INTERIOR_INSTALLATION`, and `HAS_LOD_MULTICURVE` edges all resolve their source through the `Entity(id)` index, so the same flush works whether the parent is a `Building` or a nested `BuildingPart`. It lets those edge-creation `MATCH (a:Entity {id: …})` lookups resolve through a single `Entity(id)` index instead of an all-nodes scan (Neo4j `id` indexes are per-label, so a label-less `MATCH (a {id})` cannot use any of them — the root cause of slow large-file ingestion). `Entity` is purely a plumbing/index label, orthogonal to the semantic labels; ignore it in domain queries. The high-cardinality leaf nodes that are never a generic edge endpoint — `GeometryRing`, `GeometryLineString`, `TerrainIntersection`, and `Dataset` — deliberately do **not** carry `Entity`, keeping the index small.
 
 Relationship properties carry document-order counters (`order`, `ring_index`) so the exact CityGML element sequence can be restored on export.
 
@@ -314,7 +429,13 @@ See [LOSSLESS_ROUNDTRIP.md](LOSSLESS_ROUNDTRIP.md) for the full catalogue of Cit
 | -------- | ------ |
 | `id` | slug of filename stem |
 | `name`, `source` | filename |
-| `format` | root namespace URI → `"CityGML 2.0"` |
+| `format` | root namespace URI → `"CityGML 2.0"` / `"CityGML 3.0"` |
+| `citygml_version`, `gml_version` | `"3.0"` / `"3.2"` (3.0 codec; a Dataset without them is 2.0 / 3.1.1) |
+| `gml_id` | `gml:id` of the CityModel (3.0 codec) |
+| `rtree_layer` | R-tree layer of its features (3.0 codec / `--rtree-layer`) |
+| `source_files` | the files ingested into the Dataset; only they may share gml:ids (see *Source scope of gml:ids*) |
+| `id_prefix` | `--id-prefix` of its files, stripped again on export |
+| `source_type`, `method`, `method_version` | provenance (`--source-type/--method/--method-version`) |
 | `crs` | `gml:Envelope/@srsName` |
 | `srs_dimension` | `gml:Envelope/@srsDimension` (default 3) |
 | `lod` | highest `lod*` element found across all modules |
@@ -361,7 +482,9 @@ See [LOSSLESS_ROUNDTRIP.md](LOSSLESS_ROUNDTRIP.md) for the full catalogue of Cit
 | `community_id` | Louvain id (optional, GDS plugin) |
 | `source` | filename |
 
-All `gen:stringAttribute`, `gen:intAttribute`, `gen:doubleAttribute`, `gen:dateAttribute`, `gen:uriAttribute`, and `gen:measureAttribute` elements are stored as properties using a lowercase slug of the `name` attribute as the key.  The `_gen_attrs_map` JSON records the original CamelCase names in insertion order for faithful round-trip export.
+All `gen:stringAttribute`, `gen:intAttribute`, `gen:doubleAttribute`, `gen:dateAttribute`, `gen:uriAttribute`, and `gen:measureAttribute` elements are stored as properties using a lowercase slug of the `name` attribute as the key.  The `_gen_attrs_map` JSON records the original CamelCase names in insertion order for faithful round-trip export. CityGML 3.0 (`core:genericAttribute/gen:<Type>Attribute{gen:name, gen:value}`, `gen:GenericAttributeSet`) is stored identically; the new type `code` keeps its codeSpace in the map entry (`{"name","type":"code","codeSpace"}`), measures add `<key>_uom`. A generic attribute whose key collides with a structural or module property (`id`, `class`, `function`, `usage`, `height`, `granularity`, `surface_material`, `lod`, … — `RESERVED_NODE_KEYS`) is stored as `gen_<key>` so it can never overwrite the authoritative value.
+
+**3.0 additions on Building / BuildingPart:** `con:height/con:Height` → `measured_height` (+`_uom`) from the Height with `status = measured` (else the first), `height_high_reference`, `height_low_reference`, `height_status`, and all Heights verbatim in `heights_json`; `con:dateOfConstruction/Demolition` → `date_of_construction` / `date_of_demolition` (verbatim) **and** `year_of_construction` / `year_of_demolition` (year, the 2.0 key); `condition_of_construction`, `elevations_json`, `occupancy_json`; `core:boundary` → `HAS_BOUNDARY` → `BoundarySurface` (`con:WallSurface/RoofSurface/GroundSurface/…`, `core:ClosureSurface` keep their local name as `surface_type`); `con:fillingSurface/WindowSurface|DoorSurface` → `Opening {opening_type: Window|Door, filling_type}`; `core:lodNSolid` (gml:Shell, its id in `composite_surface_id`), `core:lod0/2/3MultiSurface` → `HAS_LOD_SURFACE {lod, role:'multisurface'}`, `core:lodNTerrainIntersectionCurve` → `TerrainIntersection`; xAL 3 addresses verbatim in `address_xml`; `bldg:buildingInstallation` → `BuildingInstallation`, `bldg:buildingRoom` → `Room`. Multi-valued codes (3.0 `function`/`usage` are 0..*) keep the first value in `function_code`/`usage_code` and the full list in `function_code_list`/`usage_code_list`.
 
 **Shared "common extras" on every feature.** `termination_date` plus the verbatim subtree properties `metadata_xml`, `location_xml`, `generalizes_to_xml`, `external_reference_xml`, and `ade_xml` are captured by `_capture_common_extras` for **every** CityGML feature node — `Building`, `BuildingPart`, all `CityObject` modules, and `BoundarySurface` — because these come from the shared `_CityObject`/`_Feature`/`_GML` base types. `ade_xml` is detected structurally: any direct-child element in a namespace the ingester does not model natively (i.e. not in `NS`) is preserved verbatim, the same proven, fully lossless pattern as `Building.address_xml`. Element order within a feature is not significant for the lossless gate (`roundtrip_census.py` compares element/attribute/text/coordinate multisets, not sequence).
 
@@ -400,6 +523,94 @@ Module-specific additional properties:
 | Tunnel | `year_of_construction`, `year_of_demolition` |
 | ReliefFeature | `lod` (XML attribute) |
 
+**3.0 additions on CityObject:** `source_files` (all tile files that contributed),
+`rtree_layer`, `source_type` / `method` / `method_version` (when given), `has_bbox_envelope`;
+the bbox of a 3.0 feature without an envelope is computed from its geometry (implicit
+instances: prototype extent × matrix + reference point; xlinked geometry: from the
+resolved graph geometry) and union-merged across tiles; `traffic_direction`,
+`occupancy_json` (transportation spaces); `valid_from`, `valid_to`, `space_type`,
+`volume_xml`, `area_xml`; con: block on `OtherConstruction`/`Bridge` as on buildings;
+vegetation `min_height`, `max_height`, `root_ball_diameter`, `max_root_ball_depth`
+(+`_uom` on every measure). **Multi-valued codes:** `class`/`function`/`usage`/… keep
+the first value (queryable scalar, as in 2.0) and, when there are several, the full
+ordered list in `<key>_list` (+ `<key>_codespace_list` when codeSpaces differ) — query
+`'2' IN coalesce(n.usage_list, [n.usage])`. 3.0 `externalReference` → `external_object_name`
+(= targetResource), `external_information_system`, verbatim `external_reference_xml`.
+
+#### Transportation sub-features (3.0)
+
+`Section:TransportationSpace`, `Intersection:TransportationSpace`, `TrafficSpace`,
+`AuxiliaryTrafficSpace`, `Hole`, `ClearanceSpace`, `Marking` (+`Entity`; never
+`CityObject`, never `PART_OF`): `id` (gml:id or a content-hash id + `synthetic_id`),
+`feature_type` (= label), `source`, `source_files`, `class`/`function`/`usage`
+(+`_codespace`, `_list`), `granularity` (`way`|`lane`, mandatory in 3.0),
+`traffic_direction` (`forwards`|`backwards`|`both`), `occupancy_json`, `gml_name`,
+generic attributes + `_gen_attrs_map`, provenance, `bbox_min/max_x/y/z` (see below).
+Geometry through the generic edges
+(`HAS_BOUNDARY`, `HAS_LOD_MULTICURVE` (lod0 network curves), `HAS_LOD_SURFACE`,
+`HAS_LOD_SOLID`). A `Marking` is a thematic surface: `lod0MultiCurve` →
+`HAS_LOD_MULTICURVE`, `lodNMultiSurface` → `HAS_LOD_SURFACE`.
+
+```cypher
+// every traffic area of a road, whatever the encoding (2.0 areas on the road, 3.0 below spaces)
+MATCH (r:Road {id: $id})-[:HAS_SECTION|HAS_INTERSECTION*0..1]->()-[:HAS_TRAFFIC_SPACE*0..1]->()
+      -[:HAS_BOUNDARY]->(ta:TrafficArea)
+RETURN ta.id, ta.function, ta.usage_list, ta.surface_material
+```
+
+**Live values.** A sensed attribute of a feature has one `(:Dynamizer)` (CityGML 3.0
+dynamizer module) whose `attribute_name` names the attribute. A live job that follows the
+sensor connection writes `live_result`, `live_previous_result`, `live_phenomenon_time` and
+`live_updated_at` (sensed) onto the Dynamizer, never onto the feature. Values of the same
+name on the feature itself are the snapshot from the file; for current values use the
+Dynamizer:
+`MATCH (f {id: $id})-[:HAS_DYNAMIZER]->(d:Dynamizer {attribute_name: $name}) RETURN d.live_result, d.live_phenomenon_time`.
+
+**Sub-feature bbox (3.0 codec).** Every sub-feature (`Section`, `Intersection`,
+`TrafficSpace`, `AuxiliaryTrafficSpace`, `Hole`, `ClearanceSpace`, `Marking`,
+`BridgePart`, `NestedFeature`, `BuildingPart`, `BuildingInstallation`, `Room`) and every
+`BoundarySurface` / `Opening` written by the 3.0 codec carries
+`bbox_min_x/y/z`, `bbox_max_x/y/z` computed from its own geometry: a surface from its
+polygons and curves, a space from the union of its boundaries and lod0 curves, a
+Section/Intersection from the union of its spaces (template-local implicit geometry
+excluded). The values are union-merged when the same id arrives from several tiles. Unlike
+top-level features they have no `center_*`/`bbox_wkt`/`location` and are **not** in an
+R-tree layer — they serve hierarchical clipping (`export_citygml.py --bbox --clip`; the
+exporter's plan and loader apply the same bbox test in Cypher level by level, so a clipped
+400 m box of a city-wide street space takes seconds and about 120 MB, `--profile` prints the phases) and
+cheap `WHERE`-filters below an R-tree-selected feature, e.g.
+`MATCH (r:Road)-[:HAS_SECTION|HAS_TRAFFIC_SPACE*1..2]->(t:TrafficSpace) WHERE t.bbox_max_x > $x0 …`.
+Graphs ingested before this existed get the same values with
+`ingest_citygml.py --backfill-bbox [--dataset <id>]`.
+
+#### GeometryPrototype (implicit-geometry template)
+
+One node per template (`id` = template `gml:id`), shared by all instances:
+`geometry_type` (`MultiSurface` | `CompositeSurface` | `Solid` | `CompositeSolid` | `MultiSolid` | `MultiCurve` |
+`TriangulatedSurface`), `owner_feature_id` (feature that defined it inline), `shell_id`,
+`srs_name`, `local_min/max_x/y/z` (template-local extent), `source`. The per-instance
+placement is on the `HAS_PROTOTYPE {lod, transformation_matrix (16 row-major numbers),
+reference_point, reference_point_id, mime_type, library_object, via_xlink}` edge:
+`P_world = M[0:3,0:3]·p + M[0:3,3] + reference_point`. Template coordinates are local
+and never reprojected.
+
+#### Appearance (3.0)
+
+`Appearance {id, theme}` (CityModel-level: `Dataset -[:HAS_APPEARANCE]->`; feature-level:
+`<feature> -[:HAS_APPEARANCE]->`), `X3DMaterial {is_front, ambient_intensity,
+diffuse_color, emissive_color, specular_color, shininess, transparency, is_smooth}`,
+`ParameterizedTexture {image_uri, mime_type, texture_type, wrap_mode, border_color}`,
+`GeoreferencedTexture {…, prefer_world_file, reference_point, orientation}`; targets are
+`TARGETS` edges to the geometry node with that gml:id (texture coordinates on the edge:
+`texture_coordinates_json` = `[[ring_id, "u v …"], …]`, or `world_to_texture`), so one
+polygon can carry several themes. In a tiled Dataset the per-tile Appearances share their
+materials (MERGE by id): in a city-wide tiled street space hundreds of Appearances can share a
+few dozen X3DMaterials through millions of `TARGETS` edges. Never
+expand a material or an Appearance in a query or exporter; look up `TARGETS` from the
+geometry side (`UNWIND $ids AS i MATCH (g:Entity {id: i})<-[t:TARGETS]-(sd)`), which is
+index-backed and proportional to the selection. `export_citygml.py` does exactly that and
+writes each material once, inside its host Appearance (smallest Appearance id holding it).
+
 #### BoundarySurface
 
 Maps to building surfaces (`bldg:*Surface`) and module boundary surfaces:
@@ -412,8 +623,10 @@ Maps to `bldg:GroundSurface`, `bldg:WallSurface`, `bldg:RoofSurface`, `bldg:Clos
 | Property | Source |
 | -------- | ------ |
 | `id` | `gml:id` of the surface element |
-| `surface_type` | element local name (e.g. `"WallSurface"`) |
-| `lod` | detected from child `bldg:lod{N}MultiSurface` |
+| `surface_type` | element local name (e.g. `"WallSurface"`, `"TrafficArea"`, `"HoleSurface"`) — `TrafficArea`, `AuxiliaryTrafficArea`, `HoleSurface` also carry that label |
+| `lod` | detected from child `bldg:lod{N}MultiSurface` (3.0: the highest-LoD MultiSurface is the primary `HAS_POLYGON` geometry, other LoDs → `HAS_LOD_SURFACE {lod}`) |
+| `class`, `function`, `usage`, `surface_material` (+`_codespace`, `_list`) | TrafficArea / AuxiliaryTrafficArea codes (2.0 and 3.0) |
+| `bbox_min_x/y/z`, `bbox_max_x/y/z` | own-geometry bbox (3.0 codec / `--backfill-bbox`; not set by the 2.0 codec) |
 | `multi_surface_id` | `gml:MultiSurface/@gml:id` (for export) |
 | `creation_date` | `cg:creationDate` (optional) |
 | `_gen_attrs_map` | JSON for surface's gen:*Attribute names |
@@ -532,6 +745,8 @@ Shared nodes that group buildings by semantic category (only created for codes a
 | `cityobject_feature_type_idx` | `CityObject` | `feature_type` |
 | `geometrymultisurface_id_idx` | `GeometryMultiSurface` | `id` |
 
+The 3.0 codec additionally creates `<label>_id_idx` for `Section`, `Intersection`, `TransportationSpace`, `TrafficSpace`, `AuxiliaryTrafficSpace`, `Hole`, `ClearanceSpace`, `Marking`, `BridgePart`, `GeometryPrototype`, `Appearance`, `X3DMaterial`, `ParameterizedTexture`, `GeoreferencedTexture`, `NestedFeature`, `Opening`, `Room`, `BuildingInstallation`, `GeometryCompositeSurface`, and `boundarysurface_multi_surface_id_idx` (xlink targets that are a surface's MultiSurface).
+
 All `MATCH (n:Label {id: $id})` lookups use these indexes automatically. Always filter by `id` (not `name`) when accessing a specific node by its GML identifier.
 
 ---
@@ -545,7 +760,8 @@ The Neo4j Spatial plugin (https://github.com/neo4j-contrib/spatial) is installed
 - Every `Building` and `CityObject` node that has a valid `gml:boundedBy/gml:Envelope` carries a `bbox_wkt` property: a 2D WKT `POLYGON` string derived from `bbox_min_x/y` and `bbox_max_x/y`.
 - A WKT spatial layer named **`features`** is created once via `CALL spatial.addWKTLayer('features', 'bbox_wkt')`.
 - All `Building` and `CityObject` nodes with a valid `bbox_wkt` are registered in the layer via `CALL spatial.addNodes('features', nodes)`, inserting their bounding-box polygons into the R-tree.
-- Re-running the ingest script is safe: the layer is only created if absent, and `spatial.addNodes` re-indexes nodes in place.
+- Re-running the ingest script is safe: the layer is only created if absent, and nodes that already have an R-tree entry are skipped (`spatial.addNodes` itself is **not** idempotent — a second add creates a duplicate entry). A 3.0 feature whose bbox grew because a later tile extended it is flagged `rtree_stale` and removed + re-added.
+- **One layer per source:** `--rtree-layer <name>` puts the top-level features of an ingest into their own layer and records it on each node (`rtree_layer`) and on the Dataset; such nodes never enter `features`. For example a street-space reconstruction in `streetspace`, a CityGML 3.0 intersection model in `citygml3`. Query them with `spatial.bbox('streetspace', …)`. A degenerate extent (an axis-parallel fence, a pole) gets a ±0.5 mm padded `bbox_wkt` so it is still indexed.
 
 **OSM features use a separate layer `osm_features`.** When `ingest_osm.py` has been run, all `OsmFeature` nodes are indexed in their own WKT layer **`osm_features`** (same `bbox_wkt` property), kept distinct from `features` so CityGML spatial queries are unaffected. Query OSM by location with `CALL spatial.intersects('osm_features', <wkt>)` / `spatial.bbox('osm_features', …)`; query CityGML with `'features'`. See [OSM_INTEGRATION.md](OSM_INTEGRATION.md) §5.
 
@@ -1038,11 +1254,18 @@ pip3 install shapely --break-system-packages   # optional: clean window/door hol
 
 ### `ingest_citygml.py` — CityGML → Neo4j
 
-Parses a CityGML 2.0 file and writes all supported modules into Neo4j.
+Parses CityGML 2.0 **or 3.0** files (codec chosen per file from the root namespace) and writes all supported modules into Neo4j.
 
 ```bash
 python3 ingest_citygml.py <path-to-file.gml>
+# CityGML 3.0 street-space tiles into one Dataset, own R-tree layer, provenance:
+python3 ingest_citygml.py tiles/ --dataset-name city_streetspace --rtree-layer streetspace \
+    --source-type reconstructed --method streetspace-recon --method-version 1.0
+python3 ingest_citygml.py --resolve-pending        # retry parked cross-tile references
+python3 ingest_citygml.py --backfill-bbox --dataset city_streetspace   # sub-feature bboxes for older graphs
 ```
+
+Options: `--dataset-name`, `--rtree-layer`, `--backfill-bbox [--dataset <id>]` (idempotent, resumable: only nodes still missing `bbox_min_x`), `--source-type` (authoritative | crowdsourced | predicted | reconstructed | sensed | derived; predicted, reconstructed and derived need `--method` and `--method-version`), `--method`, `--method-version`, `--id-prefix` (own id space for a source that reuses another source's ids), `--no-id-check`, `--district` (District name when the file has no Gemeindeschluessel), `--resolve-pending`, `--target-crs/--source-crs`, `--writers`, `--parse-workers`, `--nearby-edges`, `--uri/--user/--password` (default `$NEO4J_URI`/`$NEO4J_USER`/`$NEO4J_PASSWORD` or bolt://localhost:7687, neo4j, neo4jneo4j). Use `--parse-workers 1` (default) for street-space tiles: tiles share Road/Section ids.
 
 - Input : path to a `.gml` file passed as argument
 - Output: nodes and relationships in Neo4j (see Graph Model above)
@@ -1100,14 +1323,23 @@ python3 ingest_osm.py input/osm/<city>.osm.pbf --buffer 10 --overlap-threshold 0
 
 ### `export_citygml.py` — Neo4j → CityGML
 
-Reconstructs a CityGML 2.0 file from the graph database, covering all modules supported by the ingestion pipeline.
+Reconstructs a CityGML 2.0 (default) or **3.0** file from the graph.
 
 ```bash
-python3 export_citygml.py
+python3 export_citygml.py --dataset <id|name|source>                 # 2.0
+python3 export_citygml.py --dataset <id> --version 3 --out out.gml   # 3.0
+python3 export_citygml.py --dataset <id> --version 2 --v2-subfeatures genattrs
+python3 export_citygml.py --dataset <id> --version 3 --bbox "POLYGON((…))"            # clipped (default)
+python3 export_citygml.py --dataset <id> --version 3 --bbox "POLYGON((…))" --no-clip  # selected features whole
 ```
 
+- 2.0-sourced → 2.0 uses the legacy writer below (unchanged output). Every other combination uses the strict writer `citygml_writer.py`: XSD content-model order, gml:id uniqueness, implicit templates inline once then `xlink:href`, appearance, and a loss report `<out>.loss.json` listing everything the target version cannot express (3.0 → 2.0: spaces/sections/markings/relations flattened; 2.0 → 3.0: synthesised `<ta_id>__space` TrafficSpaces with granularity `way`, measuredHeight → `con:Height`). `--writer strict` forces it for 2.0 → 2.0 as well (XSD-valid ordering).
+- Features are selected by `PART_OF` the Dataset (not by `source`); `--dataset` is required when the graph holds several Datasets; `--bbox` uses the Dataset's R-tree layer.
+- `--clip` (default on with `--bbox`): the R-tree selects top-level features; below transportation features (Road, Railway, Track, Square, Waterway) only the sub-features and areas whose `bbox_*` meets the box are loaded and written, and a Road / Section / space is written only when a descendant is kept (a city-wide Road contributes just its in-box part). Other features are written whole. Sub-features without a bbox are kept (run `--backfill-bbox`). Appearance targets are written only for polygons that are in the document; references to features outside the box are written as their original cross-tile href or reported.
+- The strict writer streams: top-level features are loaded, written and released in batches (`--batch`, default 200) — memory is bounded by the batch (a 400 m street-space box: about 150 MB).
+
 - Input : Neo4j (queries `Dataset`, `Building`, `CityObject`, geometry, and lookup nodes)
-- Output: `output/citygml/<stem>_export.gml` (stem derived from `Dataset.source`)
+- Output: `output/citygml/<stem>_export.gml` / `<stem>_export_v3.gml` (stem derived from `Dataset.source`)
 
 The `export(out_path, bbox_wkt=None)` function accepts an optional `bbox_wkt` argument (WKT POLYGON in dataset CRS). When supplied, only buildings whose bounding box intersects the polygon are exported (using `spatial.intersects` on the R-tree layer); all `CityObject` nodes are always exported regardless of bbox.
 
@@ -1176,6 +1408,16 @@ python3 build_3dtiles.py --out <dir>           # custom output dir (default outp
 | Relief | ReliefFeature (TIN triangles) | tan |
 | Bridge | Bridge | light brown |
 | Tunnel | Tunnel | mid grey |
+| Transportation surfaces (3.0 spaces, 2.0 `tran:trafficArea`) | TrafficArea / AuxiliaryTrafficArea, HoleSurface / Marking | asphalt / pavement / marking white |
+
+**CityGML 3.0 content (`--tiled`):** a feature is drawn with everything below it on the
+containment edges (`HAS_BUILDING_PART`, `HAS_SECTION`, `HAS_INTERSECTION`,
+`HAS_TRAFFIC_SPACE`, `HAS_MARKING`, `HAS_BRIDGE_PART`, `HAS_NESTED`), so a road is drawn by
+the traffic areas of its spaces (its own lodN MultiSurface is then left out) and a bridge
+with its parts. Implicit geometry of the 3.0 codec (`HAS_PROTOTYPE` from the feature) is
+placed by the edge's matrix and reference point. Lines and points (lod0 networks,
+GenericLogicalSpace curves) are not drawn. The single-GLB mode reads only a feature's own
+geometry.
 
 Geometry is fetched from the graph by `fetch_surfaces()` via Cypher — building/CityObject boundary surfaces, `lodN` solids, and MultiSurfaces (`HAS_BOUNDARY`/`HAS_LOD_SOLID`/`HAS_LOD_SURFACE` → `GeometryPolygon` → `HAS_EXTERIOR_RING`), so all geometry styles (MultiSurface, Solid, lod{N}Geometry, TIN) are captured automatically.
 

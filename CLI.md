@@ -19,10 +19,10 @@ The scripts still run directly (`py ingest_citygml.py …`) exactly as before.
 
 | Command | Runs | Purpose |
 | --- | --- | --- |
-| `ingest-citygml` | `ingest_citygml.py` | CityGML 2.0 → Neo4j |
+| `ingest-citygml` | `ingest_citygml.py` | CityGML 2.0 / 3.0 → Neo4j (see CITYGML3.md) |
 | `ingest-osm` | `ingest_osm.py` | OpenStreetMap enrichment (`.osm.pbf`) |
 | `ingest-roofmats` | `ingest_roof_materials.py` | ML roof-material predictions (GeoJSON) |
-| `export-citygml` | `export_citygml.py` | Neo4j → CityGML: whole dataset, `--ids`/`--ids-file` selection, or `--bbox` |
+| `export-citygml` | `export_citygml.py` | Neo4j → CityGML 2.0 / 3.0 (`--version 3`): whole dataset, `--ids`/`--ids-file` selection, or `--bbox` |
 | `build-3dtiles` | `build_3dtiles.py` | Neo4j → 3D Tiles; `--tiled` for whole cities (see below) |
 | `footprints` | `tools/extract_citygml_building_footprints.py` | CityGML → GeoJSON footprints, no Neo4j |
 | `upgrade-citygml` | `tools/upgrade_citygml_10_to_20.py` | CityGML 1.0 → 2.0, no Neo4j |
