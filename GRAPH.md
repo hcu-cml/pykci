@@ -120,6 +120,7 @@ When adding a new data source (e.g. potholes, energy models, sensor feeds, a new
 - [ ] **Prefer a provenance node + explicit edge** over a silent scalar when the source is external or the mapping is uncertain (follow the `OsmFeature` + `ENRICHED_BY` pattern).
 - [ ] **Stay compact.** Promoted keys for the documented, queryable attributes; a single JSON long tail for the rest. Reuse the existing geometry chain (`GeometryPolygon`/`GeometryRing`/`GeometryLineString`) — never add a parallel geometry model.
 - [ ] **Use a stable, source-prefixed id scheme** (`<src>:<type>/<id>`, as OSM uses `osm:way/123`) so re-ingestion is idempotent (`MERGE`) and one source's nodes can be reset cleanly without touching the authoritative graph.
+- [ ] **Keep each source's ids to itself.** Nodes are `MERGE`d on their id, so two sources with the same id would share (and overwrite) one node. `ingest_citygml.py` refuses a file whose gml:ids belong to nodes of another source; a source that reuses another source's ids (a second model of the same buildings with the cadastral ids) is ingested with `--id-prefix`.
 - [ ] **Keep authoritative spatial indexing intact.** Index a new source in its own R-tree layer if it should not pollute authoritative spatial queries.
 
 ---
@@ -198,11 +199,25 @@ and the bbox are unioned, `source` is the last file and `source_files` lists all
 Children without `gml:id` get deterministic content-hash ids (`synthetic_id = true`; the
 3.0 writer does not emit them). Re-ingesting a file is idempotent.
 
+**Source scope of gml:ids (2.0 and 3.0):** only files of the same Dataset may share ids.
+`Dataset.source_files` lists the files ingested into a Dataset (an older Dataset gets the
+sources of its members). Before anything of a file is written, a pre-flight pass looks up
+its gml:ids; one that belongs to a node whose `source` is not a file of the Dataset stops
+the ingest with an error naming examples (skipped when the graph holds no other Dataset;
+`--no-id-check` skips it). `--id-prefix <p>` gives a source that reuses another source's
+ids its own id space: every gml:id and every reference to one gets the prefix while
+parsing, the prefix is recorded as `Dataset.id_prefix` (the same for every file of the
+Dataset; letters, digits, `_`, `-`, `.`), and the strict writer strips it on export.
+
 **Pending references:** predecessor/successor, `relatedTo`, xlinked geometry and
 appearance targets are resolved by the fragment id after parsing
-(`xlink:href="tile_b.gml#road_1"` → `road_1`). A reference whose
-target is not in the graph yet is parked on the source node (`pending_refs_json` +
-plumbing label `PendingRefs`) and retried after every 3.0 ingest and by
+(`xlink:href="tile_b.gml#road_1"` → `road_1`), and only to a node of the referenced
+document: `#road_1` to a node from this file, `tile_b.gml#road_1` to a node whose `source`
+(or `source_files`) is `tile_b.gml`, also in another Dataset; an id that only happens to
+match elsewhere is not linked. A reference into a Dataset with another `id_prefix` is
+resolved with that Dataset's prefix. A reference whose target is not in the graph yet is
+parked on the source node (`pending_refs_json` + plumbing label `PendingRefs`), retried
+when its document is ingested, at the end of every CLI run and by
 `ingest_citygml.py --resolve-pending`; the 3.0 writer re-emits still-pending ones with
 their original href.
 
@@ -336,8 +351,10 @@ their original href.
 (GeometryPrototype)        -[:HAS_SOLID_MEMBER {order}]->     (GeometrySolid)         # CompositeSolid / MultiSolid template
 (GeometryPrototype)        -[:HAS_LINE {order}]->             (GeometryLineString)    # MultiCurve template
 (GeometrySolid {geometry_type:'CompositeSolid'|'MultiSolid'}) -[:HAS_SOLID_MEMBER {order, via_xlink}]-> (GeometrySolid)
-# street trees (enrich_street_trees.py) keep the older variant:
+# two variants exist: the 3.0 codec puts the placement on the feature's HAS_PROTOTYPE edge
+# (above); the 2.0 ingest and the street trees keep one implicit MultiSurface per instance:
 # (SolitaryVegetationObject)-[:HAS_LOD_SURFACE]->(GeometryMultiSurface{is_implicit,…})-[:HAS_PROTOTYPE]->(GeometryPrototype)
+# build_3dtiles draws both.
 
 ── Appearance (3.0) ───────────────────────────────────────────────────────────────
 (Dataset|Entity|GeometryPrototype) -[:HAS_APPEARANCE {order}]-> (Appearance)
@@ -416,6 +433,8 @@ See [LOSSLESS_ROUNDTRIP.md](LOSSLESS_ROUNDTRIP.md) for the full catalogue of Cit
 | `citygml_version`, `gml_version` | `"3.0"` / `"3.2"` (3.0 codec; a Dataset without them is 2.0 / 3.1.1) |
 | `gml_id` | `gml:id` of the CityModel (3.0 codec) |
 | `rtree_layer` | R-tree layer of its features (3.0 codec / `--rtree-layer`) |
+| `source_files` | the files ingested into the Dataset; only they may share gml:ids (see *Source scope of gml:ids*) |
+| `id_prefix` | `--id-prefix` of its files, stripped again on export |
 | `source_type`, `method`, `method_version` | provenance (`--source-type/--method/--method-version`) |
 | `crs` | `gml:Envelope/@srsName` |
 | `srs_dimension` | `gml:Envelope/@srsDimension` (default 3) |
@@ -1246,7 +1265,7 @@ python3 ingest_citygml.py --resolve-pending        # retry parked cross-tile ref
 python3 ingest_citygml.py --backfill-bbox --dataset city_streetspace   # sub-feature bboxes for older graphs
 ```
 
-Options: `--dataset-name`, `--rtree-layer`, `--backfill-bbox [--dataset <id>]` (idempotent, resumable: only nodes still missing `bbox_min_x`), `--source-type` (authoritative | crowdsourced | predicted | reconstructed | sensed), `--method`, `--method-version`, `--resolve-pending`, `--target-crs/--source-crs`, `--writers`, `--parse-workers`, `--nearby-edges`, `--uri/--user/--password` (default `$NEO4J_URI`/`$NEO4J_USER`/`$NEO4J_PASSWORD` or bolt://localhost:7687, neo4j, neo4jneo4j). Use `--parse-workers 1` (default) for street-space tiles: tiles share Road/Section ids.
+Options: `--dataset-name`, `--rtree-layer`, `--backfill-bbox [--dataset <id>]` (idempotent, resumable: only nodes still missing `bbox_min_x`), `--source-type` (authoritative | crowdsourced | predicted | reconstructed | sensed | derived; predicted, reconstructed and derived need `--method` and `--method-version`), `--method`, `--method-version`, `--id-prefix` (own id space for a source that reuses another source's ids), `--no-id-check`, `--district` (District name when the file has no Gemeindeschluessel), `--resolve-pending`, `--target-crs/--source-crs`, `--writers`, `--parse-workers`, `--nearby-edges`, `--uri/--user/--password` (default `$NEO4J_URI`/`$NEO4J_USER`/`$NEO4J_PASSWORD` or bolt://localhost:7687, neo4j, neo4jneo4j). Use `--parse-workers 1` (default) for street-space tiles: tiles share Road/Section ids.
 
 - Input : path to a `.gml` file passed as argument
 - Output: nodes and relationships in Neo4j (see Graph Model above)
@@ -1389,6 +1408,16 @@ python3 build_3dtiles.py --out <dir>           # custom output dir (default outp
 | Relief | ReliefFeature (TIN triangles) | tan |
 | Bridge | Bridge | light brown |
 | Tunnel | Tunnel | mid grey |
+| Transportation surfaces (3.0 spaces, 2.0 `tran:trafficArea`) | TrafficArea / AuxiliaryTrafficArea, HoleSurface / Marking | asphalt / pavement / marking white |
+
+**CityGML 3.0 content (`--tiled`):** a feature is drawn with everything below it on the
+containment edges (`HAS_BUILDING_PART`, `HAS_SECTION`, `HAS_INTERSECTION`,
+`HAS_TRAFFIC_SPACE`, `HAS_MARKING`, `HAS_BRIDGE_PART`, `HAS_NESTED`), so a road is drawn by
+the traffic areas of its spaces (its own lodN MultiSurface is then left out) and a bridge
+with its parts. Implicit geometry of the 3.0 codec (`HAS_PROTOTYPE` from the feature) is
+placed by the edge's matrix and reference point. Lines and points (lod0 networks,
+GenericLogicalSpace curves) are not drawn. The single-GLB mode reads only a feature's own
+geometry.
 
 Geometry is fetched from the graph by `fetch_surfaces()` via Cypher — building/CityObject boundary surfaces, `lodN` solids, and MultiSurfaces (`HAS_BOUNDARY`/`HAS_LOD_SOLID`/`HAS_LOD_SURFACE` → `GeometryPolygon` → `HAS_EXTERIOR_RING`), so all geometry styles (MultiSurface, Solid, lod{N}Geometry, TIN) are captured automatically.
 
