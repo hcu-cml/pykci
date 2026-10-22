@@ -124,6 +124,11 @@ FEATURE_MATERIAL = {
     "Bridge":                   9,
     # Tunnel
     "Tunnel":                   10,
+    # Transportation surfaces (CityGML 3.0 spaces, 2.0 tran:trafficArea)
+    "TrafficArea":              3,
+    "AuxiliaryTrafficArea":     11,
+    "HoleSurface":              11,
+    "Marking":                  12,
 }
 
 MATERIALS_GLTF = [
@@ -138,6 +143,8 @@ MATERIALS_GLTF = [
     {"name": "terrain",        "color": [0.70, 0.58, 0.38, 1.0]},  # sandy soil
     {"name": "bridge",         "color": [0.64, 0.58, 0.48, 1.0]},  # warm limestone concrete
     {"name": "tunnel",         "color": [0.34, 0.30, 0.24, 1.0]},  # dark warm concrete
+    {"name": "auxiliary_traffic", "color": [0.72, 0.68, 0.60, 1.0]},  # pavement, kerbs, verges
+    {"name": "marking",        "color": [0.94, 0.93, 0.90, 1.0]},  # road marking
 ]
 
 _N_MATS = len(MATERIALS_GLTF)
@@ -1130,7 +1137,16 @@ _F64_NODATA = -1.7976931348623157e308   # "absent" marker for FLOAT64 properties
 _META_EXCLUDE = frozenset({
     "bbox", "bbox_wkt", "bbox_lower_corner", "bbox_upper_corner", "location",
     "has_bbox_envelope", "gtype", "composite_surface_id", "multi_surface_id",
+    # CityGML 3.0 codec plumbing and verbatim JSON / XML kept for the round trip
+    "pending_refs_json", "source_files", "rtree_layer", "rtree_stale", "synthetic_id",
+    "materialized_from", "heights_json", "occupancy_json", "volume_json", "area_json",
+    "elevations_json", "dynamic_data_xml",
 })
+# Transportation features whose spaces (CityGML 3.0) carry the traffic areas, and the
+# surface types drawn with their own material.
+_TRANSPORT_TOP = frozenset({"Road", "Railway", "Track", "Square", "Waterway",
+                            "TransportationComplex"})
+_TRAFFIC_SURFACES = frozenset({"TrafficArea", "AuxiliaryTrafficArea", "HoleSurface"})
 _LOD0_ROLES = ("lod0FootPrint", "lod0RoofEdge")
 
 # Openings of a reconstructed LoD3 facade (bldg:Window / bldg:Door) get their own
@@ -1292,6 +1308,14 @@ def _parse_xal(address_xml) -> dict:
         return out
     if root is None:
         return out
+    from citygml_writer import _parse_address
+    version, d = _parse_address(items[0].encode("utf-8"))
+    if version == "3" and d:                     # CityGML 3.0: xAL 3
+        for key, field in (("street", "address_street"), ("number", "address_house_number"),
+                           ("postcode", "address_postcode"), ("locality", "address_locality")):
+            if d.get(key):
+                out[field] = d[key].strip()
+        return out
     for el in root.iter():
         if not isinstance(el.tag, str):
             continue
@@ -1352,41 +1376,59 @@ _GEOM_HOLES = ("OPTIONAL MATCH (p)-[:HAS_INTERIOR_RING]->(ri:GeometryRing) "
                "WITH * ORDER BY ri.ring_index ")
 _Q_BOUNDARY = """
     UNWIND $ids AS fid
-    MATCH (f:Entity {id: fid})-[:HAS_BUILDING_PART*0..]->(g)
+    MATCH (f:Entity {id: fid})-[:HAS_BUILDING_PART|HAS_SECTION|HAS_INTERSECTION|HAS_TRAFFIC_SPACE|HAS_MARKING|HAS_BRIDGE_PART|HAS_NESTED*0..]->(g)
     MATCH (g)-[:HAS_BOUNDARY]->(bs:BoundarySurface)-[:HAS_POLYGON]->(p:GeometryPolygon)
           -[:HAS_EXTERIOR_RING]->(r:GeometryRing)
     WHERE r.pos_list IS NOT NULL AND r.pos_list <> ''
     """ + _GEOM_HOLES + """
-    WITH fid, g.id AS owner, bs.lod AS lod, bs.surface_type AS stype, p.id AS pid,
+    WITH fid, g.id AS owner, coalesce(g.feature_type, '') AS otype, bs.lod AS lod,
+         bs.surface_type AS stype, p.id AS pid,
          r.pos_list AS ext, [x IN collect(ri.pos_list) WHERE x IS NOT NULL AND x <> ''] AS holes
-    RETURN fid, owner, 'boundary' AS kind, lod, stype, '' AS role, pid, ext, holes,
+    RETURN fid, owner, otype, 'boundary' AS kind, lod, stype, '' AS role, pid, ext, holes,
            false AS impl, '' AS tm, '' AS ref
 """
 _Q_SOLID = """
     UNWIND $ids AS fid
-    MATCH (f:Entity {id: fid})-[:HAS_BUILDING_PART*0..]->(g)
+    MATCH (f:Entity {id: fid})-[:HAS_BUILDING_PART|HAS_SECTION|HAS_INTERSECTION|HAS_TRAFFIC_SPACE|HAS_MARKING|HAS_BRIDGE_PART|HAS_NESTED*0..]->(g)
     MATCH (g)-[:HAS_LOD_SOLID]->(s:GeometrySolid)-[:HAS_SURFACE_MEMBER*1..2]->(p:GeometryPolygon)
           -[:HAS_EXTERIOR_RING]->(r:GeometryRing)
     WHERE r.pos_list IS NOT NULL AND r.pos_list <> ''
     """ + _GEOM_HOLES + """
-    WITH fid, g.id AS owner, s.lod AS lod, p.id AS pid,
+    WITH fid, g.id AS owner, coalesce(g.feature_type, '') AS otype, s.lod AS lod, p.id AS pid,
          r.pos_list AS ext, [x IN collect(ri.pos_list) WHERE x IS NOT NULL AND x <> ''] AS holes
-    RETURN fid, owner, 'solid' AS kind, lod, null AS stype, '' AS role, pid, ext, holes,
+    RETURN fid, owner, otype, 'solid' AS kind, lod, null AS stype, '' AS role, pid, ext, holes,
            false AS impl, '' AS tm, '' AS ref
 """
 _Q_MULTISURFACE = """
     UNWIND $ids AS fid
-    MATCH (f:Entity {id: fid})-[:HAS_BUILDING_PART*0..]->(g)
+    MATCH (f:Entity {id: fid})-[:HAS_BUILDING_PART|HAS_SECTION|HAS_INTERSECTION|HAS_TRAFFIC_SPACE|HAS_MARKING|HAS_BRIDGE_PART|HAS_NESTED*0..]->(g)
     MATCH (g)-[hs:HAS_LOD_SURFACE]->(ms:GeometryMultiSurface)-[:HAS_SURFACE_MEMBER]->(p:GeometryPolygon)
           -[:HAS_EXTERIOR_RING]->(r:GeometryRing)
     WHERE r.pos_list IS NOT NULL AND r.pos_list <> ''
     """ + _GEOM_HOLES + """
-    WITH fid, g.id AS owner, coalesce(ms.lod, hs.lod) AS lod, coalesce(hs.role, '') AS role,
+    WITH fid, g.id AS owner, coalesce(g.feature_type, '') AS otype,
+         coalesce(ms.lod, hs.lod) AS lod, coalesce(hs.role, '') AS role,
          p.id AS pid, r.pos_list AS ext,
          [x IN collect(ri.pos_list) WHERE x IS NOT NULL AND x <> ''] AS holes,
          coalesce(ms.is_implicit, false) AS impl,
          coalesce(ms.transformation_matrix, '') AS tm, coalesce(ms.reference_point, '') AS ref
-    RETURN fid, owner, 'ms' AS kind, lod, null AS stype, role, pid, ext, holes, impl, tm, ref
+    RETURN fid, owner, otype, 'ms' AS kind, lod, null AS stype, role, pid, ext, holes, impl, tm, ref
+"""
+# CityGML 3.0 implicit geometry: one GeometryPrototype per template, placed by the
+# matrix and reference point on the feature's HAS_PROTOTYPE edge (furniture, trees).
+_Q_PROTOTYPE = """
+    UNWIND $ids AS fid
+    MATCH (f:Entity {id: fid})-[:HAS_BUILDING_PART|HAS_SECTION|HAS_INTERSECTION|HAS_TRAFFIC_SPACE|HAS_MARKING|HAS_BRIDGE_PART|HAS_NESTED*0..]->(g)
+    MATCH (g)-[hp:HAS_PROTOTYPE]->(t:GeometryPrototype)
+          -[:HAS_SURFACE_MEMBER|HAS_SOLID_MEMBER*1..2]->(p:GeometryPolygon)
+          -[:HAS_EXTERIOR_RING]->(r:GeometryRing)
+    WHERE r.pos_list IS NOT NULL AND r.pos_list <> '' AND hp.transformation_matrix IS NOT NULL
+    """ + _GEOM_HOLES + """
+    WITH fid, g.id AS owner, coalesce(g.feature_type, '') AS otype, hp.lod AS lod, p.id AS pid,
+         r.pos_list AS ext, [x IN collect(ri.pos_list) WHERE x IS NOT NULL AND x <> ''] AS holes,
+         hp.transformation_matrix AS tm, coalesce(hp.reference_point, '0 0 0') AS ref
+    RETURN fid, owner, otype, 'proto' AS kind, lod, null AS stype, '' AS role, pid, ext, holes,
+           true AS impl, tm, ref
 """
 # Reconstructed LoD3 facades (enrich_lod3_facades.py): an additive overlay reached
 # via HAS_LOD3_FACADE. Its wall polygons carry the window/door holes, and the
@@ -1409,7 +1451,7 @@ _Q_LOD3 = """
     """ + _GEOM_HOLES + """
     WITH fid, g.id AS owner, stype, p.id AS pid,
          r.pos_list AS ext, [x IN collect(ri.pos_list) WHERE x IS NOT NULL AND x <> ''] AS holes
-    RETURN fid, owner, 'lod3' AS kind, '3' AS lod, stype, '' AS role, pid, ext, holes,
+    RETURN fid, owner, '' AS otype, 'lod3' AS kind, '3' AS lod, stype, '' AS role, pid, ext, holes,
            false AS impl, '' AS tm, '' AS ref
 """
 _Q_ATTRS = """
@@ -1493,10 +1535,12 @@ def _select_representation(polys: list[dict]) -> list[dict]:
         cand = by_kind["boundary"]
     elif "solid" in by_kind:
         cand = by_kind["solid"]
-    else:
-        cand = by_kind.get("ms", [])
+    elif "ms" in by_kind:
+        cand = by_kind["ms"]
         upper = [p for p in cand if p["role"] not in _LOD0_ROLES]
         cand = upper or cand
+    else:
+        cand = by_kind.get("proto", [])
     if not cand:
         return []
     top = max(_lod_num(p["lod"]) for p in cand)
@@ -1519,6 +1563,10 @@ def _material_type(ft: str, poly: dict, normal_up: float) -> str:
     buildings (solid / multi-surface faces classified by their normal), the
     module feature type for every other CityObject."""
     if ft != "Building":
+        if poly.get("stype") in _TRAFFIC_SURFACES:
+            return poly["stype"]
+        if poly.get("otype") == "Marking":
+            return "Marking"
         return ft
     if poly["stype"]:
         return poly["stype"]
@@ -1781,7 +1829,8 @@ def _build_leaf_tile(job: dict) -> dict:
     with _ctx_driver().session(database="neo4j") as sess:
         attrs = {r["fid"]: r for r in sess.run(_Q_ATTRS, ids=ids).data()}
         geom: dict = {}
-        queries = (_Q_BOUNDARY, _Q_SOLID, _Q_MULTISURFACE) + ((_Q_LOD3,) if ctx["lod3"] else ())
+        queries = (_Q_BOUNDARY, _Q_SOLID, _Q_MULTISURFACE, _Q_PROTOTYPE) + (
+            (_Q_LOD3,) if ctx["lod3"] else ())
         for q in queries:
             for r in sess.run(q, ids=ids):
                 geom.setdefault(r["fid"], {}).setdefault(r["owner"], []).append(dict(r))
@@ -1800,8 +1849,12 @@ def _build_leaf_tile(job: dict) -> dict:
         rec = attrs.get(fid)
         if not owners or rec is None:
             continue
-        polys = [p for owner_polys in owners.values()
-                 for p in _select_representation(owner_polys)]
+        sel = {o: _select_representation(op) for o, op in owners.items()}
+        if rec["ft"] in _TRANSPORT_TOP and any(o != fid and v for o, v in sel.items()):
+            # a CityGML 3.0 road drawn by the areas of its spaces: its own lodN
+            # MultiSurface would cover the same ground a second time
+            sel[fid] = [p for p in sel.get(fid, []) if p["kind"] == "boundary"]
+        polys = [p for v in sel.values() for p in v]
         parts, info = _feature_mesh(rec["ft"], polys)
         if not parts:
             continue
