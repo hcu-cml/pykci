@@ -1189,6 +1189,9 @@ class Writer3(BaseWriter):
     def occupancy(self, el, prefix, p):
         for o in _loads(p.get("occupancy_json"), []):
             oc = self.E(self.E(el, prefix, "occupancy"), "core", "Occupancy")
+            if o.get("number_of_occupants") in (None, ""):
+                self.loss.add("core:numberOfOccupants missing, written as 0 (the schema requires it)",
+                              p.get("id"))
             self.E(oc, "core", "numberOfOccupants", o.get("number_of_occupants") or "0")
             if o.get("interval"):
                 self.E(oc, "core", "interval", o["interval"], codeSpace=o.get("interval_codespace"))
@@ -1330,6 +1333,9 @@ class Writer3(BaseWriter):
         elif ft in ("TrafficSpace", "AuxiliaryTrafficSpace"):
             self.space(el, c, g, "unocc")
             self.cfu(el, "tran", p)
+            if not p.get("granularity"):
+                self.loss.add("tran:granularity missing, written as 'way' (the schema requires it)",
+                              c.id)
             self.E(el, "tran", "granularity", p.get("granularity") or "way")
             if ft == "TrafficSpace":
                 if p.get("traffic_direction"):

@@ -3785,7 +3785,8 @@ def _first_child3(el):
 
 
 def _hash10(el):
-    return hashlib.sha1(etree.tostring(el)).hexdigest()[:10]
+    # without the tail: the whitespace after an element must not change the id
+    return hashlib.sha1(etree.tostring(el, with_tail=False)).hexdigest()[:10]
 
 
 def _codes3(el, prefix, local):
@@ -4202,12 +4203,20 @@ def _collect_dynamizers3(el, owner_id, ctx, batch):
 # ── geometry (GML 3.2) ───────────────────────────────────────────────────────
 
 def _dim_of(pos_el, n_values):
-    d = pos_el.get("srsDimension")
-    if d:
-        try:
-            return int(d)
-        except ValueError:
-            pass
+    """srsDimension of a posList / pos: its own, else the nearest geometry ancestor's, else
+    the file's (root Envelope), and only then guessed from the value count."""
+    el, depth = pos_el, 0
+    while el is not None and depth < 6:
+        d = el.get("srsDimension")
+        if d:
+            try:
+                return int(d)
+            except ValueError:
+                break
+        el, depth = el.getparent(), depth + 1
+    root_dim = getattr(_tls, "srs_dim3", None)
+    if root_dim in (2, 3) and n_values % root_dim == 0:
+        return root_dim
     if n_values % 3 == 0:
         return 3
     return 2 if n_values % 2 == 0 else 3
@@ -5589,23 +5598,30 @@ def _store_pending3(sess, unresolved):
                  "SET n:PendingRefs, n.pending_refs_json = row.j", rows=rows[j:j + 2000])
 
 
-def resolve_pending_refs(sess):
-    """Retry every parked (pending) cross-file reference in the graph. Returns
-    (resolved, remaining)."""
+def resolve_pending_refs(sess, doc=None):
+    """Retry parked (pending) cross-file references: all of them, or with `doc` only those
+    into that file (after it was ingested; references parked before `doc` was recorded
+    are retried too). Returns (resolved, remaining) of the references retried."""
     recs = sess.run("MATCH (n:PendingRefs) RETURN n.id AS id, n.pending_refs_json AS j").data()
     if not recs:
         return 0, 0
-    rows = []
+    rows, kept = [], _defaultdict(list)
     for rec in recs:
         for ref in json.loads(rec["j"] or "[]"):
-            rows.append({"src": rec["id"], **ref})
+            if doc is None or ref.get("doc") in (None, doc):
+                rows.append({"src": rec["id"], **ref})
+            else:
+                kept[rec["id"]].append(ref)
+    if not rows:
+        return 0, 0
+    retried = {r["src"] for r in rows}
     unresolved = _resolve_refs3(sess, rows)
     left = _defaultdict(list)
     for r in unresolved:
         left[r["src"]].append({k: r[k] for k in ("rel", "tgt", "key", "props", "doc", "tgt0")
                                if k in r})
-    upd = [{"id": i, "j": json.dumps(left[i])} for i in left]
-    clear = [rec["id"] for rec in recs if rec["id"] not in left]
+    upd = [{"id": i, "j": json.dumps(kept[i] + left[i])} for i in retried if kept[i] or left[i]]
+    clear = [i for i in retried if not (kept[i] or left[i])]
     if upd:
         sess.run("UNWIND $rows AS row MATCH (n:PendingRefs {id: row.id}) "
                  "SET n.pending_refs_json = row.j", rows=upd)
@@ -5780,6 +5796,10 @@ def _create_indexes3(sess):
             sess.run(f"CREATE INDEX {label.lower()}_id_idx IF NOT EXISTS FOR (n:{label}) ON (n.id)")
         except Exception:
             pass
+    try:
+        sess.run("CREATE INDEX pendingrefs_id_idx IF NOT EXISTS FOR (n:PendingRefs) ON (n.id)")
+    except Exception:
+        pass
     try:   # xlink targets that are the primary MultiSurface of a BoundarySurface
         sess.run("CREATE INDEX boundarysurface_multi_surface_id_idx IF NOT EXISTS "
                  "FOR (n:BoundarySurface) ON (n.multi_surface_id)")
@@ -5844,6 +5864,7 @@ def ingest_citygml3(gml_path: Path, driver, num_writers: int = 3, nearby_edges: 
     dataset_id = dataset_id or _slug(gml_path.stem)
     ds_display_name = dataset_name or source
     ctx = _Ctx3(source, dataset_id, prov, layer, id_prefix)
+    _tls.srs_dim3 = None
 
     reproj_target = _epsg_from_srs(target_crs) if target_crs else None
     if reproj_target:
@@ -5922,6 +5943,7 @@ def ingest_citygml3(gml_path: Path, driver, num_writers: int = 3, nearby_edges: 
                         parent.getparent() is not None and parent.getparent().getparent() is None:
                     crs = el.get("srsName")
                     srs_dim = int(el.get("srsDimension", 3))
+                    _tls.srs_dim3 = int(el.get("srsDimension")) if el.get("srsDimension") else None
                     root_lc = _t3(el, "gml:lowerCorner")
                     root_uc = _t3(el, "gml:upperCorner")
                 continue
@@ -5994,7 +6016,7 @@ def ingest_citygml3(gml_path: Path, driver, num_writers: int = 3, nearby_edges: 
         # ── deferred references (xlinks, relations, predecessor/successor, targets)
         unresolved = _resolve_refs3(sess, ctx.deferred)
         _store_pending3(sess, unresolved)
-        resolved_pending, still_pending = resolve_pending_refs(sess)
+        resolved_pending, still_pending = resolve_pending_refs(sess, doc=source)
 
         # ── PART_OF (top-level features only; sub-features never)
         for i in range(0, len(ctx.top_ids), 1000):
