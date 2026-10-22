@@ -2082,7 +2082,7 @@ def main(argv=None):
         rep.write_text(json.dumps({"dataset": ds.get("id"), "source_version": src_version,
                                    "target_version": target, "writer": writer,
                                    "written": counts, "loss": loss}, indent=2,
-                                  ensure_ascii=False))
+                                  ensure_ascii=False), encoding="utf-8")
         print(f"Written: {out} ({out.stat().st_size // 1024:,} KB) in "
               f"{time.perf_counter() - t0:.1f}s")
         for k, v in sorted(counts.items()):

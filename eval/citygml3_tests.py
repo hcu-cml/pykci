@@ -38,6 +38,7 @@ checks need the OGC schema bundle once: `python tools/validate_citygml.py --setu
 import argparse
 import hashlib
 import json
+import os
 import re
 import subprocess
 import sys
@@ -80,7 +81,8 @@ def sample_expect(path):
 
 def run(cmd, log, ok_codes=(0,)):
     t0 = time.perf_counter()
-    p = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True)
+    p = subprocess.run(cmd, cwd=ROOT, capture_output=True, encoding="utf-8", errors="replace",
+                       env={**os.environ, "PYTHONIOENCODING": "utf-8"})
     log.write(f"$ {' '.join(map(str, cmd))}\n{p.stdout}\n{p.stderr}\n")
     if p.returncode not in ok_codes:
         raise RuntimeError(f"command failed ({p.returncode}): {' '.join(map(str, cmd))}\n{p.stderr[-2000:]}")
@@ -162,7 +164,7 @@ def sample_tests(s, sample, out, log, results, ingest, export):
                                     "xsd": val3[0], "unresolved": val3[1], "census_missing": miss3}
     export(2, v2)
     val2 = validate(v2, 2, log)
-    loss = json.loads(v2.with_suffix(".loss.json").read_text())["loss"]
+    loss = json.loads(v2.with_suffix(".loss.json").read_text(encoding="utf-8"))["loss"]
     results["T4_sample_export_v2"] = {"ok": val2 == ("VALID", 0), "xsd": val2[0],
                                     "unresolved": val2[1], "loss_total": loss["total"],
                                     "loss": loss["by_category"]}
@@ -174,7 +176,7 @@ def sample_tests(s, sample, out, log, results, ingest, export):
     s23 = out / "sample_2to3.gml"
     export(3, s23)
     sval = validate(s23, 3, log)
-    synth = len(re.findall(r'gml:id="[^"]+__space"', s23.read_text()))
+    synth = len(re.findall(r'gml:id="[^"]+__space"', s23.read_text(encoding="utf-8")))
     results["T7_v2_sourced_to_v3"] = {"ok": sval == ("VALID", 0) and synth == tas == n_areas,
                                       "v2_traffic_areas": tas, "synthesised_spaces": synth,
                                       "v3": sval}
@@ -197,7 +199,7 @@ def main():
         raise SystemExit("refusing to run against port 7687 (live pykci graph); use a throwaway DB")
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    log = open(out / "citygml3_tests.log", "w")
+    log = open(out / "citygml3_tests.log", "w", encoding="utf-8")
     conn = ["--uri", args.uri, "--user", args.user, "--password", args.password]
     drv = GraphDatabase.driver(args.uri, auth=(args.user, args.password),
                                notifications_disabled_classifications={"DEPRECATION"})
@@ -241,7 +243,7 @@ def main():
         export(2, dy2)
         d3, d2 = validate(dy3, 3, log), validate(dy2, 2, log)
         dmiss = census(FIX / "dynamizer.gml", dy3, log)
-        dloss = json.loads(dy2.with_suffix(".loss.json").read_text())["loss"]["by_category"]
+        dloss = json.loads(dy2.with_suffix(".loss.json").read_text(encoding="utf-8"))["loss"]["by_category"]
         results["T11_dynamizer"] = {
             "ok": dyn["n"] == 2 and dyn["leaks"] == 0 and dyn["values"] == 3 and dg1 == dg2
             and d3 == ("VALID", 0) and d2 == ("VALID", 0) and dmiss == 0
@@ -359,7 +361,7 @@ def main():
                                        "value_differences": diffs, "seconds": round(dt, 1),
                                        "rerun_written": rerun}
     drv.close()
-    (out / "citygml3_tests.json").write_text(json.dumps(results, indent=2, ensure_ascii=False))
+    (out / "citygml3_tests.json").write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
     for k, v in results.items():
         print(f"{'PASS' if v['ok'] else 'FAIL'}  {k}: " +
               json.dumps({x: y for x, y in v.items() if x not in ('ok', 'counts', 'expected', 'loss')}))

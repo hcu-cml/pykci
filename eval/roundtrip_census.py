@@ -190,7 +190,7 @@ def main():
     print(sep)
     if args.json:
         report["missing_total"] = total_lost
-        Path(args.json).write_text(json.dumps(report, indent=2, ensure_ascii=False))
+        Path(args.json).write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
     if total_lost == 0:
         print("  RESULT: LOSSLESS — export covers every source element/attr/text/coord")
         print(sep)

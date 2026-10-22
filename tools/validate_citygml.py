@@ -421,7 +421,7 @@ def main(argv=None) -> int:
         if not res["schema_valid"] or bad_refs:
             rc = max(rc, 1)
     if args.json:
-        args.json.write_text(json.dumps(results if len(results) != 1 else results[0], indent=1, ensure_ascii=False))
+        args.json.write_text(json.dumps(results if len(results) != 1 else results[0], indent=1, ensure_ascii=False), encoding="utf-8")
     return rc
 
 
