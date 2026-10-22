@@ -1189,7 +1189,7 @@ Dataset CRS (read from `srsName`) → horizontal EPSG via `_horiz_epsg_from_srs(
 Handles `EPSG:NNNNN`, `urn:ogc:def:crs:EPSG::NNNNN`, ADV UTM (`ETRS89_UTM32/33`), and ADV Gauss-Krüger (`GK2`–`GK5`). Falls back to the raw `srsName` string for pyproj to resolve.
 
 **Geoid undulation (`_geoid_m`):**  
-Uses a compound-CRS → EPSG:4979 pyproj transformation at the dataset bbox centroid. Known mappings: ETRS89-UTM32/33 and DE_DHDN GK2–GK5 (DHHN92 ≈ DHHN2016). Returns 0.0 m with a printed note for unrecognised CRS or when PROJ datum-grid files are absent.
+Uses a compound-CRS → EPSG:4979 pyproj transformation at the dataset bbox centroid. Known mappings: ETRS89-UTM32/33 and DE_DHDN GK2–GK5 (DHHN92 ≈ DHHN2016). Returns 0.0 m with a printed warning for unrecognised CRS, a failing transformation, or when PROJ has no geoid grid (its "ballpark" fallback leaves heights unchanged). `--geoid-offset M` sets the undulation instead. The tileset records it as `extras.pykci.geoid_offset_m` with `geoid_source` (the PROJ transformation, `--geoid-offset`, or `none`); tilesets and terrain built for the same city take their offset from there, so all layers share one vertical convention.
 
 **Tile transform convention:**  
 The 3D Tiles spec remaps glTF axes before applying the tile transform (glTF +Y → local +Z/up; glTF −Z → local +Y/north). The tile transform therefore uses columns `[East_ECEF | North_ECEF | Up_ECEF | Center_ECEF]`, **not** `[East | Up | −North]`. Using the wrong column order rotates all geometry 90°.

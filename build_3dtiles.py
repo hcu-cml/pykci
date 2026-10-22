@@ -334,32 +334,42 @@ def _horiz_epsg_from_srs(srs_name: str) -> str:
     return srs_name
 
 
-def _geoid_m(srs_name: str, sample_x: float, sample_y: float, sample_z: float) -> float:
-    """Estimate the geoid undulation (m) at a sample point in the dataset CRS.
+def _geoid_m(srs_name: str, sample_x: float, sample_y: float, sample_z: float,
+             override: float | None = None) -> tuple[float, str]:
+    """Geoid undulation (m) at a sample point in the dataset CRS, and where it comes from.
 
-    Attempts a compound-CRS → EPSG:4979 (WGS84 3D ellipsoidal) transformation
-    via pyproj. The difference between the transformed ellipsoidal height and
-    the input orthometric height gives the geoid undulation.
+    `override` (--geoid-offset) wins. Otherwise a compound-CRS → EPSG:4979 (WGS84 3D
+    ellipsoidal) transformation via pyproj: the difference between the transformed
+    ellipsoidal height and the input orthometric height is the undulation.
 
-    Returns 0.0 and prints a note when:
-      - no compound CRS mapping is found for the srsName pattern, or
-      - PROJ datum-grid files are unavailable.
+    Returns (0.0, 'none') and prints a warning when no compound CRS mapping is found for
+    the srsName, the transformation fails, or PROJ has no geoid grid for it: PROJ then
+    falls back to a 'ballpark' transformation that leaves the height unchanged, which
+    would silently give 0 m instead of the ~40 m of Germany.
     """
+    if override is not None:
+        return float(override), "--geoid-offset"
     compound = None
     for pat, epsg in _ADV_COMPOUND.items():
         if pat.lower() in srs_name.lower():
             compound = epsg
             break
     if compound is None:
-        print(f"  Note: no compound CRS mapping for '{srs_name}'; geoid offset = 0.0 m")
-        return 0.0
+        print(f"  Note: no compound CRS mapping for '{srs_name}'; geoid offset = 0.0 m "
+              "(pass --geoid-offset to set it)")
+        return 0.0, "none"
     try:
         t3d = Transformer.from_crs(compound, "EPSG:4979", always_xy=True)
         _, _, h_ell = t3d.transform(sample_x, sample_y, sample_z)
-        return h_ell - sample_z
     except Exception as exc:
-        print(f"  Note: geoid transform unavailable ({exc}); geoid offset = 0.0 m")
-        return 0.0
+        print(f"  WARNING: geoid transform unavailable ({exc}); geoid offset = 0.0 m "
+              "(pass --geoid-offset to set it)")
+        return 0.0, "none"
+    if "ballpark" in t3d.description.lower() or not np.isfinite(h_ell) or abs(h_ell - sample_z) < 1e-6:
+        print(f"  WARNING: PROJ has no geoid grid for {compound} (ballpark transformation); geoid offset = "
+              "0.0 m. Install the grid (projsync) or pass --geoid-offset")
+        return 0.0, "none"
+    return h_ell - sample_z, f"PROJ {compound} -> EPSG:4979 at the dataset centre"
 
 
 def enu_basis(lon_deg: float, lat_deg: float):
@@ -851,7 +861,8 @@ def pack_glb(mat_positions, mat_normals, mat_indices,
 # ---------------------------------------------------------------------------
 
 def build_3dtiles(source: str, out_dir: Path, color_by: str = "type",
-                  palette: str = "soft", opacity: float | None = None):
+                  palette: str = "soft", opacity: float | None = None,
+                  geoid_offset: float | None = None):
     # ---- 1. Read CRS and bbox from the Dataset node in Neo4j ---------------
     driver = _connect()
     print("Connected to Neo4j.")
@@ -906,8 +917,8 @@ def build_3dtiles(source: str, out_dir: Path, color_by: str = "type",
             mid_z = (lc_v[2] + uc_v[2]) / 2 if len(lc_v) > 2 else 0.0
         else:
             mid_x = mid_y = mid_z = 0.0
-        geoid_m = _geoid_m(srs_name, mid_x, mid_y, mid_z)
-        print(f"  Geoid offset: {geoid_m:+.2f} m")
+        geoid_m, geoid_source = _geoid_m(srs_name, mid_x, mid_y, mid_z, geoid_offset)
+        print(f"  Geoid offset: {geoid_m:+.2f} m ({geoid_source})")
 
         # ---- 2. Fetch surfaces from graph and project to ECEF ---------------
         print("Fetching geometry from graph and projecting to ECEF …")
@@ -1074,6 +1085,7 @@ def build_3dtiles(source: str, out_dir: Path, color_by: str = "type",
 
     tileset = {
         "asset": {"version": "1.1", "tilesetVersion": "1.0"},
+        "extras": {"pykci": {"geoid_offset_m": round(geoid_m, 3), "geoid_source": geoid_source}},
         "geometricError": 500,
         "root": {
             "transform":      transform,
@@ -1931,7 +1943,8 @@ def _region(bounds, z, to_wgs84, geoid_m) -> list:
 def build_3dtiles_tiled(source: str, out_dir: Path, color_by: str = "type",
                         palette: str = "soft", opacity: float | None = None,
                         max_features: int = 1500, overview_features: int = 1500,
-                        attributes: bool = True, workers: int = 1, lod3: bool = True):
+                        attributes: bool = True, workers: int = 1, lod3: bool = True,
+                        geoid_offset: float | None = None):
     t_start = time.perf_counter()
     driver = _connect()
     print("Connected to Neo4j.")
@@ -1963,8 +1976,8 @@ def build_3dtiles_tiled(source: str, out_dir: Path, color_by: str = "type",
     z0s = np.array([f["z0"] for f in feats if f["z0"] is not None] or [0.0])
     mid_x, mid_y, mid_z = float((xs.min() + xs.max()) / 2), float((ys.min() + ys.max()) / 2), \
         float(np.median(z0s))
-    geoid_m = _geoid_m(srs_name, mid_x, mid_y, mid_z)
-    print(f"  Geoid offset: {geoid_m:+.2f} m")
+    geoid_m, geoid_source = _geoid_m(srs_name, mid_x, mid_y, mid_z, geoid_offset)
+    print(f"  Geoid offset: {geoid_m:+.2f} m ({geoid_source})")
     c_lon, c_lat = to_wgs84.transform(mid_x, mid_y)
     center_ecef = np.array(lonlat_to_ecef(c_lon, c_lat, mid_z + geoid_m))
     east_v, north_v, up_v = enu_basis(c_lon, c_lat)
@@ -2080,7 +2093,7 @@ def build_3dtiles_tiled(source: str, out_dir: Path, color_by: str = "type",
         "extras": {"pykci": {
             "dataset": source, "crs": srs_name, "horizontal_crs": horiz_epsg,
             "source_crs": ds.get("source_crs"),
-            "geoid_offset_m": round(geoid_m, 3),
+            "geoid_offset_m": round(geoid_m, 3), "geoid_source": geoid_source,
             "center": {"longitude": c_lon, "latitude": c_lat,
                        "height": round(mid_z + geoid_m, 3)},
             "ground_height_median": round(mid_z + geoid_m, 3),
@@ -2160,6 +2173,10 @@ if __name__ == "__main__":
     ap.add_argument("--workers", type=int, default=1,
                     help="--tiled: parallel worker processes for the leaf tiles "
                          f"(default 1; this machine has {os.cpu_count()} CPUs)")
+    ap.add_argument("--geoid-offset", type=float, default=None,
+                    help="geoid undulation in m (orthometric + offset = ellipsoidal height) instead of "
+                         "deriving it with PROJ, e.g. where PROJ has no geoid grid; recorded in "
+                         "extras.pykci.geoid_offset_m, which other tilesets and terrain align to")
     ap.add_argument("--no-lod3", action="store_false", dest="lod3",
                     help="--tiled: draw the authoritative LoD2 shell even where a "
                          "reconstructed LoD3 facade (HAS_LOD3_FACADE) exists")
@@ -2189,10 +2206,12 @@ if __name__ == "__main__":
                                      max_features=args.max_features,
                                      overview_features=args.overview_features,
                                      attributes=args.attributes == "all",
-                                     workers=args.workers, lod3=args.lod3)
+                                     workers=args.workers, lod3=args.lod3,
+                                     geoid_offset=args.geoid_offset)
     else:
         result = build_3dtiles(source, Path(args.out), color_by=args.color_by,
-                               palette=args.palette, opacity=args.opacity)
+                               palette=args.palette, opacity=args.opacity,
+                               geoid_offset=args.geoid_offset)
     if result is None or result[0] is None:
         print("No output generated (no surface polygons found).")
         sys.exit(1)
