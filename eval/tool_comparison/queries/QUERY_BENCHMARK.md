@@ -349,3 +349,9 @@ bash eval/tool_comparison/queries/run_3dcitydb.sh     # -> results_3dcitydb.txt
 ```
 The question prompts are in `queries_citizen.txt` / `queries_expert.txt`; the authored queries are
 the runner scripts; raw answers + per-query timings are the `results_*.txt` files.
+
+To put the same questions to an LLM in one batch (read-only) and grade its queries against the
+reference queries in `queries_*_solutions.txt`, use `eval_llm_queries.py`; see
+[`README.md`](README.md). Those reference queries read the roof-material keys that
+`ingest_roof_materials.py` writes (`predicted_roof_material_<i>` and its `_coverage`), with
+which C9 and E7 are answerable.
