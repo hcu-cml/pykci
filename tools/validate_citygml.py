@@ -426,4 +426,7 @@ def main(argv=None) -> int:
 
 
 if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):   # a cp1252 console must not crash on non-ASCII output
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(errors="replace")
     sys.exit(main())

@@ -5892,6 +5892,9 @@ def ingest_citygml3(gml_path: Path, driver, num_writers: int = 3, nearby_edges: 
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
+    for _stream in (sys.stdout, sys.stderr):   # a cp1252 console must not crash on non-ASCII output
+        if hasattr(_stream, "reconfigure"):
+            _stream.reconfigure(errors="replace")
     import argparse
 
     parser = argparse.ArgumentParser(description="Ingest CityGML 2.0 or 3.0 (all modules) into "
