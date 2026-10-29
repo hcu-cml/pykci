@@ -104,7 +104,8 @@ class CityGMLProfile:
                   "gen": "generics/3.0/generics.xsd", "luse": "landuse/3.0/landUse.xsd",
                   "dem": "relief/3.0/relief.xsd", "tran": "transportation/3.0/transportation.xsd",
                   "tun": "tunnel/3.0/tunnel.xsd", "veg": "vegetation/3.0/vegetation.xsd",
-                  "wtr": "waterbody/3.0/waterBody.xsd"}
+                  "wtr": "waterbody/3.0/waterBody.xsd", "dyn": "dynamizer/3.0/dynamizer.xsd",
+                  "pcl": "pointcloud/3.0/pointCloud.xsd"}
         files = files3 if self.version == "3.0" else files2
         for p in ["core"] + [p for p in prefixes if p != "core"]:
             if p in files and p in self.ns:

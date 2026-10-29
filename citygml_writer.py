@@ -43,14 +43,15 @@ OWN_RELS = (
     "HAS_SECTION", "HAS_INTERSECTION", "HAS_TRAFFIC_SPACE", "HAS_MARKING", "HAS_HOLE",
     "HAS_CLEARANCE_SPACE", "HAS_BOUNDARY", "HAS_OPENING", "HAS_BUILDING_PART",
     "HAS_BRIDGE_PART", "HAS_NESTED", "HAS_OUTER_INSTALLATION", "HAS_INTERIOR_INSTALLATION",
-    "HAS_INTERIOR_ROOM", "HAS_ROOM_INSTALLATION", "HAS_INTERIOR_FURNITURE", "HAS_LOD_SOLID",
+    "HAS_INTERIOR_ROOM", "HAS_ROOM_INSTALLATION", "HAS_INTERIOR_FURNITURE", "HAS_SUBDIVISION",
+    "HAS_POINT_CLOUD", "HAS_LOD_SOLID",
     "HAS_LOD_SURFACE", "HAS_LOD_GEOMETRY", "HAS_LOD_MULTICURVE", "HAS_LOD_POINT",
     "HAS_TERRAIN_INTERSECTION", "HAS_LINE", "HAS_SURFACE_MEMBER", "HAS_SOLID_MEMBER",
     "HAS_POLYGON", "HAS_EXTERIOR_RING", "HAS_INTERIOR_RING", "HAS_APPEARANCE",
     "HAS_SURFACE_DATA", "HAS_DYNAMIZER",
 )
 REF_RELS = ("RELATED_TO", "PREDECESSOR", "SUCCESSOR", "TARGETS", "HAS_PROTOTYPE",
-            "HAS_GROUP_MEMBER")
+            "HAS_GROUP_MEMBER", "HAS_BUILDING_UNIT", "HAS_STOREY")
 _ALL_RELS = list(OWN_RELS + REF_RELS)
 
 _BLDG_SURF = {"WallSurface", "RoofSurface", "GroundSurface", "FloorSurface",
@@ -119,7 +120,8 @@ CLIP_RELS = {"HAS_SECTION", "HAS_INTERSECTION", "HAS_TRAFFIC_SPACE", "HAS_MARKIN
 FEATURE_RELS = ("HAS_SECTION", "HAS_INTERSECTION", "HAS_TRAFFIC_SPACE", "HAS_MARKING", "HAS_HOLE",
                 "HAS_CLEARANCE_SPACE", "HAS_BOUNDARY", "HAS_OPENING", "HAS_NESTED",
                 "HAS_BRIDGE_PART", "HAS_BUILDING_PART", "HAS_OUTER_INSTALLATION",
-                "HAS_INTERIOR_INSTALLATION", "HAS_INTERIOR_ROOM")
+                "HAS_INTERIOR_INSTALLATION", "HAS_INTERIOR_ROOM", "HAS_ROOM_INSTALLATION",
+                "HAS_INTERIOR_FURNITURE", "HAS_SUBDIVISION", "HAS_POINT_CLOUD")
 
 
 def bbox_outside(props, box):
@@ -270,6 +272,7 @@ class BaseWriter:
         self.clip = bool(opts.get("clip"))
         self._content: dict = {}
         self.stats = Counter()
+        self.xlinked: list = []            # (holder, polygon Node) written as xlink:href
 
     # -- clip support -----------------------------------------------------------
     _GEOM_RELS = ("HAS_POLYGON", "HAS_LOD_SURFACE", "HAS_LOD_SOLID", "HAS_LOD_MULTICURVE",
@@ -343,7 +346,8 @@ class BaseWriter:
 
     def codes(self, parent, prefix, local, p, key):
         vals = p.get(f"{key}_list") or ([p[key]] if p.get(key) not in (None, "") else [])
-        css = p.get(f"{key}_codespace_list") or [p.get(f"{key}_codespace")] * len(vals)
+        ck = key[:-5] if key.endswith("_code") else key     # function_code → function_codespace
+        css = p.get(f"{ck}_codespace_list") or [p.get(f"{ck}_codespace")] * len(vals)
         for v, cs in zip(vals, css):
             self.code(parent, prefix, local, v, cs or None)
 
@@ -365,7 +369,9 @@ class BaseWriter:
         ns = _frag_ns(frag)
         if ns in self.P.known_namespaces():
             try:
-                parent.append(etree.fromstring(frag))
+                x = etree.fromstring(frag)
+                etree.cleanup_namespaces(x)     # drop the source root's unused declarations
+                parent.append(x)
                 return True
             except etree.XMLSyntaxError:
                 pass
@@ -382,6 +388,22 @@ class BaseWriter:
         lr = self.E(parent, "gml", "LinearRing")
         self.set_id(lr, ring.id, ring.p.get("synthetic_id"))
         self.poslist(lr, ring)
+
+    def inline_unwritten(self):
+        """After a feature is written: a polygon referenced by xlink (e.g. from a solid's
+        shell) whose owner was not written (an LoD2 window surface in a 2.0 document, which
+        has LoD3/4 openings only) is written inline at its first reference, so the geometry
+        stays and no reference dangles."""
+        for holder, poly in self.xlinked:
+            if poly.id in self.written or not poly.expanded or "GeometryPolygon" not in poly.labels:
+                continue
+            tmp = etree.Element("tmp")
+            pel = self.polygon(tmp, poly)
+            if pel is not None:
+                del holder.attrib[XLINK_HREF]
+                holder.append(pel)
+                self.stats["xlinked polygons written inline (owner not written)"] += 1
+        self.xlinked = []
 
     def polygon(self, parent, poly):
         pel = self.E(parent, "gml", "Polygon")
@@ -407,13 +429,18 @@ class BaseWriter:
         if orient:
             os_ = self.E(sm, "gml", "OrientableSurface", orientation=orient)
             holder = self.E(os_, "gml", "baseSurface")
+        if target.partial and rp.get("href"):          # pending cross-document reference
+            holder.set(XLINK_HREF, self.oref(rp["href"]))
+            return
         if rp.get("via_xlink") or target.partial or target.id in self.written:
             self.href(holder, target.id, "surfaceMember")
+            if not target.partial and target.id not in self.written:
+                self.xlinked.append((holder, target))
             return
         if "GeometryCompositeSurface" in target.labels:
             cs = self.E(holder, "gml", "CompositeSurface")
             self.set_id(cs, target.id, target.p.get("synthetic_id"))
-            for crp, c in target.kids("HAS_SURFACE_MEMBER"):
+            for crp, c in refs_with_pending(target, "HAS_SURFACE_MEMBER"):
                 self.member(cs, crp, c)
             return
         tmp = etree.Element("tmp")
@@ -434,7 +461,7 @@ class BaseWriter:
             self.set_id(ms, first.id, first.p.get("synthetic_id"))
             if first.p.get("srs_name"):
                 ms.set("srsName", first.p["srs_name"])
-            members = [m for n in ms_nodes for m in n.kids("HAS_SURFACE_MEMBER")]
+            members = [m for n in ms_nodes for m in refs_with_pending(n, "HAS_SURFACE_MEMBER")]
             composite_id = composite_id or first.p.get("composite_surface_id")
         else:
             self.set_id(ms, ms_id, synthetic)
@@ -478,7 +505,9 @@ class BaseWriter:
         cs_id = snode.p.get("composite_surface_id")
         if cs_id and cs_id not in self.written:
             self.set_id(shell, cs_id)
-        for rp, c in snode.kids("HAS_SURFACE_MEMBER"):
+        # members still pending (an xlink whose target is not in the graph, e.g. missing
+        # from the source file) are written as the reference the source had
+        for rp, c in refs_with_pending(snode, "HAS_SURFACE_MEMBER"):
             self.member(shell, rp, c)
         return el
 
@@ -660,6 +689,30 @@ def geoms(node):
     for rp, pr in node.kids("HAS_PROTOTYPE"):
         g["impl"][str(rp.get("lod") or "1")] = (rp, pr)
     return g
+
+
+def lift_to_lod4(g):
+    """A geoms() dict relabelled to LoD4 for the 2.0 interior (rooms, their furniture and
+    installations, interior building installations are LoD4-only in 2.0): of every
+    geometry kind the highest LoD is kept as '4'. Returns (g4, [dropped 'kind lodN'])."""
+    g4 = {k: (defaultdict(list) if isinstance(v, defaultdict) else {}) for k, v in g.items()}
+    dropped = []
+    for kind in ("solid", "geom", "point", "tic", "impl", "impl_ms"):
+        lods = sorted(g[kind], key=int)
+        if lods:
+            g4[kind]["4"] = g[kind][lods[-1]]
+            dropped += [f"{kind} lod{lod}" for lod in lods[:-1]]
+    for kind in ("ms", "mc"):
+        top = max((lod for lod, _r in g[kind]), key=int, default=None)
+        for (lod, role), v in g[kind].items():
+            if lod == top:
+                g4[kind][("4", role)] = v
+                if kind == "mc" and (lod, role) in g["mc_id"]:
+                    g4["mc_id"][("4", role)] = g["mc_id"][(lod, role)]
+            else:
+                dropped.append(f"{kind} lod{lod}")
+    g4["ms_role"] = g["ms_role"]
+    return g4, dropped
 
 
 def implicit_items(node, g=None):
@@ -902,6 +955,9 @@ class Writer3(BaseWriter):
                                     ti.p.get("multi_curve_id"))
             if "4" in g["tic"] and "3" in g["tic"]:
                 self.loss.add("lod4TerrainIntersection (LoD4 removed in 3.0)", n.id)
+            self.point_clouds(el, n)
+        elif n.kids("HAS_POINT_CLOUD"):
+            self.loss.add("point cloud of a logical space (not allowed in 3.0)", n.id)
         if base == "occ":
             items = implicit_items(n, g)
             for lod in ("1", "2", "3"):
@@ -1110,7 +1166,7 @@ class Writer3(BaseWriter):
             self.verbatim(el, f, "area_xml")
         g = geoms(s)
         # the primary MultiSurface (HAS_POLYGON) joins the other LoDs
-        polys = s.kids("HAS_POLYGON")
+        polys = refs_with_pending(s, "HAS_POLYGON")
         if polys:
             lod = str(p.get("lod") or "2")
             lod = "3" if lod == "4" else lod
@@ -1120,6 +1176,7 @@ class Writer3(BaseWriter):
             prim.out = [("HAS_SURFACE_MEMBER", rp, c) for rp, c in polys]
             g["ms"][(lod, "multisurface")].insert(0, (None, prim))
         self.lod_geometry(el, s, g, thematic=True)
+        self.point_clouds(el, s)
         if st in ("TrafficArea", "AuxiliaryTrafficArea"):
             self.code(el, "tran", "class", p.get("class"), p.get("class_codespace"))
             self.codes(el, "tran", "function", p, "function")
@@ -1141,11 +1198,73 @@ class Writer3(BaseWriter):
         self.head(el, o)
         self.cityobject(el, o)
         self.lod_geometry(el, o, geoms(o), thematic=True)
+        self.point_clouds(el, o)
+
+    def filling(self, holder, o):
+        """Opening{filling_type Window|Door} → con:Window / con:Door (a filling element:
+        an occupied space below a constructive element)."""
+        kind = "Door" if (o.p.get("opening_type") or "").startswith("Door") else "Window"
+        el = self.E(holder, "con", kind)
+        self.set_id(el, o.id, o.p.get("synthetic_id"))
+        self.head(el, o)
+        self.cityobject(el, o)
+        self.space(el, o, geoms(o), "occ")
+        self.cfu(el, "con", o.p)
+        if kind == "Door":
+            self.address(el, "con", o)
+
+    def point_clouds(self, el, n):
+        """HAS_POINT_CLOUD → core:pointCloud/pcl:PointCloud (mimeType, pointFile,
+        pointFileSrsName, points as one gml:MultiPoint)."""
+        for _rp, pc in n.kids("HAS_POINT_CLOUD"):
+            p = pc.p
+            c = self.E(self.E(el, "core", "pointCloud"), "pcl", "PointCloud")
+            self.set_id(c, pc.id, p.get("synthetic_id"))
+            self.head(c, pc)
+            for key, local in (("mime_type", "mimeType"), ("point_file", "pointFile"),
+                               ("point_file_srs_name", "pointFileSrsName")):
+                if p.get(key):
+                    attrs = {"codeSpace": p[f"{key}_codespace"]} if p.get(f"{key}_codespace") else {}
+                    self.E(c, "pcl", local, p[key], **attrs)
+            if p.get("points_pos_list") is None:
+                continue
+            mp = self.E(self.E(c, "pcl", "points"), "gml", "MultiPoint",
+                        srsName=p.get("multipoint_srs_name"),
+                        srsDimension=p.get("multipoint_srs_dimension"))
+            self.set_id(mp, p.get("multipoint_id"))
+            vals = (p.get("points_pos_list") or "").split()
+            dim = int(p.get("points_srs_dimension") or 3)
+            ids = p.get("point_ids") or []
+            n_single = len(vals) // dim if p.get("points_member_style") == "pointMember" \
+                else int(p.get("points_n_member") or 0)
+            members = None
+            for i in range(len(vals) // dim):
+                if i < n_single:
+                    holder = self.E(mp, "gml", "pointMember")
+                else:
+                    if members is None:
+                        members = self.E(mp, "gml", "pointMembers")
+                    holder = members
+                pt = self.E(holder, "gml", "Point")
+                if i < len(ids) and ids[i]:
+                    self.set_id(pt, ids[i])
+                self.E(pt, "gml", "pos", " ".join(vals[i * dim:(i + 1) * dim]))
 
     def cfu(self, el, prefix, p, cls_key="class", fn_key="function", us_key="usage"):
         self.code(el, prefix, "class", p.get(cls_key), p.get(f"{cls_key.replace('_code', '')}_codespace"))
         self.codes(el, prefix, "function", p, fn_key)
         self.codes(el, prefix, "usage", p, us_key)
+
+    def elevations(self, el, prefix, p):
+        """<prefix>:elevation/con:Elevation (con: on constructions, bldg: on subdivisions);
+        the value is a gml:DirectPosition with its srsName / srsDimension / axis and uom labels."""
+        for e in _loads(p.get("elevations_json"), []):
+            ev = self.E(self.E(el, prefix, "elevation"), "con", "Elevation")
+            self.E(ev, "con", "elevationReference", e.get("reference") or "unknown",
+                   codeSpace=e.get("reference_codespace"))
+            self.E(ev, "con", "elevationValue", e.get("value") or "", srsName=e.get("srs_name"),
+                   srsDimension=e.get("srs_dimension"), axisLabels=e.get("axis_labels"),
+                   uomLabels=e.get("uom_labels"))
 
     def construction(self, el, n):
         p = n.p
@@ -1162,11 +1281,7 @@ class Writer3(BaseWriter):
             dod = f"{str(p['year_of_demolition'])[:4]}-01-01"
         if dod:
             self.E(el, "con", "dateOfDemolition", _to_date(dod))
-        for e in _loads(p.get("elevations_json"), []):
-            ev = self.E(self.E(el, "con", "elevation"), "con", "Elevation")
-            self.E(ev, "con", "elevationReference", e.get("reference") or "unknown",
-                   codeSpace=e.get("reference_codespace"))
-            self.E(ev, "con", "elevationValue", e.get("value") or "", srsDimension=e.get("srs_dimension"))
+        self.elevations(el, "con", p)
         heights = _loads(p.get("heights_json"), [])
         if not heights and p.get("measured_height") is not None:
             heights = [{"high_reference": p.get("height_high_reference") or "highestRoofEdge",
@@ -1379,22 +1494,48 @@ class Writer3(BaseWriter):
                 self.generic_feature(self.E(el, "brid", "bridgePart"), bp, "brid", "BridgePart",
                                      "occ", True)
 
-    def nested_bridge(self, holder, nf, local):
-        el = self.E(holder, "brid", local)
+    def nested_bridge(self, holder, nf, local, prefix="brid"):
+        """NestedFeature → brid:BridgeConstructiveElement / brid:BridgeInstallation /
+        bldg:BuildingConstructiveElement (with its con:filling Windows / Doors)."""
+        el = self.E(holder, prefix, local)
         self.set_id(el, nf.id, nf.p.get("synthetic_id"))
         self.head(el, nf)
         self.cityobject(el, nf)
         self.space(el, nf, geoms(nf), "occ")
         p = nf.p
-        if local == "BridgeConstructiveElement":
+        if local.endswith("ConstructiveElement"):
             if p.get("is_structural_element") is not None:
                 self.E(el, "con", "isStructuralElement", p["is_structural_element"])
+            for rp, o in nf.kids("HAS_OPENING"):
+                self.filling(self.E(el, "con", "filling"), o)
         else:
             rel = p.get("relation_to_construction") or \
                 ("inside" if nf.p.get("feature_kind") == "IntBridgeInstallation" else None)
             if rel:
                 self.E(el, "con", "relationToConstruction", rel)
-        self.cfu(el, "brid", p)
+        self.cfu(el, prefix, p)
+
+    def building_cfu(self, el, p):
+        self.code(el, "bldg", "class", p.get("class_code"), p.get("class_codespace"))
+        self.codes(el, "bldg", "function", p, "function_code")
+        self.codes(el, "bldg", "usage", p, "usage_code")
+
+    def building_members(self, el, n):
+        """bldg:buildingConstructiveElement, buildingInstallation, buildingRoom,
+        buildingFurniture (the order shared by AbstractBuilding and, with installation
+        and furniture swapped, AbstractBuildingSubdivision: see subdivision())."""
+        for _rp, nf in n.kids("HAS_NESTED"):
+            if nf.p.get("feature_kind") == "BuildingConstructiveElement":
+                self.nested_bridge(self.E(el, "bldg", "buildingConstructiveElement"), nf,
+                                   "BuildingConstructiveElement", prefix="bldg")
+            else:
+                self.loss.add(f"{nf.p.get('feature_kind')} on a building (no 3.0 mapping)", nf.id)
+        for _rp, inst in n.kids("HAS_OUTER_INSTALLATION", "HAS_INTERIOR_INSTALLATION"):
+            self.installation(self.E(el, "bldg", "buildingInstallation"), inst)
+        for _rp, room in n.kids("HAS_INTERIOR_ROOM"):
+            self.room(self.E(el, "bldg", "buildingRoom"), room)
+        for _rp, f in n.kids("HAS_INTERIOR_FURNITURE"):
+            self.furniture(self.E(el, "bldg", "buildingFurniture"), f)
 
     def building(self, holder, n, part=False):
         el = self.E(holder, "bldg", "BuildingPart" if part else "Building")
@@ -1404,11 +1545,7 @@ class Writer3(BaseWriter):
         self.space(el, n, geoms(n), "occ")
         self.construction(el, n)
         p = n.p
-        self.code(el, "bldg", "class", p.get("class_code"), p.get("class_codespace"))
-        for key, local in (("function_code", "function"), ("usage_code", "usage")):
-            vals = p.get(f"{key}_list") or ([p[key]] if p.get(key) else [])
-            for v in vals:
-                self.code(el, "bldg", local, v, p.get(f"{key.replace('_code', '')}_codespace"))
+        self.building_cfu(el, p)
         self.code(el, "bldg", "roofType", p.get("roof_type_code"), p.get("roof_type_codespace"))
         for key, local in (("storeys_above_ground", "storeysAboveGround"),
                            ("storeys_below_ground", "storeysBelowGround")):
@@ -1418,17 +1555,50 @@ class Writer3(BaseWriter):
                            ("storey_heights_below_ground", "storeyHeightsBelowGround")):
             if p.get(key):
                 self.E(el, "bldg", local, p[key], uom=p.get(f"{key}_uom") or "m")
-        for rel in ("HAS_OUTER_INSTALLATION", "HAS_INTERIOR_INSTALLATION"):
-            for _rp, inst in n.kids(rel):
-                self.installation(self.E(el, "bldg", "buildingInstallation"), inst,
-                                  inside=rel == "HAS_INTERIOR_INSTALLATION")
-        for _rp, room in n.kids("HAS_INTERIOR_ROOM"):
-            self.room(self.E(el, "bldg", "buildingRoom"), room)
+        self.building_members(el, n)
+        for _rp, sd in n.kids("HAS_SUBDIVISION"):
+            self.subdivision(self.E(el, "bldg", "buildingSubdivision"), sd)
         self.address(el, "bldg", n)
         if not part:
             for _rp, bp in n.kids("HAS_BUILDING_PART"):
                 self.building(self.E(el, "bldg", "buildingPart"), bp, part=True)
         return el
+
+    def subdivision(self, holder, sd):
+        """(:BuildingSubdivision:Storey|BuildingUnit) → bldg:Storey / bldg:BuildingUnit
+        (a logical space: boundary and LoD geometry, no terrain curve / point cloud)."""
+        kind = "BuildingUnit" if (sd.p.get("feature_type") == "BuildingUnit"
+                                  or "BuildingUnit" in sd.labels) else "Storey"
+        el = self.E(holder, "bldg", kind)
+        self.set_id(el, sd.id, sd.p.get("synthetic_id"))
+        self.head(el, sd)
+        self.cityobject(el, sd)
+        self.space(el, sd, geoms(sd), "logical")
+        p = sd.p
+        self.building_cfu(el, p)
+        self.elevations(el, "bldg", p)
+        if p.get("sort_key") is not None:
+            self.E(el, "bldg", "sortKey", p["sort_key"])
+        # AbstractBuildingSubdivision: constructive element, furniture, installation, room
+        for _rp, nf in sd.kids("HAS_NESTED"):
+            if nf.p.get("feature_kind") == "BuildingConstructiveElement":
+                self.nested_bridge(self.E(el, "bldg", "buildingConstructiveElement"), nf,
+                                   "BuildingConstructiveElement", prefix="bldg")
+        for _rp, f in sd.kids("HAS_INTERIOR_FURNITURE"):
+            self.furniture(self.E(el, "bldg", "buildingFurniture"), f)
+        for _rp, inst in sd.kids("HAS_OUTER_INSTALLATION", "HAS_INTERIOR_INSTALLATION"):
+            self.installation(self.E(el, "bldg", "buildingInstallation"), inst)
+        for _rp, room in sd.kids("HAS_INTERIOR_ROOM"):
+            self.room(self.E(el, "bldg", "buildingRoom"), room)
+        rels = ("HAS_BUILDING_UNIT", "buildingUnit") if kind == "Storey" else ("HAS_STOREY", "storey")
+        for rp, t in refs_with_pending(sd, rels[0]):
+            href = self.ref_target(t.id, rp.get("href"))
+            if href is None:
+                self.loss.add(f"bldg:{rels[1]} target not in export", t.id)
+                continue
+            self.E(el, "bldg", rels[1]).set(XLINK_HREF, href)
+        if kind == "BuildingUnit":
+            self.address(el, "bldg", sd)
 
     def installation(self, holder, inst, inside=False):
         el = self.E(holder, "bldg", "BuildingInstallation")
@@ -1436,10 +1606,19 @@ class Writer3(BaseWriter):
         self.head(el, inst)
         self.cityobject(el, inst)
         self.space(el, inst, geoms(inst), "occ")
+        inside = inside or inst.p.get("installation_kind") == "IntBuildingInstallation"
         rel = inst.p.get("relation_to_construction") or ("inside" if inside else None)
         if rel:
             self.E(el, "con", "relationToConstruction", rel)
-        self.cfu(el, "bldg", inst.p, "class_code", "function_code", "usage_code")
+        self.building_cfu(el, inst.p)
+
+    def furniture(self, holder, f):
+        el = self.E(holder, "bldg", "BuildingFurniture")
+        self.set_id(el, f.id, f.p.get("synthetic_id"))
+        self.head(el, f)
+        self.cityobject(el, f)
+        self.space(el, f, geoms(f), "occ")
+        self.building_cfu(el, f.p)
 
     def room(self, holder, room):
         el = self.E(holder, "bldg", "BuildingRoom")
@@ -1447,10 +1626,13 @@ class Writer3(BaseWriter):
         self.head(el, room)
         self.cityobject(el, room)
         self.space(el, room, geoms(room), "unocc")
-        self.cfu(el, "bldg", room.p, "class_code", "function_code", "usage_code")
-        n_f = len(room.kids("HAS_INTERIOR_FURNITURE")) + len(room.kids("HAS_ROOM_INSTALLATION"))
-        if n_f:
-            self.loss.add("room furniture / room installations (not written)", room.id, n_f)
+        self.building_cfu(el, room.p)
+        for f in _loads(room.p.get("room_height_xml"), []):
+            self.verbatim(el, f, "bldg:roomHeight")
+        for _rp, f in room.kids("HAS_INTERIOR_FURNITURE"):
+            self.furniture(self.E(el, "bldg", "buildingFurniture"), f)
+        for _rp, inst in room.kids("HAS_ROOM_INSTALLATION"):
+            self.installation(self.E(el, "bldg", "buildingInstallation"), inst)
 
 
 # ---------------------------------------------------------------------------
@@ -1623,6 +1805,9 @@ class Writer2(BaseWriter):
         for key in ("space_type", "volume_xml", "area_xml"):
             if p.get(key):
                 self.loss.add(f"{key} (no 2.0 equivalent)", n.id)
+        pcs = n.kids("HAS_POINT_CLOUD")
+        if pcs:
+            self.loss.add("pcl:PointCloud (no 2.0 equivalent)", n.id, n=len(pcs))
 
     def extref_from_v3(self, el, frag, n):
         try:
@@ -1793,7 +1978,7 @@ class Writer2(BaseWriter):
     def surface_lods(self, s, g, allowed):
         """{lod: [(rp, ms_node)]} incl. the primary (HAS_POLYGON) MultiSurface."""
         out = defaultdict(list)
-        polys = s.kids("HAS_POLYGON")
+        polys = refs_with_pending(s, "HAS_POLYGON")
         if polys:
             prim = Node(None, ["GeometryMultiSurface"], {
                 "id": s.p.get("multi_surface_id"), "synthetic_id": not s.p.get("multi_surface_id"),
@@ -1810,7 +1995,9 @@ class Writer2(BaseWriter):
             self.loss.add(f"lod0MultiCurve of a {s.p.get('surface_type')} (not in 2.0)", s.id)
         return out
 
-    def bsurface(self, holder_parent, prefix, s):
+    def bsurface(self, holder_parent, prefix, s, lod4=False):
+        """A boundary surface in the 2.0 encoding; lod4=True for the surfaces of a room
+        or an interior installation (LoD4-only in 2.0: the highest LoD is written as 4)."""
         st = s.p.get("surface_type")
         local = st
         if prefix == "brid" and st not in _SURF2_BLDG:
@@ -1828,7 +2015,16 @@ class Writer2(BaseWriter):
         self.set_id(el, s.id, s.p.get("synthetic_id"))
         self.head(el, s)
         g = geoms(s)
-        lods = self.surface_lods(s, g, ("2", "3", "4"))
+        if lod4:
+            lods = self.surface_lods(s, g, ("0", "1", "2", "3", "4"))
+            top = max(lods, key=int, default=None)
+            if top is not None and top != "4":
+                self.loss.add("3.0 interior geometry written as 2.0 LoD4 (policy)", s.id)
+            for lod in [lod for lod in lods if lod != top]:
+                self.loss.add(f"lod{lod}MultiSurface of an interior surface (2.0 keeps LoD4 only)", s.id)
+            lods = {"4": lods[top]} if top is not None else {}
+        else:
+            lods = self.surface_lods(s, g, ("2", "3", "4"))
         for lod in ("2", "3", "4"):
             if lods.get(lod):
                 if prefix == "wtr":
@@ -1848,19 +2044,25 @@ class Writer2(BaseWriter):
             if prefix != "bldg":
                 self.loss.add("opening on a non-building surface", o.id)
                 continue
-            self.opening(self.E(el, "bldg", "opening"), o)
+            self.opening(self.E(el, "bldg", "opening"), o, lod4)
 
-    def opening(self, holder, o):
+    def opening(self, holder, o, lod4=False):
         kind = (o.p.get("opening_type") or "Window").replace("Surface", "")
         el = self.E(holder, "bldg", kind)
         self.set_id(el, o.id, o.p.get("synthetic_id"))
         self.head(el, o)
         g = geoms(o)
+        if lod4 and g["ms"]:
+            g, dropped = lift_to_lod4(g)
+            for d in dropped:
+                self.loss.add(f"{d} of an interior opening (2.0 keeps LoD4 only)", o.id)
         for (lod, _r), lst in sorted(g["ms"].items()):
             if lod in ("3", "4"):
                 self.write_ms(el, "bldg", f"lod{lod}MultiSurface", lst)
             else:
                 self.loss.add(f"lod{lod} opening geometry (2.0 openings are LoD3/4)", o.id)
+        if kind == "Door":
+            self.address2(el, "bldg", o)
 
     # -- features ------------------------------------------------------------------
     def feature(self, holder, n):
@@ -2181,15 +2383,38 @@ class Writer2(BaseWriter):
             self.loss.add("Building lod0/1 MultiCurve (2.0: lod2–4)", n.id)
         if implicit_items(n, g):
             self.loss.add("Building implicit representation (not in 2.0)", n.id)
-        for rel, prop in (("HAS_OUTER_INSTALLATION", "outerBuildingInstallation"),):
-            for _rp, inst in n.kids(rel):
-                self.installation(self.E(el, "bldg", prop), inst)
-        for _rp, s in n.kids("HAS_BOUNDARY"):
-            self.bsurface(el, "bldg", s)
+        # 3.0 storeys / building units have no 2.0 equivalent: what they contain is
+        # written on the building (surfaces, installations, rooms), the subdivision is lost
+        holders = [n]
+        for _rp, sd in n.kids("HAS_SUBDIVISION"):
+            holders.append(sd)
+            kind = sd.p.get("feature_type") or "Storey"
+            self.loss.add(f"bldg:{kind} (no 2.0 equivalent; its boundary surfaces, rooms and "
+                          "installations are written on the building)", sd.id)
+            sg = geoms(sd)
+            if any(sg[k] for k in ("solid", "ms", "mc", "point", "geom")):
+                self.loss.add(f"LoD geometry of a bldg:{kind} (no 2.0 equivalent)", sd.id)
+        for h in holders:
+            for _rp, inst in h.kids("HAS_OUTER_INSTALLATION"):
+                self.installation(self.E(el, "bldg", "outerBuildingInstallation"), inst)
+        for h in holders:
+            for _rp, inst in h.kids("HAS_INTERIOR_INSTALLATION"):
+                self.int_installation(self.E(el, "bldg", "interiorBuildingInstallation"), inst)
+        for h in holders:
+            for _rp, s in h.kids("HAS_BOUNDARY"):
+                self.bsurface(el, "bldg", s)
         lod_block("3")
         lod_block("4")
-        if n.kids("HAS_INTERIOR_ROOM"):
-            self.loss.add("building rooms in a 3.0 → 2.0 export (not written)", n.id)
+        for h in holders:
+            for _rp, room in h.kids("HAS_INTERIOR_ROOM"):
+                self.room(self.E(el, "bldg", "interiorRoom"), room)
+            for _rp, nf in h.kids("HAS_NESTED"):
+                self.loss.add(f"bldg:{nf.p.get('feature_kind')} (no 2.0 equivalent)", nf.id)
+                for _r, o in nf.kids("HAS_OPENING"):
+                    self.loss.add("con:Window / con:Door filling of a constructive element "
+                                  "(no 2.0 equivalent)", o.id)
+            for _rp, f in h.kids("HAS_INTERIOR_FURNITURE"):
+                self.loss.add("BuildingFurniture outside a room (2.0 has room furniture only)", f.id)
         if not part:
             for _rp, bp in n.kids("HAS_BUILDING_PART"):
                 self.building(self.E(el, "bldg", "consistsOfBuildingPart"), bp, part=True)
@@ -2206,18 +2431,94 @@ class Writer2(BaseWriter):
         for _rp, s in inst.kids("HAS_BOUNDARY"):
             self.bsurface(el, "bldg", s)
 
+    def interior_geoms(self, n):
+        """geoms() of a 2.0 interior feature, lifted to LoD4 (policy, reported)."""
+        g = geoms(n)
+        g4, dropped = lift_to_lod4(g)
+        lods = {lod for k in ("solid", "geom", "point", "impl", "impl_ms") for lod in g[k]} | \
+            {lod for k in ("ms", "mc") for lod, _r in g[k]}
+        if lods - {"4"}:
+            self.loss.add("3.0 interior geometry written as 2.0 LoD4 (policy)", n.id)
+        for d in dropped:
+            self.loss.add(f"{d} of an interior feature (2.0 keeps LoD4 only)", n.id)
+        return g4
+
+    def int_installation(self, holder, inst):
+        """IntBuildingInstallation (2.0): class, function, usage, lod4Geometry,
+        lod4ImplicitRepresentation, boundedBy."""
+        el = self.E(holder, "bldg", "IntBuildingInstallation")
+        self.set_id(el, inst.id, inst.p.get("synthetic_id"))
+        self.head(el, inst)
+        self.cfu(el, "bldg", inst.p, "class_code", "function_code", "usage_code")
+        self.geometry_slots(el, "bldg", inst, self.interior_geoms(inst), ("4",), ("4",))
+        for _rp, s in inst.kids("HAS_BOUNDARY"):
+            self.bsurface(el, "bldg", s, lod4=True)
+
+    def furniture(self, holder, f):
+        el = self.E(holder, "bldg", "BuildingFurniture")
+        self.set_id(el, f.id, f.p.get("synthetic_id"))
+        self.head(el, f)
+        self.cfu(el, "bldg", f.p, "class_code", "function_code", "usage_code")
+        self.geometry_slots(el, "bldg", f, self.interior_geoms(f), ("4",), ("4",))
+        if f.kids("HAS_BOUNDARY"):
+            self.loss.add("boundary surfaces of BuildingFurniture (not in 2.0)", f.id)
+
+    def room(self, holder, room):
+        """Room (2.0): class, function, usage, lod4Solid, lod4MultiSurface, boundedBy,
+        interiorFurniture, roomInstallation. A 3.0 BuildingRoom of any LoD is written as
+        LoD4 (policy, reported)."""
+        el = self.E(holder, "bldg", "Room")
+        self.set_id(el, room.id, room.p.get("synthetic_id"))
+        self.head(el, room)
+        self.cfu(el, "bldg", room.p, "class_code", "function_code", "usage_code")
+        g = self.interior_geoms(room)
+        ms, _roles, mcs, _mcid, solids = self.lod_maps(room, g)
+        if "4" in solids:
+            self.solid(el, "bldg", "lod4Solid", solids["4"])
+        if ms.get("4"):
+            self.write_ms(el, "bldg", "lod4MultiSurface", ms["4"])
+        if mcs or g["point"] or implicit_items(room, g) or g["tic"]:
+            self.loss.add("room curve / point / implicit geometry (2.0 rooms: lod4Solid, "
+                          "lod4MultiSurface)", room.id)
+        if room.p.get("room_height_xml"):
+            self.loss.add("bldg:roomHeight (no 2.0 equivalent)", room.id)
+        for _rp, s in room.kids("HAS_BOUNDARY"):
+            self.bsurface(el, "bldg", s, lod4=True)
+        for _rp, f in room.kids("HAS_INTERIOR_FURNITURE"):
+            self.furniture(self.E(el, "bldg", "interiorFurniture"), f)
+        for _rp, inst in room.kids("HAS_ROOM_INSTALLATION"):
+            self.int_installation(self.E(el, "bldg", "roomInstallation"), inst)
+
 
 # ---------------------------------------------------------------------------
 # document driver
 # ---------------------------------------------------------------------------
 
-_NS_ORDER = ("core", "gml", "xlink", "xsi", "xAL", "app", "bldg", "brid", "con", "frn", "gen",
-             "luse", "tran", "veg", "wtr")
+_NS_ORDER = ("core", "gml", "xlink", "xsi", "xAL", "app", "bldg", "brid", "con", "dyn", "frn",
+             "gen", "luse", "pcl", "tran", "veg", "wtr")
 
 
 def _fmt(v):
     v = float(v)
     return str(int(v)) if v == int(v) else repr(v)
+
+
+def source_version(dataset):
+    """'2.0' / '3.0' / '1.0' of a Dataset (citygml_version, else its format string)."""
+    v = str(dataset.get("citygml_version") or "")
+    if v:
+        return v
+    m = re.search(r"CityGML (\d\.\d)", str(dataset.get("format") or ""))
+    return m.group(1) if m else "2.0"
+
+
+def node_versions(sess, dataset_id):
+    """The CityGML versions recorded on a Dataset's top-level features (citygml_version,
+    set at ingest on every feature-level node): more than one when a graph mixes 2.0-
+    and 3.0-sourced subgraphs in one Dataset."""
+    return sorted(r["v"] for r in sess.run(
+        "MATCH (:Dataset {id: $did})<-[:PART_OF]-(n) WHERE n.citygml_version IS NOT NULL "
+        "RETURN DISTINCT n.citygml_version AS v", did=dataset_id))
 
 
 def select_features(sess, dataset_id, bbox_wkt=None, layer=None):
@@ -2410,8 +2711,12 @@ def export_document(sess, dataset, version, out_path, opts=None, feature_ids=Non
 
     P = w.P
     nsmap = {p: P.ns[p] for p in _NS_ORDER if p in P.ns}
-    root_attrib = {f"{{{XSI_NS}}}schemaLocation": P.schema_location(
-        [p for p in nsmap if p not in ("core", "gml", "xlink", "xsi", "xAL")])}
+    # the source's xsi:schemaLocation when it is in the target version (as the legacy
+    # 2.0 writer does), else one for the modules of the target version
+    same_version = source_version(dataset)[:1] == str(version)[:1]
+    root_attrib = {f"{{{XSI_NS}}}schemaLocation":
+                   (dataset.get("schema_location") if same_version else None) or P.schema_location(
+                       [p for p in nsmap if p not in ("core", "gml", "xlink", "xsi", "xAL")])}
     if dataset.get("gml_id"):
         root_attrib[P.gml_id] = dataset["gml_id"]
         w.written.add(dataset["gml_id"])
@@ -2435,6 +2740,7 @@ def export_document(sess, dataset, version, out_path, opts=None, feature_ids=Non
             w.envelope(head, " ".join(_fmt(v) for v in num_l if v is not None),
                        " ".join(_fmt(v) for v in num_u if v is not None))
     counts = Counter()
+    versions = Counter()     # feature-level nodes written, by the CityGML version they came from
     member_tag = P.q("core", "cityObjectMember")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with open(out_path, "wb") as fh, etree.xmlfile(fh, encoding="UTF-8") as xf:
@@ -2457,6 +2763,7 @@ def export_document(sess, dataset, version, out_path, opts=None, feature_ids=Non
                 for n in tops:
                     m = etree.Element(member_tag, nsmap=nsmap)
                     el = w.feature(m, n)
+                    w.inline_unwritten()
                     if el is None or not len(m):
                         continue
                     drop_unwritten_targets(w, m, area_limited)
@@ -2464,6 +2771,10 @@ def export_document(sess, dataset, version, out_path, opts=None, feature_ids=Non
                     etree.indent(m, space="  ", level=1)
                     xf.write("\n  ")
                     xf.write(m)
+                for node in tree.nodes.values():
+                    v = node.p.get("citygml_version")
+                    if v and not node.partial:
+                        versions[str(v)] += 1
                 w.stats["sub-features clipped (outside the box)"] += tree.clipped
                 w.stats["sub-features without bbox (kept)"] += tree.unclippable
                 w._content.clear()
@@ -2484,5 +2795,6 @@ def export_document(sess, dataset, version, out_path, opts=None, feature_ids=Non
             w.loss.add("dangling local reference (target not in this document)", h)
     loss = w.loss.as_dict()
     loss["export_stats"] = dict(w.stats)
+    loss["source_versions"] = dict(sorted(versions.items()))
     loss["profile"] = [{"phase": ph, "t_s": t, "peak_rss_mb": m} for ph, t, m in prof]
     return dict(counts), loss

@@ -31,6 +31,13 @@ citygml3_tests.py — end-to-end tests of the CityGML 3.0 codec (ingest_citygml.
       copy of tile_b.gml with the prefix resolves its references into tile_a.gml to the
       first Dataset's nodes; the same for a CityGML 2.0 building model (FZK-Haus LoD2), whose
       prefixed copy exports as valid 2.0 without the prefix
+  T13 (unless --no-fzk) every FZK-Haus model under input/: the 21 CityGML 3.0 models
+      (storeys, rooms, constructive elements with windows / doors, point clouds) export as
+      3.0 valid + lossless (appearance excluded) and as 2.0 valid; the CityGML 2.0 models
+      (LoD0-4) as 2.0 valid + lossless and as 3.0 valid; every feature-level node carries
+      the citygml_version of its source. The 3.0 models are not tracked: download them from
+      https://www.citygmlwiki.org/index.php?title=FZK_Haus_CityGML_30 into
+      input/citygml3/FZK-Haus/<variant>/<n>/ (citygml3_models in the result says how many ran)
 
 The database is WIPED. The script refuses bolt://…:7687 (the usual port of a real graph)
 and any non-empty database unless --wipe is given. T5, T6 and T11 need only the fixtures in
@@ -197,6 +204,52 @@ def sample_tests(s, sample, out, log, results, ingest, export):
                                       "v3": sval}
 
 
+def fzk_tests(s, out, log, results, ingest, export):
+    """T13 the FZK-Haus building models (KIT IAI) in both versions, each alone in the graph:
+    every CityGML 3.0 model (input/citygml3/FZK-Haus/<variant>/<n>/*.gml: storeys, rooms,
+    constructive elements with window / door fillings, point clouds) exports as 3.0 valid
+    and lossless (appearance excluded) and as 2.0 valid; every CityGML 2.0 model
+    (input/citygml/FZK-Haus/*.gml, LoD0-4 with rooms, furniture, installations) exports as
+    2.0 valid and lossless and as 3.0 valid. Every feature-level node carries the
+    citygml_version of its source."""
+    rows = []
+    models = [(3, g) for g in sorted((ROOT / "input" / "citygml3" / "FZK-Haus").glob("*/*/*.gml"))] + \
+             [(2, g) for g in sorted((ROOT / "input" / "citygml" / "FZK-Haus").glob("*.gml"))]
+    if not models:
+        return
+    d = out / "fzk"
+    d.mkdir(exist_ok=True)
+    for ver, g in models:
+        wipe(s)
+        ingest(g)
+        name = f"{g.parent.parent.name}/{g.parent.name}" if ver == 3 else g.stem
+        stem = re.sub(r"[^A-Za-z0-9]+", "_", name)
+        same, other = d / f"{stem}_v{ver}.gml", d / f"{stem}_v{5 - ver}.gml"
+        export(ver, same)
+        export(5 - ver, other)
+        unmarked = s.run("MATCH (n) WHERE (n:Building OR n:BuildingPart OR n:BoundarySurface "
+                         "OR n:Opening OR n:Room OR n:BuildingInstallation OR n:BuildingFurniture "
+                         "OR n:BuildingSubdivision OR n:NestedFeature OR n:PointCloud) "
+                         "AND coalesce(n.citygml_version, '') <> $v RETURN count(n) AS c",
+                         v=f"{ver}.0").single()["c"]
+        # appearance is outside the round-trip scope here (2.0 appearance is not ingested,
+        # and some FZK-Haus 3.0 files texture ids they do not contain); references the
+        # source itself leaves dangling stay dangling (written as the source has them)
+        src_refs = validate(g, ver, log)[1]
+        r = {"model": name, "version": ver, "same": validate(same, ver, log),
+             "census_missing": census(g, same, log, appearance=False),
+             "other": validate(other, 5 - ver, log), "source_unresolved": src_refs,
+             "nodes_without_version": unmarked}
+        r["ok"] = r["same"][0] == "VALID" and r["same"][1] <= src_refs and \
+            r["census_missing"] == 0 and r["other"][0] == "VALID" and \
+            r["other"][1] <= src_refs and unmarked == 0
+        rows.append(r)
+    # the 3.0 models are not tracked (326 MB): without them only the 2.0 models run
+    results["T13_fzk_haus"] = {"ok": all(r["ok"] for r in rows), "models": len(rows),
+                               "citygml3_models": sum(1 for r in rows if r["version"] == 3),
+                               "failed": [r for r in rows if not r["ok"]]}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--uri", required=True)
@@ -209,6 +262,8 @@ def main():
     ap.add_argument("--tiles", nargs="*", default=[])
     ap.add_argument("--box", default=None,
                     help="WKT polygon for T9 (default: 400 m around the tiles' Dataset centre)")
+    ap.add_argument("--no-fzk", action="store_true",
+                    help="skip T13 (the FZK-Haus 2.0 / 3.0 round trips under input/)")
     args = ap.parse_args()
     if re.search(r":7687\b", args.uri):
         raise SystemExit("refusing to run against port 7687 (live pykci graph); use a throwaway DB")
@@ -360,8 +415,10 @@ def main():
             wipe(s)
             secs = 0.0
             for t_ in args.tiles:
+                # reconstructed data needs its method + version (GRAPH.md provenance rules)
                 _, dt = ingest(t_, "--dataset-name", "tiles", "--rtree-layer", "streetspace",
-                               "--source-type", "reconstructed")
+                               "--source-type", "reconstructed", "--method", "streetspace-recon",
+                               "--method-version", "1.0")
                 secs += dt
             top = s.run("MATCH (n)-[:PART_OF]->(:Dataset {id: 'tiles'}) RETURN count(n) AS c").single()["c"]
             pend = s.run("MATCH (n:PendingRefs) RETURN count(n) AS c").single()["c"]
@@ -437,6 +494,8 @@ def main():
                                        "ingest_bboxes": len(snap), "backfilled": len(back),
                                        "value_differences": diffs, "seconds": round(dt, 1),
                                        "rerun_written": rerun}
+        if not args.no_fzk:
+            fzk_tests(s, out, log, results, ingest, export)
     drv.close()
     (out / "citygml3_tests.json").write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
     for k, v in results.items():

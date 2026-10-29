@@ -265,16 +265,27 @@ def _emit_common_extras(feat_el, props):
             continue
         for frag in frags:
             try:
-                feat_el.append(etree.fromstring(frag))
+                feat_el.append(_fragment(frag))
             except etree.XMLSyntaxError:
                 pass
     loc = props.get("location_xml")
     if loc:
         try:
-            feat_el.append(etree.fromstring(loc))
+            feat_el.append(_fragment(loc))
         except etree.XMLSyntaxError:
             pass
 
+
+
+def _fragment(frag):
+    """A stored verbatim XML fragment, parsed, without the namespace declarations it does
+    not use. A fragment cut from a source file carries all of the root's declarations,
+    e.g. a default namespace (the FZK-Haus files declare the base profile); appended
+    under this document's default (core) namespace, lxml would write its core:Address
+    unprefixed inside that redeclared default, i.e. in the wrong namespace."""
+    el = etree.fromstring(frag)
+    etree.cleanup_namespaces(el)
+    return el
 
 def _write_polygon(parent_el, poly_data):
     """Write <gml:surfaceMember><gml:Polygon>… into parent_el."""
@@ -1288,37 +1299,41 @@ def _populate_building(bldg, core, surfaces, crs, srs_dim):
         if (ms_entry.get("role") or "") in ("footprint", "roofedge"):
             _write_building_ms(ms_entry)
 
-    # boundedBy (shell surfaces) — source order places these before lod*Solid
-    for surf_data in surfaces:
-        _write_bldg_surface(bldg, surf_data)
+    # The 2.0 AbstractBuilding sequence: per LoD 1..4 lodNSolid, lodNMultiSurface,
+    # lodNMultiCurve (LoD2-4), lodNTerrainIntersection; the installations and boundedBy
+    # sit between LoD2 and LoD3, interiorRoom after LoD4.
+    multicurves = {str(k): v for k, v in core.get("multicurves", [])}
 
-    for solid in core.get("solids") or []:
-        _write_solid(bldg, solid)
+    def _lod_block(lod_n):
+        for solid in core.get("solids") or []:
+            if str(solid.get("lod", "2")) == lod_n:
+                _write_solid(bldg, solid)
+        # lodN MultiSurface attached directly to the building
+        for ms_entry in building_ms:
+            if (ms_entry.get("role") or "") not in ("footprint", "roofedge") and \
+                    str(ms_entry.get("lod") or "0") == lod_n:
+                _write_building_ms(ms_entry)
+        # lod{N} MultiCurve (annotation/edge curves)
+        if multicurves.get(lod_n):
+            mc_prop = _sub(bldg, f"{BLDG}lod{lod_n}MultiCurve")
+            mc      = _sub(mc_prop, f"{GML}MultiCurve")
+            for ls in multicurves[lod_n]:
+                cm    = _sub(mc, f"{GML}curveMember")
+                ls_el = _sub(cm, f"{GML}LineString")
+                _sub(ls_el, f"{GML}posList", ls["pos_list"],
+                     srsDimension=str(ls.get("srs_dimension", 3)))
+        if core.get("lines") and str(core.get("ti_lod", "2")) == lod_n:
+            ti_el = _sub(bldg, f"{BLDG}lod{lod_n}TerrainIntersection")
+            mc    = _sub(ti_el, f"{GML}MultiCurve")
+            for ls in core["lines"]:
+                cm    = _sub(mc, f"{GML}curveMember")
+                ls_el = _sub(cm, f"{GML}LineString")
+                _sub(ls_el, f"{GML}posList",
+                     ls["pos_list"],
+                     srsDimension=str(ls.get("srs_dimension", 3)))
 
-    if core.get("lines"):
-        ti_el = _sub(bldg, f"{BLDG}lod{core.get('ti_lod', '2')}TerrainIntersection")
-        mc    = _sub(ti_el, f"{GML}MultiCurve")
-        for ls in core["lines"]:
-            cm    = _sub(mc, f"{GML}curveMember")
-            ls_el = _sub(cm, f"{GML}LineString")
-            _sub(ls_el, f"{GML}posList",
-                 ls["pos_list"],
-                 srsDimension=str(ls.get("srs_dimension", 3)))
-
-    # lod{N} MultiCurve (annotation/edge curves), grouped by LOD
-    for lod_n, lines in core.get("multicurves", []):
-        mc_prop = _sub(bldg, f"{BLDG}lod{lod_n}MultiCurve")
-        mc      = _sub(mc_prop, f"{GML}MultiCurve")
-        for ls in lines:
-            cm    = _sub(mc, f"{GML}curveMember")
-            ls_el = _sub(cm, f"{GML}LineString")
-            _sub(ls_el, f"{GML}posList", ls["pos_list"],
-                 srsDimension=str(ls.get("srs_dimension", 3)))
-
-    # lodN MultiSurface attached directly to the building
-    for ms_entry in building_ms:
-        if (ms_entry.get("role") or "") not in ("footprint", "roofedge"):
-            _write_building_ms(ms_entry)
+    _lod_block("1")
+    _lod_block("2")
 
     # outerBuildingInstallation
     for inst in core.get("outer_installations", []):
@@ -1327,6 +1342,19 @@ def _populate_building(bldg, core, surfaces, crs, srs_dim):
     # interiorBuildingInstallation
     for inst in core.get("interior_installations", []):
         _write_installation(bldg, inst, f"{BLDG}interiorBuildingInstallation")
+
+    # boundedBy (shell surfaces)
+    for surf_data in surfaces:
+        _write_bldg_surface(bldg, surf_data)
+
+    _lod_block("3")
+    _lod_block("4")
+    # geometry at a LoD the 2.0 building has no property for: still written, as before
+    other = {str(s.get("lod", "2")) for s in core.get("solids") or []} | set(multicurves) | \
+        {str(m.get("lod") or "0") for m in building_ms
+         if (m.get("role") or "") not in ("footprint", "roofedge")}
+    for lod_n in sorted(other - {"1", "2", "3", "4"}):
+        _lod_block(lod_n)
 
     # interiorRoom → Room
     for room in core.get("rooms", []):
@@ -1349,7 +1377,7 @@ def _populate_building(bldg, core, surfaces, crs, srs_dim):
             frags = [raw_addr]
         for frag in frags:
             try:
-                bldg.append(etree.fromstring(frag))
+                bldg.append(_fragment(frag))
             except etree.XMLSyntaxError:
                 pass
 
@@ -2056,13 +2084,21 @@ def main(argv=None):
         ds = query_dataset(sess, args.dataset, feature_ids=sel_ids or None)
     if not ds:
         raise SystemExit("ERROR: no Dataset in the graph.")
-    src_version = str(ds.get("citygml_version") or
-                      ("3.0" if "3.0" in str(ds.get("format", "")) else "2.0"))
+    from citygml_writer import node_versions, source_version
+    src_version = source_version(ds)
     writer = args.writer
     if writer == "auto":
-        # the legacy writer cannot strip an --id-prefix: such Datasets use the strict one
+        # the legacy writer cannot strip an --id-prefix and knows 2.0-sourced features only
+        # (every feature-level node records the version it was ingested from)
+        mixed = False
+        if target == "2.0" and src_version.startswith("2") and not ds.get("id_prefix"):
+            with drv.session(database="neo4j") as sess:
+                nv = node_versions(sess, ds.get("id"))
+            mixed = any(not v.startswith("2") for v in nv)
+            if mixed:
+                src_version = " + ".join(nv)
         writer = "legacy" if (target == "2.0" and src_version.startswith("2")
-                              and not ds.get("id_prefix")) else "strict"
+                              and not ds.get("id_prefix") and not mixed) else "strict"
     elif writer == "legacy" and ds.get("id_prefix") and not args.keep_id_prefix:
         raise SystemExit(f"ERROR: Dataset {ds.get('id')} was ingested with --id-prefix "
                          f"'{ds['id_prefix']}', which only the strict writer strips; use "
@@ -2090,6 +2126,7 @@ def main(argv=None):
                                            batch=args.batch)
         rep = Path(args.loss_report) if args.loss_report else out.with_suffix(".loss.json")
         rep.write_text(json.dumps({"dataset": ds.get("id"), "source_version": src_version,
+                                   "source_versions": loss.pop("source_versions", {}),
                                    "target_version": target, "writer": writer,
                                    "written": counts, "loss": loss}, indent=2,
                                   ensure_ascii=False), encoding="utf-8")
