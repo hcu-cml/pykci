@@ -22,6 +22,11 @@ input/citygml/*
 !input/citygml/FZK-Haus/
 !input/citygml/Railway_Scene_LoD3/
 
+# CityGML 3.0 FZK-Haus models (326 MB with textures and zips): not tracked. Download them from
+# https://www.citygmlwiki.org/index.php?title=FZK_Haus_CityGML_30 into
+# input/citygml3/FZK-Haus/<variant>/<n>/ for T13 of eval/citygml3_tests.py.
+input/citygml3/
+
 # Large OSM source files — keep the input/osm/ folder, ignore the data.
 input/osm/*.osm.pbf
 input/osm/*.osm
