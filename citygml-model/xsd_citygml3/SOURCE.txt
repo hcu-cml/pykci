@@ -1,0 +1,11 @@
+CityGML 3.0 XML schemas (OGC City Geography Markup Language 3.0 GML encoding)
+
+Source: https://schemas.opengis.net/citygml/ (every */3.0/ folder, with xAL 3.0), in the same
+folder layout as on that site, so "http://schemas.opengis.net/citygml/" maps onto this folder.
+Taken from OGC's SCHEMAS_OPENGIS_NET.zip bundle (SHA-256
+c9aa5c7af6a8eeba4c68bc58295f37444dedab6838d184cbb95d0f09f1d8a927, Last-Modified 2026-05-01),
+checked identical to the live site on 2026-10-29.
+
+The schemas import GML 3.2.1 and the W3C xlink schema from their official URLs; for offline
+validation use validate_citygml.py with its schema cache (--schema-dir / $CITYGML_SCHEMA_DIR).
+Licence: OGC Software Notice, https://www.ogc.org/ogc/software
