@@ -95,7 +95,20 @@ The 3.0 codec reuses the canonical pykci pattern:
 - The `Entity` plumbing label and `source` on every node.
 
 3.0 buildings produce **the same graph as 2.0 buildings**, so `build_3dtiles.py`,
-`export_citygml.py` and existing queries work unchanged.
+`export_citygml.py` and existing queries work unchanged. What both versions have uses the
+2.0 nodes and edges (BuildingRoom → `Room` via `HAS_INTERIOR_ROOM`, BuildingFurniture and
+BuildingInstallation with the 2.0 keys `class_code` / `function_code` / `usage_code`,
+Window / Door → `Opening`); what only 3.0 has gets its own node or edge (Storey /
+BuildingUnit, BuildingConstructiveElement as the `NestedFeature` already used for bridge
+elements, con:Window / con:Door fillings, PointCloud). The module both versions exclude
+(appearance aside) is the same: nothing of the FZK-Haus models is dropped in either.
+
+**Version marker.** Every feature-level node (features, sub-features, thematic surfaces,
+openings, rooms, installations, furniture, subdivisions, point clouds, appearances and
+surface data) records `citygml_version` ('2.0' / '3.0') of the file it came from; geometry
+nodes are version-neutral. `export_citygml.py --writer auto` uses the legacy 2.0 writer only
+when the Dataset and all its top-level features are 2.0-sourced, and the strict writer's
+loss report lists the exported feature-level nodes per source version (`source_versions`).
 
 Additions (all documented in GRAPH.md):
 
@@ -115,6 +128,13 @@ Additions (all documented in GRAPH.md):
 (Dataset|Entity) -[:HAS_APPEARANCE]-> (Appearance)-[:HAS_SURFACE_DATA]->(X3DMaterial|ParameterizedTexture|GeoreferencedTexture)
                  -[:TARGETS {order, texture_coordinates_json?}]-> (GeometryPolygon|…)
 (Bridge) -[:HAS_BRIDGE_PART]-> (BridgePart)   (Bridge|BridgePart) -[:HAS_NESTED {prop}]-> (NestedFeature)
+(Building|BuildingPart) -[:HAS_SUBDIVISION {order}]-> (BuildingSubdivision:Storey|BuildingUnit)
+(Building|BuildingPart|BuildingSubdivision) -[:HAS_NESTED {prop:'buildingConstructiveElement'}]-> (NestedFeature)
+          -[:HAS_OPENING {order, prop:'filling'}]-> (Opening {filling_type:'Window'|'Door'})
+(Building|BuildingPart|BuildingSubdivision) -[:HAS_INTERIOR_ROOM|HAS_OUTER_INSTALLATION|HAS_INTERIOR_INSTALLATION|HAS_INTERIOR_FURNITURE {order}]-> (…)
+(Room) -[:HAS_INTERIOR_FURNITURE|HAS_ROOM_INSTALLATION {order}]-> (BuildingFurniture|BuildingInstallation)
+(space|BoundarySurface|Opening) -[:HAS_POINT_CLOUD]-> (PointCloud {mime_type, point_file, point_file_srs_name,
+          points_pos_list, points_srs_dimension, points_count, points_member_style, multipoint_id?})
 (Entity) -[:HAS_DYNAMIZER {order}]-> (Dynamizer {attribute_ref, attribute_name, start_time, end_time,
           connection_type, observation_property, uom, sensor_id, sensor_name, observation_id, datastream_id,
           base_url, auth_type, mqtt_server, mqtt_topic, link_to_observation, link_to_sensor_description,
@@ -166,28 +186,33 @@ queryable scalar (as in 2.0); with several values the full list is kept in `<key
 | `year_of_construction`, `date_of_construction` | `con:dateOfConstruction` (date) | `bldg:yearOfConstruction` | year kept; full date, conditionOfConstruction and demolition date reported | `YYYY-01-01` (reported) |
 | `address_xml` (verbatim) | xAL 3 `core:Address` | xAL 2 `AddressDetails` | converted (country, locality, street, number, postcode) and reported | converted and reported |
 | `Opening` | `con:fillingSurface/con:WindowSurface/DoorSurface` | `bldg:opening/bldg:Window/Door` | LoD3/4 kept; LoD0–2 reported | lossless |
+| `BuildingSubdivision:Storey\|BuildingUnit` (`HAS_SUBDIVISION`) | `bldg:buildingSubdivision/bldg:Storey\|BuildingUnit` (class, function, usage, elevation, sortKey, members) | - | flattened: their boundary surfaces, installations and rooms are written on the building; the subdivision, its attributes and own geometry reported | - |
+| `NestedFeature{BuildingConstructiveElement}` + `Opening{filling_type Window\|Door}` | `bldg:buildingConstructiveElement` + `con:filling/con:Window\|Door` | - | reported | - |
+| `Room` + furniture + room installations | `bldg:buildingRoom/BuildingRoom` (any LoD), `buildingFurniture`, `buildingInstallation`, `roomHeight` | `bldg:interiorRoom/Room` (LoD4), `interiorFurniture`, `roomInstallation/IntBuildingInstallation` | written as LoD4 (policy: the highest LoD of each geometry kind, reported); roomHeight and furniture outside rooms reported | LoD4 → LoD3 |
+| `HAS_INTERIOR_INSTALLATION` | `bldg:buildingInstallation` with `con:relationToConstruction inside` | `bldg:interiorBuildingInstallation/IntBuildingInstallation` | written as LoD4 (policy) | `relationToConstruction inside` |
+| `PointCloud` (`HAS_POINT_CLOUD`) | `core:pointCloud/pcl:PointCloud` | - | reported | - |
 | Building `HAS_LOD_SURFACE{role}` | `core:lod0/2/3MultiSurface` | `lod0FootPrint` / `lod0RoofEdge` / `lodNMultiSurface` | lod0 → lod0FootPrint (policy) | footprint → lod0MultiSurface; roofedge and lod1MultiSurface reported |
 | Road / Railway / Track / Square | `tran:*` spaces | `tran:*` complexes | kept | kept |
-| `Waterway` | `tran:Waterway` | — | `tran:TransportationComplex` (reported) | — |
-| `Section`, `Intersection`, `TrafficSpace`, `AuxiliaryTrafficSpace`, `Hole`, `ClearanceSpace`, `Marking` | spaces / thematic surface | — | flattened: every (Auxiliary)TrafficArea below the road becomes `tran:trafficArea` / `auxiliaryTrafficArea`; the spaces themselves are reported, or kept as `citygml3_*` gen:stringAttributes with `--v2-subfeatures genattrs` | — |
-| `TrafficArea` on the Road (2.0) | — | `tran:trafficArea` | — | one synthesised `TrafficSpace` / `AuxiliaryTrafficSpace` `<ta_id>__space`, `granularity` `way` (reported) |
-| `PREDECESSOR` / `SUCCESSOR`, `granularity`, `trafficDirection`, `occupancy` | `tran:*` | — | reported (or gen attrs) | — |
+| `Waterway` | `tran:Waterway` | - | `tran:TransportationComplex` (reported) | - |
+| `Section`, `Intersection`, `TrafficSpace`, `AuxiliaryTrafficSpace`, `Hole`, `ClearanceSpace`, `Marking` | spaces / thematic surface | - | flattened: every (Auxiliary)TrafficArea below the road becomes `tran:trafficArea` / `auxiliaryTrafficArea`; the spaces themselves are reported, or kept as `citygml3_*` gen:stringAttributes with `--v2-subfeatures genattrs` | - |
+| `TrafficArea` on the Road (2.0) | - | `tran:trafficArea` | - | one synthesised `TrafficSpace` / `AuxiliaryTrafficSpace` `<ta_id>__space`, `granularity` `way` (reported) |
+| `PREDECESSOR` / `SUCCESSOR`, `granularity`, `trafficDirection`, `occupancy` | `tran:*` | - | reported (or gen attrs) | - |
 | lod0 curves (`HAS_LOD_MULTICURVE`) | `core:lod0MultiCurve` on spaces / areas / markings | `tran:lod0Network` | all lod0 curves of a road → one `lod0Network/gml:CompositeCurve`; area-level curves reported | `lod0Network` → `core:lod0MultiCurve` |
-| `RELATED_TO` | `core:relatedTo/CityObjectRelation` | — | reported (or gen attr `citygml3_relatedTo_i`) | — |
+| `RELATED_TO` | `core:relatedTo/CityObjectRelation` | - | reported (or gen attr `citygml3_relatedTo_i`) | - |
 | `HAS_PROTOTYPE` → `GeometryPrototype` | `core:lodNImplicitRepresentation` (template inline once, then `relativeGeometry xlink:href`) | `<module>:lodNImplicitRepresentation/core:ImplicitGeometry` (`relativeGMLGeometry`) | kept | kept (also the street-tree variant) |
 | CityFurniture explicit geometry | `core:lod2MultiSurface` / `lod1Solid` / `lod2MultiCurve` / `lod0Point` | `frn:lodNGeometry` (one per LoD) | one geometry per LoD (others and lod0 reported) | kept |
 | PlantCover | `core:lod0/2/3MultiSurface`, `lodNSolid`, `averageHeight`/`minHeight`/`maxHeight` | `veg:lod1–4MultiSurface`, `lodNMultiSolid`, `averageHeight` | lod0MultiSurface, minHeight and maxHeight reported | kept |
 | SolitaryVegetationObject | `core:*`, `rootBallDiameter`, `maxRootBallDepth` | `veg:lodNGeometry`, implicit | the two 3.0-only measures reported | kept |
 | Bridge / BridgePart / `NestedFeature` | `brid:Bridge`, `bridgePart`, `bridgeConstructiveElement`, `bridgeInstallation` | `brid:Bridge`, `consistsOfBridgePart`, `outerBridgeConstruction`, `outerBridgeInstallation` | kept; con:height reported | kept |
-| OtherConstruction, Generic*Space, GenericThematicSurface | `con:OtherConstruction`, `gen:Generic*` | — | `gen:GenericCityObject` (reported) | `GenericCityObject` → `GenericOccupiedSpace` |
+| OtherConstruction, Generic*Space, GenericThematicSurface | `con:OtherConstruction`, `gen:Generic*` | - | `gen:GenericCityObject` (reported) | `GenericCityObject` → `GenericOccupiedSpace` |
 | WaterBody | `wtr:WaterBody` + `core:boundary` WaterSurface / WaterGroundSurface / `core:ClosureSurface` | `wtr:WaterBody` + `wtr:boundedBy` (… `WaterClosureSurface`, `lodNSurface`) | lod2/3 MultiSurface on the body reported | kept |
 | LandUse | `luse:LandUse` (thematic surface) | `luse:LandUse` | kept | kept |
 | Appearance | `core:appearanceMember` / `core:appearance`, `app:surfaceData`, TextureAssociation + TexCoordList | `app:appearanceMember` / `app:appearance`, `surfaceDataMember`, `target uri` + `TexCoordList` | kept (targets of dropped geometry removed and reported) | (2.0 appearance is not ingested) |
 | Generic attributes (type + set + uom + codeSpace) | `core:genericAttribute/gen:<Type>Attribute`, `gen:GenericAttributeSet` | `gen:<type>Attribute name=…`, `genericAttributeSet` | `CodeAttribute` → `stringAttribute` (codeSpace reported) | kept |
 | `external_reference_xml` | `core:ExternalReference{targetResource, informationSystem, relationType}` | `core:externalReference{informationSystem, externalObject/name\|uri}` | converted; relationType reported | converted |
-| `valid_from`/`valid_to`, `space_type`, `volume_xml`/`area_xml`, `gml_identifier` | 3.0 / GML 3.2 | — | reported | — |
-| `HAS_DYNAMIZER` → `Dynamizer` | `core:dynamizer/dyn:Dynamizer`: attributeRef, start/endTime, `dyn:sensorConnection/SensorConnection` (fields as scalars) and/or `dyn:dynamicData` (timeseries kept verbatim) | — | reported (`dyn:Dynamizer (no 2.0 equivalent)`) | — |
-| Tunnel, ReliefFeature, CityObjectGroup | — (not in the 3.0 codec) | legacy writer | — | reported (not written) |
+| `valid_from`/`valid_to`, `space_type`, `volume_xml`/`area_xml`, `gml_identifier` | 3.0 / GML 3.2 | - | reported | - |
+| `HAS_DYNAMIZER` → `Dynamizer` | `core:dynamizer/dyn:Dynamizer`: attributeRef, start/endTime, `dyn:sensorConnection/SensorConnection` (fields as scalars) and/or `dyn:dynamicData` (timeseries kept verbatim) | - | reported (`dyn:Dynamizer (no 2.0 equivalent)`) | - |
+| Tunnel, ReliefFeature, CityObjectGroup | - (not in the 3.0 codec) | legacy writer | - | reported (not written) |
 
 ## 4. CLI
 
@@ -284,6 +309,10 @@ python export_citygml.py --dataset city_streetspace --version 3 --profile \
   - Features are selected by `PART_OF` the Dataset, not `source`; tiled datasets previously exported no buildings.
   - The Dataset is chosen explicitly.
   - Prototype emission: a `GeometryPrototype` (street trees) is written inline once, and referencing instances use `relativeGMLGeometry xlink:href`. The invalid `<gml:MultiSurface xlink:href>` is gone, which removes 12 of Railway's 21 legacy validation errors.
+  - Legacy 2.0 writer, building element order: lodNSolid / MultiSurface / MultiCurve / TerrainIntersection are now written per LoD in the 2.0 sequence, with the installations and `boundedBy` between LoD2 and LoD3 (the solid used to follow `boundedBy`).
+  - Verbatim fragments (address, metadata, external references, ADE) are appended without the source root's unused namespace declarations. An FZK-Haus address carried the file's default namespace (`profiles/base/2.0`), under which lxml wrote `core:Address` unprefixed, i.e. in the wrong namespace.
+  - With both fixes all five FZK-Haus 2.0 models (LoD0-4) export through the legacy writer XSD-valid and census-lossless.
+  - Strict writer: a polygon referenced by xlink (a solid's shell) whose owner is not written in the target version (an LoD2 window surface in 2.0) is written inline at the reference; members whose target is still pending (missing from the source) are written as the reference the source had.
 
 ## 6. Test results
 
@@ -316,6 +345,7 @@ tiles, which are not public:
 | **T9** clipped 400 m `--bbox` export (two of the tiles) | 3.0: VALID, 0 unresolved, 19.7 MB, 2.7 s, **119 MB peak RSS**, 1,791 areas/markings, none entirely outside the box, no empty Road. 2.0: VALID, 13.3 MB, 2.3 s, 112 MB |
 | **T10** backfill | After the sub-feature bboxes are removed, `--backfill-bbox` rewrites all 12,786 with 0 value differences from the ingest values (2.9 s); a re-run writes 0 |
 | **T11** dynamizer | `eval/fixtures/citygml3/dynamizer.gml` (a SensorConnection Dynamizer and a GenericTimeseries Dynamizer with 3 values): 2 `Dynamizer` sub-features (0 CityObject / PART_OF leaks), re-ingest identical, 3.0 export XSD-valid and lossless, 2.0 export valid with 2 dynamizers in the loss report |
+| **T13** FZK-Haus, 26 models (KIT IAI; 21 CityGML 3.0 in four variants: with and without storeys, boundary surfaces or constructive elements, windows, interior, point clouds; 5 CityGML 2.0, LoD0-4) | Every 3.0 model: 3.0 export VALID and census lossless (appearance excluded), 2.0 export VALID; every 2.0 model: legacy 2.0 export VALID and lossless, 3.0 export VALID. Every feature-level node carries its source's `citygml_version`. The only unresolved references are the 11 the source `LoD2_Storeys_BoundarySurfaces/06-PointCloud` itself leaves dangling (shell members), re-emitted as in the source. Appearance is excluded because some 3.0 files texture ids they do not contain (an empty `app:target`, a target with a stray `"`, targets to absent ids) and 2.0 appearance is not ingested; with appearance 14 of the 21 3.0 models are lossless. The 3.0 models are not tracked (326 MB): download them from the [CityGML wiki](https://www.citygmlwiki.org/index.php?title=FZK_Haus_CityGML_30) into `input/citygml3/FZK-Haus/<variant>/<n>/`; without them T13 runs the 2.0 models only (`citygml3_models: 0`) |
 | **T12** source scope | A copy of `tile_a.gml` (same ids, other file) into a second Dataset is refused with nothing written; with `--id-prefix two_` it becomes 125 nodes of its own, none shared with the first Dataset, whose nodes stay unchanged; the copy of `tile_b.gml` resolves its 3 references into `tile_a.gml` to the first Dataset's nodes; the export is VALID and has no prefixed id. The same for a 2.0 model (FZK-Haus LoD2): refused, then ingested with a prefix and exported as VALID 2.0 without it |
 
 **Real-tile merge.** In the T8 Dataset:
@@ -335,7 +365,7 @@ Census of two source tiles against their merged 3.0 export:
 
 - FZK-Haus LoD0–LoD4, `new_elements_test.gml`, Railway_Scene_LoD3: **identical graph digests** (every node, edge and property, random ids masked), and identical node and edge census in all sections.
 - The legacy 2.0 exports are identical after masking random ids, except Railway. There, exactly the 12 implicit-geometry references changed from `<gml:MultiSurface xlink:href>` to `<relativeGMLGeometry xlink:href>`, and the XSD errors dropped from 21 to 9.
-- All baseline legacy exports were already XSD-invalid before this work (lod2Solid order, address namespace, installation order). `--writer strict` writes them valid: FZK LoD0/2/3/4 and new_elements_test as 2.0 and 3.0, Railway as 3.0 (Tunnel, Relief and Group reported).
+- All baseline legacy exports were XSD-invalid before this work (lod2Solid order, address namespace, installation order); since the building-module work (§5) the FZK-Haus ones are valid. `--writer strict` writes them valid too: FZK LoD0-4 and new_elements_test as 2.0 and 3.0, Railway as 3.0 (Tunnel, Relief and Group reported).
 
 **Other checks.**
 
@@ -345,9 +375,10 @@ Census of two source tiles against their merged 3.0 export:
 
 ## 7. Limitations
 
-- **Not ingested in 3.0** (counted in the ingest summary, never dropped silently): tun:Tunnel, dem:ReliefFeature, grp:CityObjectGroup, bldg:BuildingConstructiveElement / BuildingFurniture / BuildingSubdivision, brid:BridgeRoom / BridgeFurniture, con:filling, con:constructionEvent, core:pointCloud, versioning, implicit representations or MultiCurves given only by xlink, `gml:surfaceMembers` arrays, gml:Surface patch types. The 3.0 writer does not write Tunnel, ReliefFeature or CityObjectGroup (reported).
+- **Not ingested in 3.0** (counted in the ingest summary, never dropped silently): tun:Tunnel, dem:ReliefFeature, grp:CityObjectGroup, brid:BridgeRoom / BridgeFurniture, con:constructionEvent, versioning, building members, subdivisions, fillings and point clouds given only by xlink, implicit representations or MultiCurves given only by xlink, `gml:surfaceMembers` arrays, gml:Surface patch types. The 3.0 writer does not write Tunnel, ReliefFeature or CityObjectGroup (reported).
 - **2.0 codec gaps are left as they were**, so the 2.0 regression stays identical: 2.0 appearance, PlantCover geometry and polygon `srsName` are not ingested, and polygons without gml:id get random ids. They matter only for the 3.0 → 2.0 → graph → 3.0 chain.
-- **Cross-version exports are lossy by design** (table above). Everything lost is in the loss report.
+- **Cross-version exports are lossy by design** (table above). Everything lost is in the loss report. A 3.0 building modelled only by constructive elements (the FZK-Haus "Construction" variants) exports to 2.0 without geometry: 2.0 has no element for them.
+- **Strict 2.0 → 2.0** (only used with `--writer strict` or an `--id-prefix`) does not repeat `srsDimension` on the root envelope's corners.
 - **Memory.** The strict writer streams in batches of top-level features, and every step scales with the selection (§4a: 400 m box about 120 MB, 2 km box about 420 MB). The `written`-id set, the plan and the collected appearance targets grow with the document, so a full-city export needs memory in proportion to its size and is still one huge file. The legacy 2.0 writer still builds its document in memory.
 - **Tiled appearances.** A tiled Dataset's per-tile Appearances are not written one by one; their materials are written once each, inside their host Appearance (§1). The Appearance a material was read from in a given tile is therefore not preserved across tiles.
 - **Clipping scope.** Only the transportation hierarchy is clipped. A Road's own lod0MultiCurve, and kept surfaces that only partly overlap the box, are written whole (no geometric cutting). Sub-features without a bbox are kept, so run `--backfill-bbox` on graphs ingested before this change. References to features outside the box are written as their original cross-tile href when one exists; otherwise they are dropped and reported (`predecessor/successor/relatedTo target not in export`).

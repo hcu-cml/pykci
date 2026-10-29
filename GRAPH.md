@@ -260,6 +260,23 @@ their original href.
 (BuildingInstallation)     -[:HAS_LOD_GEOMETRY {lod}]->         (GeometryMultiSurface)
 (BuildingInstallation)     -[:HAS_BOUNDARY {order}]->           (BoundarySurface)
 (BoundarySurface)          -[:HAS_OPENING {order}]->            (Opening)                # Door / Window
+
+── CityGML 3.0 building content (no 2.0 equivalent; same edges as above where 2.0 has one) ──
+(Building|BuildingPart)    -[:HAS_SUBDIVISION {order}]->        (BuildingSubdivision:Storey|BuildingUnit)
+(Building|BuildingPart|BuildingSubdivision)
+                           -[:HAS_NESTED {prop:'buildingConstructiveElement', order}]-> (NestedFeature {feature_kind:'BuildingConstructiveElement', ns_prefix:'bldg'})
+(NestedFeature)            -[:HAS_OPENING {order, prop:'filling'}]-> (Opening {filling_type:'Window'|'Door'})   # con:filling
+(Building|BuildingPart|BuildingSubdivision)
+                           -[:HAS_INTERIOR_FURNITURE {order}]-> (BuildingFurniture)      # furniture outside a room
+(BuildingSubdivision)      -[:HAS_BOUNDARY|HAS_INTERIOR_ROOM|HAS_OUTER_INSTALLATION|HAS_INTERIOR_INSTALLATION]-> (…)
+(Storey)                   -[:HAS_BUILDING_UNIT {order}]->      (BuildingUnit)           # bldg:buildingUnit (xlink)
+(BuildingUnit)             -[:HAS_STOREY {order}]->             (Storey)                 # bldg:storey (xlink)
+(space|BoundarySurface|Opening) -[:HAS_POINT_CLOUD]->           (PointCloud)             # core:pointCloud
+# 3.0 building installations: relationToConstruction 'inside' → HAS_INTERIOR_INSTALLATION,
+# else HAS_OUTER_INSTALLATION (the 2.0 split); in a BuildingRoom → HAS_ROOM_INSTALLATION.
+# Every feature-level node (features, sub-features, surfaces, openings, interior features,
+# point clouds, appearances) carries `citygml_version` ('2.0' / '3.0') of its source file,
+# so a graph mixing both encodings still says which subgraph came from which version.
 (Opening)                  -[:HAS_LOD_SURFACE {lod}]->          (GeometryMultiSurface)
 
 ── Transportation module ────────────────────────────────────────────────────────
@@ -430,7 +447,7 @@ See [LOSSLESS_ROUNDTRIP.md](LOSSLESS_ROUNDTRIP.md) for the full catalogue of Cit
 | `id` | slug of filename stem |
 | `name`, `source` | filename |
 | `format` | root namespace URI → `"CityGML 2.0"` / `"CityGML 3.0"` |
-| `citygml_version`, `gml_version` | `"3.0"` / `"3.2"` (3.0 codec; a Dataset without them is 2.0 / 3.1.1) |
+| `citygml_version`, `gml_version` | `"3.0"` / `"3.2"` (3.0 codec); `citygml_version` `"2.0"` / `"1.0"` from the 2.0 path (older 2.0 Datasets have neither). The same `citygml_version` is on every feature-level node of the Dataset |
 | `gml_id` | `gml:id` of the CityModel (3.0 codec) |
 | `rtree_layer` | R-tree layer of its features (3.0 codec / `--rtree-layer`) |
 | `source_files` | the files ingested into the Dataset; only they may share gml:ids (see *Source scope of gml:ids*) |

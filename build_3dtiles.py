@@ -1376,7 +1376,7 @@ _GEOM_HOLES = ("OPTIONAL MATCH (p)-[:HAS_INTERIOR_RING]->(ri:GeometryRing) "
                "WITH * ORDER BY ri.ring_index ")
 _Q_BOUNDARY = """
     UNWIND $ids AS fid
-    MATCH (f:Entity {id: fid})-[:HAS_BUILDING_PART|HAS_SECTION|HAS_INTERSECTION|HAS_TRAFFIC_SPACE|HAS_MARKING|HAS_BRIDGE_PART|HAS_NESTED*0..]->(g)
+    MATCH (f:Entity {id: fid})-[:HAS_BUILDING_PART|HAS_SECTION|HAS_INTERSECTION|HAS_TRAFFIC_SPACE|HAS_MARKING|HAS_BRIDGE_PART|HAS_NESTED|HAS_SUBDIVISION*0..]->(g)
     MATCH (g)-[:HAS_BOUNDARY]->(bs:BoundarySurface)-[:HAS_POLYGON]->(p:GeometryPolygon)
           -[:HAS_EXTERIOR_RING]->(r:GeometryRing)
     WHERE r.pos_list IS NOT NULL AND r.pos_list <> ''
@@ -1389,7 +1389,7 @@ _Q_BOUNDARY = """
 """
 _Q_SOLID = """
     UNWIND $ids AS fid
-    MATCH (f:Entity {id: fid})-[:HAS_BUILDING_PART|HAS_SECTION|HAS_INTERSECTION|HAS_TRAFFIC_SPACE|HAS_MARKING|HAS_BRIDGE_PART|HAS_NESTED*0..]->(g)
+    MATCH (f:Entity {id: fid})-[:HAS_BUILDING_PART|HAS_SECTION|HAS_INTERSECTION|HAS_TRAFFIC_SPACE|HAS_MARKING|HAS_BRIDGE_PART|HAS_NESTED|HAS_SUBDIVISION*0..]->(g)
     MATCH (g)-[:HAS_LOD_SOLID]->(s:GeometrySolid)-[:HAS_SURFACE_MEMBER*1..2]->(p:GeometryPolygon)
           -[:HAS_EXTERIOR_RING]->(r:GeometryRing)
     WHERE r.pos_list IS NOT NULL AND r.pos_list <> ''
@@ -1401,7 +1401,7 @@ _Q_SOLID = """
 """
 _Q_MULTISURFACE = """
     UNWIND $ids AS fid
-    MATCH (f:Entity {id: fid})-[:HAS_BUILDING_PART|HAS_SECTION|HAS_INTERSECTION|HAS_TRAFFIC_SPACE|HAS_MARKING|HAS_BRIDGE_PART|HAS_NESTED*0..]->(g)
+    MATCH (f:Entity {id: fid})-[:HAS_BUILDING_PART|HAS_SECTION|HAS_INTERSECTION|HAS_TRAFFIC_SPACE|HAS_MARKING|HAS_BRIDGE_PART|HAS_NESTED|HAS_SUBDIVISION*0..]->(g)
     MATCH (g)-[hs:HAS_LOD_SURFACE]->(ms:GeometryMultiSurface)-[:HAS_SURFACE_MEMBER]->(p:GeometryPolygon)
           -[:HAS_EXTERIOR_RING]->(r:GeometryRing)
     WHERE r.pos_list IS NOT NULL AND r.pos_list <> ''
@@ -1418,7 +1418,7 @@ _Q_MULTISURFACE = """
 # matrix and reference point on the feature's HAS_PROTOTYPE edge (furniture, trees).
 _Q_PROTOTYPE = """
     UNWIND $ids AS fid
-    MATCH (f:Entity {id: fid})-[:HAS_BUILDING_PART|HAS_SECTION|HAS_INTERSECTION|HAS_TRAFFIC_SPACE|HAS_MARKING|HAS_BRIDGE_PART|HAS_NESTED*0..]->(g)
+    MATCH (f:Entity {id: fid})-[:HAS_BUILDING_PART|HAS_SECTION|HAS_INTERSECTION|HAS_TRAFFIC_SPACE|HAS_MARKING|HAS_BRIDGE_PART|HAS_NESTED|HAS_SUBDIVISION*0..]->(g)
     MATCH (g)-[hp:HAS_PROTOTYPE]->(t:GeometryPrototype)
           -[:HAS_SURFACE_MEMBER|HAS_SOLID_MEMBER*1..2]->(p:GeometryPolygon)
           -[:HAS_EXTERIOR_RING]->(r:GeometryRing)
