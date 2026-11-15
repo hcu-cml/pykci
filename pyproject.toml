@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pykci"
-version = "0.1.0"
+dynamic = ["version"]          # pykci.__version__ (src/pykci/__init__.py)
 description = "Python Knowledge Graph for Cities: CityGML <-> Neo4j, OSM fusion, 3D Tiles"
 readme = "README.md"
 license = "MIT"
@@ -28,33 +28,26 @@ llm = [
     "langchain-anthropic",
 ]
 capture = ["playwright"]
+test = ["pytest>=8", "ruff>=0.6"]     # ruff: the undefined-name check of the contract tests
 
 [project.urls]
 Repository = "https://github.com/hcu-cml/pykci"
 
 [project.scripts]
-pykci = "pykci_cli:main"
+pykci = "pykci.cli:main"
 
-# The pipeline scripts stay standalone files at the repo root (run them directly
-# as before); packaging installs them as top-level modules behind the `pykci`
-# command. tools/ and eval/ are only reachable from a source checkout, so
-# install editable (`pip install -e .`) to use footprints / inventory / stats.
-[tool.setuptools]
-py-modules = [
-    "pykci_cli",
-    "pykci_runtime",
-    "pykci_provenance",
-    "citygml_profiles",
-    "citygml_writer",
-    "ingest_citygml",
-    "ingest_osm",
-    "ingest_roof_materials",
-    "enrich_lod3_facades",
-    "export_citygml",
-    "build_3dtiles",
-    "build_graph_pointcloud",
-    "export_graph_html",
-    "export_roofmat_footprints",
-    "visualize_buildings_3d",
-    "visualize_graph_3d",
-]
+# The code is the package src/pykci (a library and the `pykci` command). The files at the
+# repository root with the old script names (ingest_citygml.py, …) are shims for running
+# from a checkout (_pykci_shim.py); they are not installed. eval/ holds research scripts
+# that run from a source checkout only, so install editable (`pip install -e .`) to use
+# inventory / stats / osm-census.
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "pykci.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# markers and the database fixtures: src/pykci/testing/plugin.py
+addopts = "-ra --strict-markers --import-mode=importlib -p pykci.testing.plugin"

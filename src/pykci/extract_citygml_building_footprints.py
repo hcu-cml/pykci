@@ -50,92 +50,21 @@ from pathlib import Path
 
 from lxml import etree
 
+from pykci import crs
+from pykci.crs import epsg_from_srs, peek_srsname
+from pykci.runtime import console
+
 GML_ID = "{http://www.opengis.net/gml}id"
 
 
-# ---------------------------------------------------------------------------
-# CRS resolution  (kept in sync with ingest_citygml._epsg_from_srs)
-# ---------------------------------------------------------------------------
-
-def resolve_epsg(srs):
-    """Resolve a CityGML srsName to an 'EPSG:NNNN' string.
-
-    Handles the plain/urn EPSG forms plus the two non-EPSG conventions seen in
-    real data: adv/ETRS89-UTM compound urns (Hamburg → EPSG:258xx) and Swiss
-    CH1903/LV95 names. Returns the original string if nothing matches (pyproj
-    may still understand it), or None for empty input."""
-    if not srs:
-        return None
-    m = re.search(r"EPSG[:/]+(?:\d+/)?(\d{4,6})", srs)
-    if m:
-        return f"EPSG:{m.group(1)}"
-    u = srs.upper().replace(" ", "")
-    m = re.search(r"UTM(\d{2})", u)          # ETRS89_UTM32 → EPSG:25832
-    if m:
-        return f"EPSG:258{m.group(1)}"
-    if "CH1903+" in u or "LV95" in u:
-        return "EPSG:2056"
-    if "CH1903" in u or "LV03" in u:
-        return "EPSG:21781"
-    return srs
-
-
-def peek_srsname(path, chunk_size=1_048_576):
-    """Return the first srsName in a CityGML file, or None if it has none.
-    Scans in chunks and stops at the first match, so it is cheap for populated
-    files (srsName sits near the top) yet still finds a CRS declared deeper in
-    the file; only a genuinely CRS-less file (e.g. an empty placeholder tile) is
-    read to EOF — those are tiny. A small tail is carried between chunks so a
-    match split across a boundary is not missed."""
-    pat = re.compile(rb'srsName="([^"]+)"')
-    tail = b""
-    with open(path, "rb") as fh:
-        while True:
-            chunk = fh.read(chunk_size)
-            if not chunk:
-                return None
-            m = pat.search(tail + chunk)
-            if m:
-                return m.group(1).decode("utf-8", "ignore")
-            tail = chunk[-200:]
-
-
-class Reprojector:
-    """Transform CityGML coordinates from a source CRS to a target CRS.
-
-    Reading normalises GML axis order: a *geographic* source stores (lat, lon),
-    so we feed the transformer (lon, lat); a *projected* source stores
-    (easting, northing) and passes straight through. With always_xy the output
-    is (X, Y) = (lon, lat) for a geographic target or (easting, northing) for a
-    projected one — exactly GeoJSON's expected coordinate order.
-
-    Z is scaled by the source's horizontal linear unit so heights come out in
-    metres for projected sources measured in feet (e.g. NYC EPSG:2263); a
-    geographic source's Z is already a metric height and passes through."""
+class Reprojector(crs.Reprojector):
+    """The shared reprojector with the labels the report prints: with always_xy its
+    output is exactly GeoJSON's coordinate order."""
 
     def __init__(self, src_crs, dst_crs):
-        from pyproj import CRS, Transformer
-        src_obj = CRS.from_user_input(src_crs)
-        dst_obj = CRS.from_user_input(dst_crs)
-        self.src_epsg = _crs_label(src_obj, src_crs)
-        self.dst_epsg = _crs_label(dst_obj, dst_crs)
-        self.src_geographic = src_obj.is_geographic
-        self.dst_geographic = dst_obj.is_geographic
-        self.z_factor = 1.0
-        if not self.src_geographic:
-            try:
-                f = src_obj.axis_info[0].unit_conversion_factor
-                if f:
-                    self.z_factor = f
-            except Exception:
-                pass
-        self.tf = Transformer.from_crs(src_obj, dst_obj, always_xy=True)
-
-    def point(self, a, b, z=None):
-        x, y = self.tf.transform(b, a) if self.src_geographic else self.tf.transform(a, b)
-        if z is None:
-            return x, y, None
-        return x, y, z * self.z_factor
+        super().__init__(src_crs, dst_crs)
+        self.src_epsg = _crs_label(self.src, src_crs)
+        self.dst_epsg = _crs_label(self.dst, dst_crs)
 
 
 def _crs_label(crs_obj, fallback):
@@ -352,7 +281,7 @@ def make_reprojector(src_srs, args):
     """Build a Reprojector for one file, honouring --source-crs / --target-crs /
     --keep-source-crs. Returns (reprojector, note) or (None, reason) if the
     source CRS is unknown and reprojection was requested."""
-    src = args.source_crs or (resolve_epsg(src_srs) if src_srs else None)
+    src = args.source_crs or (epsg_from_srs(src_srs) if src_srs else None)
     if src is None:
         if args.keep_source_crs:
             return _IdentityReprojector(), "unknown"
@@ -529,4 +458,5 @@ def main():
 
 
 if __name__ == "__main__":
+    console()
     sys.exit(main())

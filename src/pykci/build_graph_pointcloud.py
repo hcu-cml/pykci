@@ -21,59 +21,37 @@ Usage:
 """
 
 import argparse
-import hashlib
 import json
 import math
-import re
 import struct
 import sys
 import time
 from pathlib import Path
 
 import numpy as np
-from neo4j import GraphDatabase
 from pyproj import Transformer
 
-NEO4J_URI  = "bolt://localhost:7687"
-NEO4J_AUTH = ("neo4j", "neo4jneo4j")
+from pykci import graphview
+from pykci.crs import geoid_undulation, horiz_epsg_from_srs
+from pykci.graphview import (DEFAULT_COLOR, SKIP_PROPS, fetch_all_edges, fetch_all_nodes,
+                             fetch_dataset, node_group, node_label, xy_jitter)
+from pykci.runtime import connect, console
 
-_SKIP_PROPS = frozenset({"pos_list", "embedding", "embedding_ollama", "bbox_wkt", "location"})
+# the shared tables plus the enrichment layers (provenance-coloured: OSM = green, LoD3 = gold)
+LABEL_COLORS = {**graphview.LABEL_COLORS,
+                "OsmBuilding": "#43A047", "OsmPOI": "#9CCC65",
+                "Lod3Facade": "#FFB300", "Opening": "#FFE082"}
+_PIXEL_SIZE = {**graphview.PIXEL_SIZE,
+               "OsmBuilding": 12, "OsmPOI": 9, "Lod3Facade": 6, "Opening": 6}
 
-_ADV_COMPOUND = {
-    "ETRS89_UTM32": "EPSG:5555", "ETRS89_UTM33": "EPSG:5556",
-    "DE_DHDN_GK2":  "EPSG:5675", "DE_DHDN_GK3":  "EPSG:5678",
-    "DE_DHDN_GK4":  "EPSG:5679", "DE_DHDN_GK5":  "EPSG:5680",
-}
-
-LABEL_COLORS = {
-    "Building": "#FF7043", "Dataset": "#FFD54F", "District": "#AED581",
-    "City": "#81D4FA", "BuildingFunction": "#CE93D8", "RoofType": "#F48FB1",
-    "RoofSurface": "#FF8A65", "WallSurface": "#CFD8DC", "GroundSurface": "#BCAAA4",
-    "ClosureSurface": "#B0BEC5", "OuterCeilingSurface": "#90A4AE",
-    "OuterFloorSurface": "#A1887F", "GeometrySolid": "#80CBC4",
-    "GeometryPolygon": "#4DB6AC", "GeometryRing": "#26A69A",
-    "GeometryLineString": "#80DEEA", "TerrainIntersection": "#A5D6A7",
-    "Road": "#78909C", "Railway": "#CE93D8", "Track": "#AB47BC",
-    "Square": "#FFCC80", "TransportationComplex": "#90A4AE",
-    "SolitaryVegetationObject": "#81C784", "PlantCover": "#66BB6A",
-    "WaterBody": "#4FC3F7", "LandUse": "#DCE775", "CityFurniture": "#CE93D8",
-    "ReliefFeature": "#BCAAA4", "Bridge": "#A1887F", "Tunnel": "#78909C",
-    "CityObjectGroup": "#80CBC4",
-    # Enrichment layers (provenance-coloured): OSM = green, LoD3 = gold/violet
-    "OsmBuilding": "#43A047", "OsmPOI": "#9CCC65",
-    "Lod3Facade": "#FFB300", "Opening": "#FFE082",
-}
-_DEFAULT_COLOR = "#90A4AE"
-
-_PIXEL_SIZE = {
-    "Building": 14, "Dataset": 13, "City": 13, "District": 12,
-    "BuildingFunction": 9, "RoofType": 9,
-    "RoofSurface": 7, "WallSurface": 7, "GroundSurface": 7,
-    "ClosureSurface": 6, "OuterCeilingSurface": 6, "OuterFloorSurface": 6,
-    "GeometrySolid": 8, "TerrainIntersection": 6,
-    "GeometryPolygon": 5, "GeometryLineString": 5, "GeometryRing": 4,
-    "OsmBuilding": 12, "OsmPOI": 9, "Lod3Facade": 6, "Opening": 6,
-}
+# labels that name a node's group: the enrichment layers first, then the shared order with
+# the composite surfaces
+_GROUP_LABELS = ("OsmBuilding", "OsmPOI", "Lod3Facade", "Opening",
+                 "Dataset", "City", "District", "Building",
+                 "BuildingFunction", "RoofType",
+                 "GeometrySolid", "GeometryMultiSurface", "GeometryCompositeSurface",
+                 "GeometryPolygon", "GeometryRing", "GeometryLineString",
+                 "TerrainIntersection")
 
 # Priority: lower = higher importance = placed in parent tile (visible at coarser zoom)
 _PRIORITY_RULES = [
@@ -96,364 +74,25 @@ def _node_priority(labels: list) -> int:
     return 4
 
 
-def _node_group(labels: list, props: dict) -> str:
-    for lbl in ("OsmBuilding", "OsmPOI", "Lod3Facade", "Opening",
-                "Dataset", "City", "District", "Building",
-                "BuildingFunction", "RoofType",
-                "GeometrySolid", "GeometryMultiSurface", "GeometryCompositeSurface",
-                "GeometryPolygon", "GeometryRing", "GeometryLineString",
-                "TerrainIntersection"):
-        if lbl in labels:
-            return lbl
-    if "BoundarySurface" in labels:
-        return props.get("surface_type", "BoundarySurface")
-    ftype = props.get("feature_type", "")
-    return ftype or next(
-        (l for l in labels if l not in ("CityObject", "Entity")), "CityObject"
-    )
-
-
-def _node_label(labels: list, props: dict) -> str:
-    pid = props.get("id", "")
-    if "Dataset"          in labels: return props.get("name", pid)[:24]
-    if "City"             in labels: return props.get("name", pid)[:20]
-    if "District"         in labels: return props.get("name", pid)[:20]
-    if "BuildingFunction" in labels: return props.get("name", props.get("code", pid))[:20]
-    if "RoofType"         in labels: return props.get("name", props.get("code", pid))[:20]
-    if "Building"         in labels: return pid[:20]
-    if "BoundarySurface"  in labels: return props.get("surface_type", pid)[:16]
-    return pid[:12]
-
-
 def _hex_rgb(h: str) -> tuple:
     h = h.lstrip("#")
     return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
 
 
-def _xy_jitter(eid_str: str, radius_m: float = 2.0) -> tuple:
-    digest = hashlib.md5(eid_str.encode()).hexdigest()
-    angle  = int(digest[:8],  16) / 0xFFFFFFFF * 2 * math.pi
-    r      = int(digest[8:16], 16) / 0xFFFFFFFF * radius_m
-    return r * math.cos(angle), r * math.sin(angle)
-
-
-# ── CRS helpers ───────────────────────────────────────────────────────────────
-
-def _horiz_epsg(srs_name: str) -> str:
-    m = re.search(r"EPSG[:\s]+(\d+)", srs_name)
-    if m: return f"EPSG:{m.group(1)}"
-    m = re.search(r"ETRS89_UTM(\d+)", srs_name, re.IGNORECASE)
-    if m: return f"EPSG:{25800 + int(m.group(1))}"
-    m = re.search(r"GK(\d)", srs_name, re.IGNORECASE)
-    if m: return f"EPSG:{31464 + int(m.group(1))}"
-    return srs_name
-
-
-def _geoid_offset(srs_name: str, sx: float, sy: float, sz: float) -> float:
-    compound = next(
-        (epsg for pat, epsg in _ADV_COMPOUND.items() if pat.lower() in srs_name.lower()),
-        None,
-    )
-    if compound is None:
-        print(f"  Note: no compound CRS for '{srs_name}'; geoid offset=0.0m")
-        return 0.0
-    try:
-        t = Transformer.from_crs(compound, "EPSG:4979", always_xy=True)
-        _, _, h_ell = t.transform(sx, sy, sz)
-        return h_ell - sz
-    except Exception as exc:
-        print(f"  Note: geoid transform failed ({exc}); geoid offset=0.0m")
-        return 0.0
-
-
-# ── Neo4j queries ─────────────────────────────────────────────────────────────
-
-def fetch_dataset(driver):
-    with driver.session() as s:
-        row = s.run("""
-            MATCH (d:Dataset)
-            RETURN d.crs AS crs, d.bbox_min_x AS x, d.bbox_min_y AS y, d.bbox_min_z AS z
-            LIMIT 1
-        """).single()
-    crs = (row["crs"] if row else None) or "EPSG:25832"
-    sx  = float(row["x"] or 0) if row else 0.0
-    sy  = float(row["y"] or 0) if row else 0.0
-    sz  = float(row["z"] or 0) if row else 0.0
-    print(f"  CRS: {crs}")
-    return crs, sx, sy, sz
-
-
-def _centroid_from_pos_lists(pos_lists):
-    xs, ys, zs = [], [], []
-    for pl in pos_lists:
-        if not pl: continue
-        coords = list(map(float, pl.split()))
-        xs.extend(coords[0::3]); ys.extend(coords[1::3]); zs.extend(coords[2::3])
-    if not xs:
-        return None, None, None
-    return sum(xs) / len(xs), sum(ys) / len(ys), sum(zs) / len(zs)
-
-
-def _centroid_from_pos_str(pos_str: str):
-    return _centroid_from_pos_lists([pos_str]) if pos_str else (None, None, None)
-
-
-def fetch_all_nodes(driver, exclude_osm_geometry: bool = False,
-                    include_osm_enrichment: bool = False) -> list:
-    print("Fetching graph nodes…", flush=True)
-    t0_total = time.perf_counter()
-    nodes = []
-    # When showing OSM as an explicit enrichment layer we suppress the raw OSM
-    # geometry chain (road linestrings, footprint polygons/rings) so the teaser
-    # graph stays building-centric instead of drowning in street furniture.
-    def _no_osm(var: str) -> str:
-        return f" AND NOT coalesce({var}.source,'') STARTS WITH 'osm'" if exclude_osm_geometry else ""
-
-    with driver.session() as s:
-
-        # 1. Building + CityObject
-        t0 = time.perf_counter()
-        rows = s.run("""
-            MATCH (n) WHERE (n:Building OR n:CityObject)
-              AND n.center_x IS NOT NULL AND n.center_y IS NOT NULL
-            RETURN elementId(n) AS eid, labels(n) AS labels, properties(n) AS props,
-                   toFloat(n.center_x) AS cx, toFloat(n.center_y) AS cy,
-                   toFloat(coalesce(n.ground_z, n.bbox_min_z, 0.0)) AS gz,
-                   toFloat(coalesce(n.measured_height, 0.0)) AS mh,
-                   toFloat(coalesce(n.bbox_max_z, n.ground_z, 0.0)) AS bz2
-        """).data()
-        for r in rows:
-            gz = r["gz"] or 0.0; mh = r["mh"] or 0.0; bz2 = r["bz2"] or 0.0
-            cz = gz + (mh / 2.0 if mh else (bz2 - gz) / 2.0)
-            nodes.append({"eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                          "cx": r["cx"], "cy": r["cy"], "cz": cz,
-                          "jitter": False, "alt_extra": 0.0})
-        print(f"  {len(rows):>6} Building/CityObject  ({time.perf_counter()-t0:.2f}s)", flush=True)
-
-        # 2. BoundarySurface
-        t0 = time.perf_counter()
-        rows = s.run("""
-            MATCH (bs:BoundarySurface)-[:HAS_POLYGON]->(:GeometryPolygon)
-                  -[:HAS_EXTERIOR_RING]->(rng:GeometryRing)
-            WITH bs, collect(rng.pos_list) AS pls
-            RETURN elementId(bs) AS eid, labels(bs) AS labels, properties(bs) AS props, pls
-        """).data()
-        ok = 0
-        for r in rows:
-            cx, cy, cz = _centroid_from_pos_lists(r["pls"])
-            if cx is None: continue
-            nodes.append({"eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                          "cx": cx, "cy": cy, "cz": float(cz or 0),
-                          "jitter": True, "alt_extra": 0.0})
-            ok += 1
-        print(f"  {ok:>6} BoundarySurface      ({time.perf_counter()-t0:.2f}s)", flush=True)
-
-        # 3. GeometrySolid
-        t0 = time.perf_counter()
-        rows = s.run("""
-            MATCH (s:GeometrySolid)-[:HAS_SURFACE_MEMBER]->(:GeometryPolygon)
-                  -[:HAS_EXTERIOR_RING]->(rng:GeometryRing)
-            WITH s, collect(rng.pos_list) AS pls
-            RETURN elementId(s) AS eid, labels(s) AS labels, properties(s) AS props, pls
-        """).data()
-        ok = 0
-        for r in rows:
-            cx, cy, cz = _centroid_from_pos_lists(r["pls"])
-            if cx is None: continue
-            nodes.append({"eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                          "cx": cx, "cy": cy, "cz": float(cz or 0),
-                          "jitter": True, "alt_extra": 6.0})
-            ok += 1
-        print(f"  {ok:>6} GeometrySolid        ({time.perf_counter()-t0:.2f}s)", flush=True)
-
-        # 4. GeometryMultiSurface
-        t0 = time.perf_counter()
-        rows = s.run("""
-            MATCH (ms:GeometryMultiSurface)-[:HAS_SURFACE_MEMBER]->(:GeometryPolygon)
-                  -[:HAS_EXTERIOR_RING]->(rng:GeometryRing)
-            WITH ms, collect(rng.pos_list) AS pls
-            RETURN elementId(ms) AS eid, labels(ms) AS labels, properties(ms) AS props, pls
-        """).data()
-        ok = 0
-        for r in rows:
-            cx, cy, cz = _centroid_from_pos_lists(r["pls"])
-            if cx is None: continue
-            nodes.append({"eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                          "cx": cx, "cy": cy, "cz": float(cz or 0),
-                          "jitter": True, "alt_extra": 4.0})
-            ok += 1
-        print(f"  {ok:>6} GeometryMultiSurface ({time.perf_counter()-t0:.2f}s)", flush=True)
-
-        # 5. GeometryPolygon
-        t0 = time.perf_counter()
-        rows = s.run(f"""
-            MATCH (p:GeometryPolygon)-[:HAS_EXTERIOR_RING]->(rng:GeometryRing)
-            WHERE true{_no_osm('p')}
-            WITH p, collect(rng.pos_list) AS pls
-            RETURN elementId(p) AS eid, labels(p) AS labels, properties(p) AS props, pls
-        """).data()
-        ok = 0
-        for r in rows:
-            cx, cy, cz = _centroid_from_pos_lists(r["pls"])
-            if cx is None: continue
-            nodes.append({"eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                          "cx": cx, "cy": cy, "cz": float(cz or 0),
-                          "jitter": True, "alt_extra": 3.0})
-            ok += 1
-        print(f"  {ok:>6} GeometryPolygon      ({time.perf_counter()-t0:.2f}s)", flush=True)
-
-        # 6. GeometryRing
-        t0 = time.perf_counter()
-        rows = s.run(f"""
-            MATCH (rng:GeometryRing) WHERE rng.pos_list IS NOT NULL{_no_osm('rng')}
-            RETURN elementId(rng) AS eid, labels(rng) AS labels, properties(rng) AS props,
-                   rng.pos_list AS pos_str
-        """).data()
-        ok = 0
-        for r in rows:
-            cx, cy, cz = _centroid_from_pos_str(r["pos_str"])
-            if cx is None: continue
-            nodes.append({"eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                          "cx": cx, "cy": cy, "cz": float(cz or 0),
-                          "jitter": True, "alt_extra": -3.0})
-            ok += 1
-        print(f"  {ok:>6} GeometryRing         ({time.perf_counter()-t0:.2f}s)", flush=True)
-
-        # 7. GeometryLineString
-        t0 = time.perf_counter()
-        rows = s.run(f"""
-            MATCH (ls:GeometryLineString) WHERE ls.pos_list IS NOT NULL{_no_osm('ls')}
-            RETURN elementId(ls) AS eid, labels(ls) AS labels, properties(ls) AS props,
-                   ls.pos_list AS pos_str
-        """).data()
-        ok = 0
-        for r in rows:
-            cx, cy, cz = _centroid_from_pos_str(r["pos_str"])
-            if cx is None: continue
-            nodes.append({"eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                          "cx": cx, "cy": cy, "cz": float(cz or 0),
-                          "jitter": True, "alt_extra": 0.0})
-            ok += 1
-        print(f"  {ok:>6} GeometryLineString   ({time.perf_counter()-t0:.2f}s)", flush=True)
-
-        # 8. TerrainIntersection
-        t0 = time.perf_counter()
-        rows = s.run("""
-            MATCH (ti:TerrainIntersection)-[:HAS_LINE]->(ls:GeometryLineString)
-            WITH ti, collect(ls.pos_list) AS pls
-            RETURN elementId(ti) AS eid, labels(ti) AS labels, properties(ti) AS props, pls
-        """).data()
-        ok = 0
-        for r in rows:
-            cx, cy, cz = _centroid_from_pos_lists(r["pls"])
-            if cx is None: continue
-            nodes.append({"eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                          "cx": cx, "cy": cy, "cz": float(cz or 0),
-                          "jitter": False, "alt_extra": 0.0})
-            ok += 1
-        print(f"  {ok:>6} TerrainIntersection  ({time.perf_counter()-t0:.2f}s)", flush=True)
-
-        # 8b. OSM enrichment layer: OSM buildings matched to pykci buildings +
-        #     POIs attached to buildings, floated above their footprints so the
-        #     ENRICHED_BY / HAS_POI edges read as crowd-sourced enrichment tethers.
-        if include_osm_enrichment:
-            t0 = time.perf_counter()
-            rows = s.run("""
-                MATCH (b:Building)-[:ENRICHED_BY|HAS_POI]->(o:OsmFeature)
-                WHERE o.center_x IS NOT NULL AND o.center_y IS NOT NULL
-                RETURN DISTINCT elementId(o) AS eid, labels(o) AS labels,
-                       properties(o) AS props,
-                       toFloat(o.center_x) AS cx, toFloat(o.center_y) AS cy
-            """).data()
-            ok = 0
-            for r in rows:
-                is_poi = "OsmPOI" in r["labels"]
-                nodes.append({"eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                              "cx": r["cx"], "cy": r["cy"], "cz": 0.0,
-                              "jitter": is_poi, "alt_extra": 10.0 if is_poi else 24.0})
-                ok += 1
-            print(f"  {ok:>6} OSM enrichment       ({time.perf_counter()-t0:.2f}s)", flush=True)
-            if not ok:
-                print("  Note: no matched OsmFeature nodes found — run ingest_osm.py "
-                      "first if OSM enrichment is expected.", flush=True)
-
-        # 9–13. Aggregate-positioned nodes
-        for label, match_cypher, alt_extra in [
-            ("BuildingFunction",
-             "MATCH (b:Building)-[:HAS_FUNCTION]->(n:BuildingFunction) WHERE b.center_x IS NOT NULL "
-             "WITH n, avg(toFloat(b.center_x)) AS cx, avg(toFloat(b.center_y)) AS cy, "
-             "max(toFloat(coalesce(b.bbox_max_z, b.ground_z, 0.0))) AS top_z",
-             8.0),
-            ("RoofType",
-             "MATCH (b:Building)-[:HAS_ROOF_TYPE]->(n:RoofType) WHERE b.center_x IS NOT NULL "
-             "WITH n, avg(toFloat(b.center_x)) AS cx, avg(toFloat(b.center_y)) AS cy, "
-             "max(toFloat(coalesce(b.bbox_max_z, b.ground_z, 0.0))) AS top_z",
-             5.0),
-            ("District",
-             "MATCH (n:District)<-[:LOCATED_IN]-(b:Building) WHERE b.center_x IS NOT NULL "
-             "WITH n, avg(toFloat(b.center_x)) AS cx, avg(toFloat(b.center_y)) AS cy, "
-             "max(toFloat(coalesce(b.bbox_max_z, b.ground_z, 0.0))) AS top_z",
-             80.0),
-            ("City",
-             "MATCH (n:City)<-[:PART_OF]-(:District)<-[:LOCATED_IN]-(b:Building) "
-             "WHERE b.center_x IS NOT NULL "
-             "WITH n, avg(toFloat(b.center_x)) AS cx, avg(toFloat(b.center_y)) AS cy, "
-             "max(toFloat(coalesce(b.bbox_max_z, b.ground_z, 0.0))) AS top_z",
-             150.0),
-            ("Dataset",
-             "MATCH (n:Dataset)-[:COVERS]->(:District)<-[:LOCATED_IN]-(b:Building) "
-             "WHERE b.center_x IS NOT NULL "
-             "WITH n, avg(toFloat(b.center_x)) AS cx, avg(toFloat(b.center_y)) AS cy, "
-             "max(toFloat(coalesce(b.bbox_max_z, b.ground_z, 0.0))) AS top_z",
-             220.0),
-        ]:
-            t0 = time.perf_counter()
-            rows = s.run(
-                match_cypher +
-                " RETURN elementId(n) AS eid, labels(n) AS labels, properties(n) AS props,"
-                " cx, cy, top_z AS cz"
-            ).data()
-            cnt = 0
-            for r in rows:
-                if r["cx"] is None: continue
-                nodes.append({"eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                              "cx": float(r["cx"]), "cy": float(r["cy"]),
-                              "cz": float(r["cz"] or 0), "jitter": False, "alt_extra": alt_extra})
-                cnt += 1
-            print(f"  {cnt:>6} {label:<20} ({time.perf_counter()-t0:.2f}s)", flush=True)
-
-    print(f"  ─── total: {len(nodes)} nodes  ({time.perf_counter()-t0_total:.2f}s)")
-    return nodes
-
-
-def fetch_all_edges(driver) -> list:
-    print("Fetching edges…", flush=True)
-    t0 = time.perf_counter()
-    with driver.session() as s:
-        rows = s.run("""
-            MATCH (a)-[r]->(b)
-            WHERE NOT (a:SpatialLayer OR b:SpatialLayer)
-              AND NOT type(r) IN ['RTREE_REFERENCE','RTREE_ROOT','RTREE_METADATA','RTREE_CHILD']
-            RETURN elementId(a) AS feid, elementId(b) AS teid, type(r) AS rel_type
-        """).data()
-    print(f"  {len(rows)} edges  ({time.perf_counter()-t0:.2f}s)")
-    return rows
-
-
 # ── Projection ────────────────────────────────────────────────────────────────
 
 def project_nodes(raw_nodes: list, crs_string: str, geoid_m: float):
-    horiz = _horiz_epsg(crs_string)
+    horiz = horiz_epsg_from_srs(crs_string)
     tf    = Transformer.from_crs(horiz, "EPSG:4326", always_xy=True)
     nodes_out, eid_map = [], {}
 
     for r in raw_nodes:
         eid   = r["eid"]
         labs  = r["labels"]
-        props = {k: v for k, v in r["props"].items() if k not in _SKIP_PROPS}
+        props = {k: v for k, v in r["props"].items() if k not in SKIP_PROPS}
         cx, cy = r["cx"], r["cy"]
         if r.get("jitter"):
-            dx, dy = _xy_jitter(eid)
+            dx, dy = xy_jitter(eid)
             cx += dx; cy += dy
         try:
             lon, lat = tf.transform(cx, cy)
@@ -461,8 +100,8 @@ def project_nodes(raw_nodes: list, crs_string: str, geoid_m: float):
             continue
 
         alt   = r["cz"] + geoid_m + r.get("alt_extra", 0.0)
-        group = _node_group(labs, props)
-        color = LABEL_COLORS.get(group, _DEFAULT_COLOR)
+        group = node_group(labs, props, order=_GROUP_LABELS, generic=("CityObject", "Entity"))
+        color = LABEL_COLORS.get(group, DEFAULT_COLOR)
         r_, g_, b_ = _hex_rgb(color)
         idx = len(nodes_out)
         eid_map[eid] = idx
@@ -476,7 +115,7 @@ def project_nodes(raw_nodes: list, crs_string: str, geoid_m: float):
             "priority":  _node_priority(labs),
             "group":     group,
             "color":     color,
-            "label":     _node_label(labs, props),
+            "label":     node_label(labs, props),
             "labels":    labs,
             "props":     props,
         })
@@ -487,8 +126,8 @@ def project_nodes(raw_nodes: list, crs_string: str, geoid_m: float):
 def build_edges(raw_edges: list, eid_map: dict) -> list:
     out = []
     for r in raw_edges:
-        fi = eid_map.get(r["feid"])
-        ti = eid_map.get(r["teid"])
+        fi = eid_map.get(r["from_eid"])
+        ti = eid_map.get(r["to_eid"])
         if fi is not None and ti is not None:
             out.append({"fi": fi, "ti": ti, "type": r["rel_type"]})
     return out
@@ -696,7 +335,7 @@ def write_tileset(root: QuadTile, output_dir: Path, geo_scale: float) -> dict:
 
 def build_viewer_html(building_tileset_url: str, label_colors: dict,
                       n_nodes: int, n_edges: int, title: str) -> str:
-    lc_json  = json.dumps({**label_colors, "default": _DEFAULT_COLOR})
+    lc_json  = json.dumps({**label_colors, "default": DEFAULT_COLOR})
     btu_json = json.dumps(building_tileset_url)
     from datetime import datetime
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -1152,7 +791,7 @@ def main():
     _ecef_tf = Transformer.from_crs("EPSG:4979", "EPSG:4978", always_xy=True)
 
     # ── Query Neo4j ───────────────────────────────────────────────────────────
-    driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
+    driver = connect()
     try:
         crs, sx, sy, sz = fetch_dataset(driver)
         raw_nodes        = fetch_all_nodes(
@@ -1168,7 +807,7 @@ def main():
         print("No nodes found — is the graph populated?", file=sys.stderr)
         sys.exit(1)
 
-    geoid_m = _geoid_offset(crs, sx, sy, sz)
+    geoid_m, _ = geoid_undulation(crs, sx, sy, sz)
     print(f"  Geoid offset: {geoid_m:+.3f} m")
 
     # ── Project + build quadtree ──────────────────────────────────────────────
@@ -1241,4 +880,5 @@ def main():
 
 
 if __name__ == "__main__":
+    console()
     main()

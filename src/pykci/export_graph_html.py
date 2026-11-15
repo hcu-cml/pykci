@@ -23,10 +23,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from neo4j import GraphDatabase
-
-NEO4J_URI  = "bolt://localhost:7687"
-NEO4J_AUTH = ("neo4j", "neo4jneo4j")
+from pykci.runtime import connect, console
 
 GEOMETRY_LABELS = frozenset({
     "GeometryRing", "GeometryPolygon", "GeometrySolid",
@@ -460,7 +457,7 @@ def main():
         Path(f"output/html/graph_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html")
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
+    driver = connect()
     try:
         nodes, edges = fetch_graph(driver, skip_labels, args.limit)
     finally:
@@ -477,4 +474,5 @@ def main():
 
 
 if __name__ == "__main__":
+    console()
     main()

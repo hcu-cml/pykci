@@ -49,7 +49,7 @@ must be identical (exit 3 otherwise). The script never calls
 Usage (from the project root; ogr2ogr from GDAL on PATH):
     python eval/osm_tau_sweep.py --pbf input/osm/hamburg-260629.osm.pbf \
         --cache-dir <dir outside the repo>
-    python eval/osm_tau_sweep.py ... --uri bolt://localhost:7687 --city hamburg
+    python eval/osm_tau_sweep.py ... --uri <Bolt URI> --city hamburg
 
 Outputs: output/stats/osm_tau_sweep_<city>.{json,csv,md} (+ a PNG of enriched
 buildings and mean primary Jaccard vs tau when matplotlib is importable).
@@ -73,23 +73,25 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "src"))
 
 import neo4j
 import numpy as np
 import shapely
-from neo4j import GraphDatabase, READ_ACCESS
+from neo4j import READ_ACCESS
 from pyproj import Transformer
 from shapely.geometry import shape
 
-import ingest_osm as osm
-from ingest_osm import (
+from pykci import ingest_osm as osm
+from pykci.crs import epsg_from_srs
+from pykci.runtime import NO_SCHEMA_NOTICES, connect, console
+
+console("utf-8")
+from pykci.ingest_osm import (
     NEO4J_URI, NEO4J_AUTH, KIND_LABEL,
-    _all_tags, _epsg_from_srs, classify_kind, extract_layer,
+    _all_tags, classify_kind, extract_layer,
     get_dataset, resolve_extent, fetch_pykci_footprints, match_areas,
     build_enrich_writes, classify_case,
 )
@@ -212,7 +214,7 @@ def environment(driver):
         "neo4j_server": f"{comp['name']} {comp['v']} {comp['edition']}" if comp else None,
         "git_commit": _cmd_out(["git", "rev-parse", "HEAD"], cwd=ROOT),
         "git_dirty_tracked_files": len(status.splitlines()) if status else 0,
-        "ingest_osm_sha256": sha256_file(ROOT / "ingest_osm.py"),
+        "ingest_osm_sha256": sha256_file(Path(osm.__file__)),
     }
 
 
@@ -865,9 +867,7 @@ def main():
     t_start = time.perf_counter()
 
     print(f"Connecting to Neo4j at {args.uri} (read-only sessions) ...")
-    driver = GraphDatabase.driver(args.uri, auth=NEO4J_AUTH,
-                                  notifications_disabled_classifications={"DEPRECATION", "UNRECOGNIZED"})
-    driver.verify_connectivity()
+    driver = connect(args.uri, *NEO4J_AUTH, verify=True, **NO_SCHEMA_NOTICES)
     ro = ReadOnlyDriver(driver)
 
     env = environment(ro)
@@ -879,7 +879,7 @@ def main():
         counts_before = graph_counts(sess)
         print(f"  graph counts before: {counts_before}")
         ds = get_dataset(sess, args.dataset)
-        crs = _epsg_from_srs(ds["crs"])
+        crs = epsg_from_srs(ds["crs"])
         minx, miny, maxx, maxy, recomputed = resolve_extent(sess, ds)
         # identical to ingest_osm.main(): dataset bbox + buffer, inverse-transformed
         fwd = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)

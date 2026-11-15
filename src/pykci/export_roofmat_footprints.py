@@ -20,14 +20,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import sys
 
-from neo4j import GraphDatabase
 from pyproj import Transformer
 
-NEO4J_URI = "bolt://localhost:7687"
-NEO4J_AUTH = ("neo4j", "neo4jneo4j")
+from pykci.crs import horiz_epsg_from_srs
+from pykci.runtime import connect, console
 
 # Roof-material palette — the 'soft' palette from build_3dtiles.py, as hex.
 ROOFMAT_COLORS = {
@@ -55,20 +53,6 @@ BASEMAPS = {
         "attribution": '&copy; OpenStreetMap contributors',
     },
 }
-
-
-def horiz_epsg_from_srs(srs_name: str) -> str:
-    """Map a CityGML srsName to a horizontal EPSG code (subset of build_3dtiles)."""
-    m = re.search(r"EPSG[:\s]+(\d+)", srs_name)
-    if m:
-        return f"EPSG:{m.group(1)}"
-    m = re.search(r"ETRS89_UTM(\d+)", srs_name, re.IGNORECASE)
-    if m:
-        return f"EPSG:{25800 + int(m.group(1))}"
-    m = re.search(r"GK(\d)", srs_name, re.IGNORECASE)
-    if m:
-        return f"EPSG:{31464 + int(m.group(1))}"
-    return srs_name
 
 
 def pos_list_to_xy(pos_str: str, srs_dim: int):
@@ -119,7 +103,7 @@ def main(argv=None):
                     help="Basemap tiles (default: voyager)")
     args = ap.parse_args(argv)
 
-    driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
+    driver = connect()
     with driver.session() as sess:
         sources = [r["s"] for r in sess.run("MATCH (d:Dataset) RETURN d.source AS s")]
         if not sources:
@@ -282,4 +266,5 @@ map.fitBounds(layer.getBounds(), {{ padding: [30, 30] }});
 
 
 if __name__ == "__main__":
+    console()
     main()

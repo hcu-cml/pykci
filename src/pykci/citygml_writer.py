@@ -34,7 +34,7 @@ from collections import Counter, defaultdict
 
 from lxml import etree
 
-from citygml_profiles import PROFILE_V2, PROFILE_V3, XLINK_NS, XSI_NS, href_fragment
+from pykci.citygml_profiles import FEATURE_RELS, PROFILE_V2, PROFILE_V3, XLINK_NS, XSI_NS, href_fragment
 
 XLINK_HREF = f"{{{XLINK_NS}}}href"
 
@@ -117,13 +117,6 @@ TRANSPORT_LABELS = {"Road", "Railway", "Track", "Square", "Waterway", "Section",
 TRANSPORT_TOP = {"Road", "Railway", "Track", "Square", "Waterway", "TransportationComplex"}
 CLIP_RELS = {"HAS_SECTION", "HAS_INTERSECTION", "HAS_TRAFFIC_SPACE", "HAS_MARKING", "HAS_HOLE",
              "HAS_CLEARANCE_SPACE", "HAS_BOUNDARY"}
-FEATURE_RELS = ("HAS_SECTION", "HAS_INTERSECTION", "HAS_TRAFFIC_SPACE", "HAS_MARKING", "HAS_HOLE",
-                "HAS_CLEARANCE_SPACE", "HAS_BOUNDARY", "HAS_OPENING", "HAS_NESTED",
-                "HAS_BRIDGE_PART", "HAS_BUILDING_PART", "HAS_OUTER_INSTALLATION",
-                "HAS_INTERIOR_INSTALLATION", "HAS_INTERIOR_ROOM", "HAS_ROOM_INSTALLATION",
-                "HAS_INTERIOR_FURNITURE", "HAS_SUBDIVISION", "HAS_POINT_CLOUD")
-
-
 def bbox_outside(props, box):
     """True / False when the node's bbox misses / meets box (minx, miny, maxx, maxy);
     None when the node has no bbox (it is then kept — conservative)."""
@@ -350,6 +343,12 @@ class BaseWriter:
         css = p.get(f"{ck}_codespace_list") or [p.get(f"{ck}_codespace")] * len(vals)
         for v, cs in zip(vals, css):
             self.code(parent, prefix, local, v, cs or None)
+
+    def cfu(self, el, prefix, p, cls_key="class", fn_key="function", us_key="usage"):
+        """class / function / usage of a feature, each with its code space."""
+        self.code(el, prefix, "class", p.get(cls_key), p.get(f"{cls_key.replace('_code', '')}_codespace"))
+        self.codes(el, prefix, "function", p, fn_key)
+        self.codes(el, prefix, "usage", p, us_key)
 
     def measure(self, parent, prefix, local, p, key, default_uom="m"):
         v = p.get(key)
@@ -717,7 +716,7 @@ def lift_to_lod4(g):
 
 def implicit_items(node, g=None):
     """Implicit representations as dicts — the generalised 3.0 pattern (HAS_PROTOTYPE
-    edge with matrix/ref point) and the 2.0 / street-tree pattern
+    edge with matrix/ref point) and the 2.0 pattern
     (GeometryMultiSurface{is_implicit} [→ HAS_PROTOTYPE])."""
     g = g or geoms(node)
     out = {}
@@ -1249,11 +1248,6 @@ class Writer3(BaseWriter):
                 if i < len(ids) and ids[i]:
                     self.set_id(pt, ids[i])
                 self.E(pt, "gml", "pos", " ".join(vals[i * dim:(i + 1) * dim]))
-
-    def cfu(self, el, prefix, p, cls_key="class", fn_key="function", us_key="usage"):
-        self.code(el, prefix, "class", p.get(cls_key), p.get(f"{cls_key.replace('_code', '')}_codespace"))
-        self.codes(el, prefix, "function", p, fn_key)
-        self.codes(el, prefix, "usage", p, us_key)
 
     def elevations(self, el, prefix, p):
         """<prefix>:elevation/con:Elevation (con: on constructions, bldg: on subdivisions);
@@ -1851,6 +1845,20 @@ class Writer2(BaseWriter):
         solids = {lod: lst[0] for lod, lst in g["solid"].items()}
         return ms, roles, mcs, mcid, solids
 
+    def lod_block(self, el, prefix, lod, g, maps):
+        """The geometry of one LoD on a building or bridge, in schema order: solid,
+        multi-surface, multi-curve (not in LoD1), terrain intersection. `maps` is the
+        result of lod_maps()."""
+        ms, _roles, mcs, mcid, solids = maps
+        if lod in solids:
+            self.solid(el, prefix, f"lod{lod}Solid", solids[lod])
+        if ms.get(lod):
+            self.write_ms(el, prefix, f"lod{lod}MultiSurface", ms[lod])
+        if lod != "1" and mcs.get(lod):
+            self.multicurve(el, prefix, f"lod{lod}MultiCurve", mcs[lod], mcid.get(lod))
+        if lod in g["tic"]:
+            self.write_tic(el, prefix, g["tic"][lod], lod)
+
     def write_ms(self, el, prefix, local, lst):
         xl = [m for rp, m in lst if rp and rp.get("via_xlink")]
         if xl:
@@ -2156,11 +2164,6 @@ class Writer2(BaseWriter):
                                 ("0", "1", "2", "3", "4"), ("0", "1", "2", "3", "4"))
         return el
 
-    def cfu(self, el, prefix, p, cls_key="class", fn_key="function", us_key="usage"):
-        self.code(el, prefix, "class", p.get(cls_key), p.get(f"{cls_key.replace('_code', '')}_codespace"))
-        self.codes(el, prefix, "function", p, fn_key)
-        self.codes(el, prefix, "usage", p, us_key)
-
     def transport(self, el, n, g, local):
         """3.0 Road/Section/Intersection/TrafficSpace hierarchy flattened to the 2.0
         TransportationComplex: every (Auxiliary)TrafficArea below the Road becomes a
@@ -2257,20 +2260,10 @@ class Writer2(BaseWriter):
             self.E(el, "brid", "isMovable", str(p["is_movable"]).strip().lower())
         if p.get("measured_height") is not None:
             self.loss.add("con:height of a Bridge (no 2.0 equivalent)", n.id)
-        ms, _roles, mcs, mcid, solids = self.lod_maps(n, g)
-
-        def lod_block(lod):
-            if lod in solids:
-                self.solid(el, "brid", f"lod{lod}Solid", solids[lod])
-            if ms.get(lod):
-                self.write_ms(el, "brid", f"lod{lod}MultiSurface", ms[lod])
-            if lod != "1" and mcs.get(lod):
-                self.multicurve(el, "brid", f"lod{lod}MultiCurve", mcs[lod], mcid.get(lod))
-            if lod in g["tic"]:
-                self.write_tic(el, "brid", g["tic"][lod], lod)
-
-        lod_block("1")
-        lod_block("2")
+        maps = self.lod_maps(n, g)
+        ms, _roles, mcs, mcid, solids = maps
+        self.lod_block(el, "brid", "1", g, maps)
+        self.lod_block(el, "brid", "2", g, maps)
         for _rp, nf in n.kids("HAS_NESTED"):
             kind = nf.p.get("feature_kind") or ""
             if kind in ("BridgeConstructiveElement", "BridgeConstructionElement"):
@@ -2280,8 +2273,8 @@ class Writer2(BaseWriter):
                 self.nested(self.E(el, "brid", "outerBridgeInstallation"), nf, "BridgeInstallation")
         for _rp, s in n.kids("HAS_BOUNDARY"):
             self.bsurface(el, "brid", s)
-        lod_block("3")
-        lod_block("4")
+        self.lod_block(el, "brid", "3", g, maps)
+        self.lod_block(el, "brid", "4", g, maps)
         for lod in set(ms) | set(mcs):
             if lod == "0":
                 self.loss.add("Bridge lod0 geometry (2.0: lod1–4)", n.id)
@@ -2358,7 +2351,8 @@ class Writer2(BaseWriter):
             if p.get(key):
                 self.E(el, "bldg", local, p[key], uom=p.get(f"{key}_uom") or "m")
         g = geoms(n)
-        ms, roles, mcs, mcid, solids = self.lod_maps(n, g)
+        maps = self.lod_maps(n, g)
+        ms, roles, mcs, mcid, solids = maps
         if roles.get("footprint") or ms.get("0"):
             lst = [(None, m) for m in roles.get("footprint", [])] or ms.get("0")
             self.write_ms(el, "bldg", "lod0FootPrint", lst)
@@ -2367,18 +2361,8 @@ class Writer2(BaseWriter):
         if roles.get("roofedge"):
             self.write_ms(el, "bldg", "lod0RoofEdge", [(None, m) for m in roles["roofedge"]])
 
-        def lod_block(lod):
-            if lod in solids:
-                self.solid(el, "bldg", f"lod{lod}Solid", solids[lod])
-            if ms.get(lod):
-                self.write_ms(el, "bldg", f"lod{lod}MultiSurface", ms[lod])
-            if lod != "1" and mcs.get(lod):
-                self.multicurve(el, "bldg", f"lod{lod}MultiCurve", mcs[lod], mcid.get(lod))
-            if lod in g["tic"]:
-                self.write_tic(el, "bldg", g["tic"][lod], lod)
-
-        lod_block("1")
-        lod_block("2")
+        self.lod_block(el, "bldg", "1", g, maps)
+        self.lod_block(el, "bldg", "2", g, maps)
         if mcs.get("0") or mcs.get("1"):
             self.loss.add("Building lod0/1 MultiCurve (2.0: lod2–4)", n.id)
         if implicit_items(n, g):
@@ -2403,8 +2387,8 @@ class Writer2(BaseWriter):
         for h in holders:
             for _rp, s in h.kids("HAS_BOUNDARY"):
                 self.bsurface(el, "bldg", s)
-        lod_block("3")
-        lod_block("4")
+        self.lod_block(el, "bldg", "3", g, maps)
+        self.lod_block(el, "bldg", "4", g, maps)
         for h in holders:
             for _rp, room in h.kids("HAS_INTERIOR_ROOM"):
                 self.room(self.E(el, "bldg", "interiorRoom"), room)
@@ -2601,7 +2585,7 @@ def drop_unwritten_targets(w, el, area_limited=False):
 
 def dataset_appearances(sess, w, dataset_id, area_limited=True, chunk=5000):
     """CityModel-level appearances for exactly the geometry written to this document.
-    Street-space Datasets merge one Appearance per tile (hundreds in a city) that
+    Tiled Datasets merge one Appearance per tile (hundreds in a city) that
     share a few dozen X3DMaterials with millions of TARGETS edges, so nothing is loaded
     from the Appearance side: the TARGETS edges are looked up from the written geometry
     ids (batched, index-backed), only the materials hit are fetched, and each material is

@@ -30,23 +30,20 @@ import sys
 from pathlib import Path
 
 # Ensure UTF-8 output on Windows terminals that default to cp1252
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # Make project root importable
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from lxml import etree
-from neo4j import GraphDatabase
 
-import export_citygml  # project export module
+from pykci import export_citygml  # project export module
+from pykci.runtime import NO_SCHEMA_NOTICES, connect, console, neo4j_uri
+
+console("utf-8")
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-
-NEO4J_URI  = "bolt://localhost:7687"
-NEO4J_AUTH = ("neo4j", "neo4jneo4j")
 
 # Default GML used when --gml is omitted; any CityGML 2.0 file works.
 DEFAULT_GML = Path("input/citygml/Railway_Scene_LoD3/Railway_Scene_LoD3.gml")
@@ -1004,13 +1001,9 @@ def main():
     # ── Phase 2: graph checks ───────────────────────────────────────────────
     print("\n=== Phase 2: Graph checks (post-ingest) ===")
     try:
-        driver = GraphDatabase.driver(
-            NEO4J_URI, auth=NEO4J_AUTH,
-            notifications_disabled_classifications={"DEPRECATION", "UNRECOGNIZED"},
-        )
-        driver.verify_connectivity()
+        driver = connect(verify=True, **NO_SCHEMA_NOTICES)
     except Exception as exc:
-        print(f"ERROR: Cannot connect to Neo4j at {NEO4J_URI}: {exc}", file=sys.stderr)
+        print(f"ERROR: Cannot connect to Neo4j at {neo4j_uri()}: {exc}", file=sys.stderr)
         sys.exit(1)
 
     all_checks: list[dict] = []

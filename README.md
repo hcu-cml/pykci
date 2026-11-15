@@ -165,6 +165,36 @@ For the Claude backend, set an API key: `export ANTHROPIC_API_KEY=sk-ant-...` (P
 
 **OpenStreetMap enrichment** ([`ingest_osm.py`](ingest_osm.py)) additionally needs **GDAL's `ogr2ogr` CLI** on your PATH (e.g. `brew install gdal` / `apt install gdal-bin`) plus `shapely` and `pyproj` (above) — the OGR Python binding is **not** required.
 
+### Install as a package, use as a library
+
+pykci is a Python package (`src/pykci`) with one command line. Installing it is optional: every
+script named in this README also runs straight from a checkout, as before.
+
+```bash
+pip install -e .                 # the `pykci` command and the importable package
+pykci ingest-citygml input/citygml/yourfile.gml      # same as: python ingest_citygml.py …
+```
+
+```python
+from pykci.ingest_citygml import ingest          # every pipeline step is a module
+from pykci.provenance import layer_of            # where a value of the graph comes from
+from pykci.runtime import connect                # a Neo4j driver for the configured connection
+```
+
+The files at the repository root with the script names (`ingest_citygml.py`, …) forward to the
+package, so both ways run the same code. All commands and the library use are in [CLI.md](CLI.md).
+
+### Tests
+
+```bash
+pip install -e ".[test]"
+pytest -m "not neo4j"            # without a database
+pytest                           # with a throwaway Neo4j, see TESTING.md
+```
+
+The suite has to pass before a change is merged, and it asks for a test and the documentation of
+every new command, module, node label or relationship: [TESTING.md](TESTING.md).
+
 ### Neo4j plugins
 
 These plugins extend the database. Copy their JARs into Neo4j's `plugins/` directory (or use the provided `docker/Dockerfile.neo4j`, which bundles them automatically).
@@ -441,7 +471,7 @@ python db-llm/query_ollama_min.py --ctx 16384 --summarize
 
 ## Tools
 
-The `tools/` directory holds standalone utilities that are handy alongside pykci but are **not** part of the core ingest → graph → export pipeline (they don't touch Neo4j).
+The `tools/` directory holds standalone utilities that are handy alongside pykci but are **not** part of the core ingest → graph → export pipeline (they don't touch Neo4j). Their code is part of the package too (`pykci footprints`, `pykci upgrade-citygml`, `pykci validate-citygml`).
 
 ### CityGML → GeoJSON building footprints
 
@@ -660,24 +690,31 @@ pykci/
 │   ├── geojson/          ← exported GeoJSON (e.g. building footprints from tools/)
 │   ├── html/             ← standalone HTML exports (maps, viewers, reports)
 │   └── stats/            ← census JSON + round-trip summaries
+├── src/pykci/            ← the code: one module per pipeline step, shared helpers, the `pykci` command (cli.py)
+│   └── testing/          ← test support: the test database, snapshots, repository checks
+├── tests/                ← unit, contract and integration tests + recorded results (TESTING.md)
 ├── db-llm/               ← LangChain + Ollama query interface
 │   ├── query_ollama_full.py  ← full-context NL→Cypher (GraphCypherQAChain)
 │   └── query_ollama_min.py   ← minimal-context NL→Cypher for small/laptop models
 ├── tools/                ← miscellaneous standalone utilities (not part of the core pipeline)
 │   ├── extract_citygml_building_footprints.py  ← CityGML → GeoJSON building footprints
-│   └── CITYGML_BUILDING_FOOTPRINT_EXTRACTION.md ← its design rationale
+│   ├── upgrade_citygml_10_to_20.py             ← CityGML 1.0 → 2.0 namespaces
+│   ├── validate_citygml.py                     ← offline XSD validation
+│   └── CITYGML_BUILDING_FOOTPRINT_EXTRACTION.md ← design rationale of the footprint tool
 ├── docker/               ← Docker Compose for Neo4j + Ollama + query container
 │   └── Dockerfile.ingest ← containerized pykci ingest (used by the benchmark)
 ├── eval/                 ← QA harness: round-trip fidelity + GML inventory
 │   └── tool_comparison/  ← pykci vs 3DCityKG vs 3DCityDB benchmark (report + run_benchmark.sh)
 ├── resources/            ← project logo and brand assets
-├── ingest_citygml.py     ← CityGML → Neo4j
-├── ingest_osm.py         ← OpenStreetMap → Neo4j enrichment
-├── export_citygml.py     ← Neo4j → CityGML
-├── build_3dtiles.py      ← CityGML → 3D Tiles
-├── build_graph_pointcloud.py  ← Neo4j graph → 3D Tiles point-cloud
-├── export_roofmat_footprints.py  ← Neo4j → 2D footprint map (predicted roof material)
+├── ingest_citygml.py     ← CityGML → Neo4j                      ┐
+├── ingest_osm.py         ← OpenStreetMap → Neo4j enrichment     │ the script names of this README:
+├── export_citygml.py     ← Neo4j → CityGML                      │ each file forwards to its module
+├── build_3dtiles.py      ← CityGML → 3D Tiles                   │ in src/pykci (_pykci_shim.py), so
+├── build_graph_pointcloud.py  ← Neo4j graph → 3D Tiles point-cloud │ `python <script>.py …` works from
+├── export_roofmat_footprints.py  ← Neo4j → 2D footprint map     ┘ a checkout without installing
 ├── GRAPH.md              ← Full graph schema, Cypher rules, ALKIS codes
+├── CLI.md                ← The `pykci` command line and the library use
+├── TESTING.md            ← The test suite and what it asks of a change
 ├── OSM_INTEGRATION.md    ← OSM enrichment concept, matching & schema
 ├── CYPHER.md             ← Cypher 25 + Neo4j Spatial reference
 └── README.md
@@ -692,6 +729,8 @@ pykci/
 | [`GRAPH.md`](GRAPH.md) | Agents / developers | Full graph schema, ingestion rules, ALKIS codes, Cypher examples |
 | [`OSM_INTEGRATION.md`](OSM_INTEGRATION.md) | Agents / developers | OSM enrichment: data model, semantic mapping, 1:1/1:n/n:1/n:m footprint matching, provenance schema, `ingest_osm.py` code map |
 | [`CYPHER.md`](CYPHER.md) | Agents / LLM (injected) | Cypher 25 + Neo4j Spatial plugin reference |
+| [`CLI.md`](CLI.md) | Users / developers | The `pykci` command line, options for programs that drive pykci, use as a library |
+| [`TESTING.md`](TESTING.md) | Developers | The test suite: what is tested where, the test database, snapshots, what a new command, module or schema element needs |
 | [`tools/CITYGML_BUILDING_FOOTPRINT_EXTRACTION.md`](tools/CITYGML_BUILDING_FOOTPRINT_EXTRACTION.md) | Developers | Footprint → GeoJSON tool: footprint-selection priority, CRS/axis-order handling, version-agnostic parsing, streaming |
 | [`eval/tool_comparison/comparison_2026-06-19.md`](eval/tool_comparison/comparison_2026-06-19.md) | Developers / reviewers | Mapping-time & database benchmark: pykci vs 3DCityKG vs 3DCityDB v5. Reproduce with [`run_benchmark.sh`](eval/tool_comparison/run_benchmark.sh) |
 

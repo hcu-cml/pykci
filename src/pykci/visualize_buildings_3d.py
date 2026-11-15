@@ -24,11 +24,7 @@ import sys
 import time
 from pathlib import Path
 
-from neo4j import GraphDatabase
-
-# ── Neo4j connection ──────────────────────────────────────────────────────────
-NEO4J_URI  = "bolt://localhost:7687"
-NEO4J_AUTH = ("neo4j", "neo4jneo4j")
+from pykci.runtime import connect, console, neo4j_uri
 
 # ── Colour map: role → surface-type → hex ────────────────────────────────────
 ROLE_COLORS = {
@@ -547,8 +543,8 @@ def main():
     ref_id = args.ref_id.strip() or csv_rows[0]["id"]
 
     # ── Fetch geometry from Neo4j ─────────────────────────────────────────────
-    print(f"Connecting to Neo4j at {NEO4J_URI} …")
-    driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
+    print(f"Connecting to Neo4j at {neo4j_uri()} …")
+    driver = connect()
 
     geometries = {}
     t0 = time.perf_counter()
@@ -593,4 +589,5 @@ def main():
 
 
 if __name__ == "__main__":
+    console()
     main()

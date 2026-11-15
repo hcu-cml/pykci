@@ -21,543 +21,22 @@ Usage:
 """
 
 import argparse
-import hashlib
 import json
-import math
-import re
 import sys
-import time
 from datetime import datetime
 from pathlib import Path
 
-from neo4j import GraphDatabase
 from pyproj import Transformer
 
-NEO4J_URI  = "bolt://localhost:7687"
-NEO4J_AUTH = ("neo4j", "neo4jneo4j")
-
-# Properties too large to embed in the HTML
-_SKIP_PROPS = frozenset({
-    "pos_list", "embedding", "embedding_ollama", "bbox_wkt", "location",
-})
-
-# Compound CRS for ADV geoid undulation (mirrors build_3dtiles.py)
-_ADV_COMPOUND = {
-    "ETRS89_UTM32": "EPSG:5555",
-    "ETRS89_UTM33": "EPSG:5556",
-    "DE_DHDN_GK2":  "EPSG:5675",
-    "DE_DHDN_GK3":  "EPSG:5678",
-    "DE_DHDN_GK4":  "EPSG:5679",
-    "DE_DHDN_GK5":  "EPSG:5680",
-}
-
-LABEL_COLORS = {
-    # ── Semantic / thematic nodes ────────────────────────────────────────────
-    "Building":                 "#FF7043",   # deep orange
-    "Dataset":                  "#FFD54F",   # amber — top-level container
-    "District":                 "#AED581",   # light green
-    "City":                     "#81D4FA",   # sky blue
-    "BuildingFunction":         "#CE93D8",   # soft purple
-    "RoofType":                 "#F48FB1",   # pink
-    # ── BoundarySurface types ─────────────────────────────────────────────────
-    "RoofSurface":              "#FF8A65",   # terracotta
-    "WallSurface":              "#CFD8DC",   # light blue-grey
-    "GroundSurface":            "#BCAAA4",   # warm taupe
-    "ClosureSurface":           "#B0BEC5",
-    "OuterCeilingSurface":      "#90A4AE",
-    "OuterFloorSurface":        "#A1887F",
-    # ── Geometry leaf nodes (small, technical) ────────────────────────────────
-    "GeometrySolid":            "#80CBC4",   # teal
-    "GeometryPolygon":          "#4DB6AC",   # slightly darker teal
-    "GeometryRing":             "#26A69A",   # deep teal (smallest, deepest)
-    "GeometryLineString":       "#80DEEA",   # cyan
-    "TerrainIntersection":      "#A5D6A7",   # light green
-    # ── CityObject feature types ──────────────────────────────────────────────
-    "Road":                     "#78909C",
-    "Railway":                  "#CE93D8",
-    "Track":                    "#AB47BC",
-    "Square":                   "#FFCC80",
-    "TransportationComplex":    "#90A4AE",
-    "SolitaryVegetationObject": "#81C784",
-    "PlantCover":               "#66BB6A",
-    "WaterBody":                "#4FC3F7",
-    "LandUse":                  "#DCE775",
-    "CityFurniture":            "#CE93D8",
-    "ReliefFeature":            "#BCAAA4",
-    "Bridge":                   "#A1887F",
-    "Tunnel":                   "#78909C",
-    "CityObjectGroup":          "#80CBC4",
-}
-_DEFAULT_COLOR = "#90A4AE"
-
-# Pixel size per node group (Building is largest; geometry leaves are smallest)
-_PIXEL_SIZE: dict = {
-    "Building": 14, "Dataset": 13, "City": 13, "District": 12,
-    "BuildingFunction": 9, "RoofType": 9,
-    "RoofSurface": 7, "WallSurface": 7, "GroundSurface": 7,
-    "ClosureSurface": 6, "OuterCeilingSurface": 6, "OuterFloorSurface": 6,
-    "GeometrySolid": 8, "TerrainIntersection": 6,
-    "GeometryPolygon": 5, "GeometryLineString": 5,
-    "GeometryRing": 4,
-}
-
-
-# ── CRS helpers (mirrors build_3dtiles.py) ────────────────────────────────────
-
-def _horiz_epsg(srs_name: str) -> str:
-    m = re.search(r"EPSG[:\s]+(\d+)", srs_name)
-    if m:
-        return f"EPSG:{m.group(1)}"
-    m = re.search(r"ETRS89_UTM(\d+)", srs_name, re.IGNORECASE)
-    if m:
-        return f"EPSG:{25800 + int(m.group(1))}"
-    m = re.search(r"GK(\d)", srs_name, re.IGNORECASE)
-    if m:
-        return f"EPSG:{31464 + int(m.group(1))}"
-    return srs_name
-
-
-def _geoid_offset(srs_name: str, sample_x: float, sample_y: float, sample_z: float) -> float:
-    compound = next(
-        (epsg for pat, epsg in _ADV_COMPOUND.items() if pat.lower() in srs_name.lower()),
-        None,
-    )
-    if compound is None:
-        print(f"  Note: no compound CRS for '{srs_name}'; geoid offset = 0.0 m")
-        return 0.0
-    try:
-        t3d = Transformer.from_crs(compound, "EPSG:4979", always_xy=True)
-        _, _, h_ell = t3d.transform(sample_x, sample_y, sample_z)
-        return h_ell - sample_z
-    except Exception as exc:
-        print(f"  Note: geoid transform failed ({exc}); geoid offset = 0.0 m")
-        return 0.0
-
-
-# ── Neo4j queries ─────────────────────────────────────────────────────────────
-
-def fetch_dataset(driver):
-    with driver.session() as s:
-        row = s.run("""
-            MATCH (d:Dataset)
-            RETURN d.crs         AS crs,
-                   d.bbox_min_x  AS x,
-                   d.bbox_min_y  AS y,
-                   d.bbox_min_z  AS z
-            LIMIT 1
-        """).single()
-    crs = (row["crs"] if row else None) or "EPSG:25832"
-    sx  = float(row["x"] or 0) if row else 0.0
-    sy  = float(row["y"] or 0) if row else 0.0
-    sz  = float(row["z"] or 0) if row else 0.0
-    print(f"  CRS: {crs}", flush=True)
-    return crs, sx, sy, sz
-
-
-def fetch_all_nodes(driver) -> list:
-    """Query every visible node type and return raw records with cx/cy/cz in source CRS."""
-    print("Fetching all graph nodes…", flush=True)
-    t0_total = time.perf_counter()
-    nodes = []
-
-    with driver.session() as s:
-
-        # 1. Building + CityObject — have precomputed center_x/center_y
-        t0 = time.perf_counter()
-        rows = s.run("""
-            MATCH (n)
-            WHERE (n:Building OR n:CityObject)
-              AND n.center_x IS NOT NULL AND n.center_y IS NOT NULL
-            RETURN elementId(n)  AS eid,
-                   labels(n)     AS labels,
-                   properties(n) AS props,
-                   toFloat(n.center_x) AS cx,
-                   toFloat(n.center_y) AS cy,
-                   toFloat(coalesce(n.ground_z, n.bbox_min_z, 0.0)) AS gz,
-                   toFloat(coalesce(n.measured_height, 0.0))         AS mh,
-                   toFloat(coalesce(n.bbox_max_z, n.ground_z, 0.0)) AS bz2
-        """).data()
-        for r in rows:
-            gz  = r["gz"] or 0.0
-            mh  = r["mh"] or 0.0
-            bz2 = r["bz2"] or 0.0
-            cz  = gz + (mh / 2.0 if mh else (bz2 - gz) / 2.0)
-            nodes.append({
-                "eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                "cx": r["cx"], "cy": r["cy"], "cz": cz,
-                "jitter": False, "alt_extra": 0.0,
-            })
-        print(f"  {len(rows):>5} Building/CityObject  ({time.perf_counter()-t0:.2f}s)", flush=True)
-
-        # 2. BoundarySurface — centroid from exterior ring positions
-        t0 = time.perf_counter()
-        rows = s.run("""
-            MATCH (bs:BoundarySurface)-[:HAS_POLYGON]->(:GeometryPolygon)
-                  -[:HAS_EXTERIOR_RING]->(rng:GeometryRing)
-            WITH bs, collect(rng.pos_list) AS pos_lists
-            RETURN elementId(bs)   AS eid,
-                   labels(bs)      AS labels,
-                   properties(bs)  AS props,
-                   pos_lists       AS pos_lists
-        """).data()
-        ok = 0
-        for r in rows:
-            cx, cy, cz = _centroid_from_pos_lists(r["pos_lists"])
-            if cx is None:
-                continue
-            nodes.append({
-                "eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                "cx": cx, "cy": cy, "cz": float(cz or 0),
-                "jitter": True, "alt_extra": 0.0,
-            })
-            ok += 1
-        print(f"  {ok:>5} BoundarySurface      ({time.perf_counter()-t0:.2f}s)", flush=True)
-
-        # 3. GeometrySolid — via HAS_SURFACE_MEMBER → GeometryPolygon → exterior ring
-        t0 = time.perf_counter()
-        rows = s.run("""
-            MATCH (s:GeometrySolid)-[:HAS_SURFACE_MEMBER]->(:GeometryPolygon)
-                  -[:HAS_EXTERIOR_RING]->(rng:GeometryRing)
-            WITH s, collect(rng.pos_list) AS pos_lists
-            RETURN elementId(s)   AS eid,
-                   labels(s)      AS labels,
-                   properties(s)  AS props,
-                   pos_lists      AS pos_lists
-        """).data()
-        ok = 0
-        for r in rows:
-            cx, cy, cz = _centroid_from_pos_lists(r["pos_lists"])
-            if cx is None:
-                continue
-            nodes.append({
-                "eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                "cx": cx, "cy": cy, "cz": float(cz or 0),
-                "jitter": True, "alt_extra": 6.0,
-            })
-            ok += 1
-        print(f"  {ok:>5} GeometrySolid        ({time.perf_counter()-t0:.2f}s)", flush=True)
-
-        # 4. GeometryMultiSurface (Transportation / Vegetation / LandUse etc.)
-        t0 = time.perf_counter()
-        rows = s.run("""
-            MATCH (ms:GeometryMultiSurface)-[:HAS_SURFACE_MEMBER]->(:GeometryPolygon)
-                  -[:HAS_EXTERIOR_RING]->(rng:GeometryRing)
-            WITH ms, collect(rng.pos_list) AS pos_lists
-            RETURN elementId(ms)   AS eid,
-                   labels(ms)      AS labels,
-                   properties(ms)  AS props,
-                   pos_lists       AS pos_lists
-        """).data()
-        ok = 0
-        for r in rows:
-            cx, cy, cz = _centroid_from_pos_lists(r["pos_lists"])
-            if cx is None:
-                continue
-            nodes.append({
-                "eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                "cx": cx, "cy": cy, "cz": float(cz or 0),
-                "jitter": True, "alt_extra": 4.0,
-            })
-            ok += 1
-        print(f"  {ok:>5} GeometryMultiSurface ({time.perf_counter()-t0:.2f}s)", flush=True)
-
-        # 5. GeometryPolygon — exterior ring centroid, slight upward offset
-        t0 = time.perf_counter()
-        rows = s.run("""
-            MATCH (p:GeometryPolygon)-[:HAS_EXTERIOR_RING]->(rng:GeometryRing)
-            WITH p, collect(rng.pos_list) AS pos_lists
-            RETURN elementId(p)   AS eid,
-                   labels(p)      AS labels,
-                   properties(p)  AS props,
-                   pos_lists      AS pos_lists
-        """).data()
-        ok = 0
-        for r in rows:
-            cx, cy, cz = _centroid_from_pos_lists(r["pos_lists"])
-            if cx is None:
-                continue
-            nodes.append({
-                "eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                "cx": cx, "cy": cy, "cz": float(cz or 0),
-                "jitter": True, "alt_extra": 3.0,
-            })
-            ok += 1
-        print(f"  {ok:>5} GeometryPolygon      ({time.perf_counter()-t0:.2f}s)", flush=True)
-
-        # 6. GeometryRing — exact geometry position, slight downward offset
-        t0 = time.perf_counter()
-        rows = s.run("""
-            MATCH (rng:GeometryRing)
-            WHERE rng.pos_list IS NOT NULL
-            RETURN elementId(rng)    AS eid,
-                   labels(rng)       AS labels,
-                   properties(rng)   AS props,
-                   rng.pos_list      AS pos_str
-        """).data()
-        ok = 0
-        for r in rows:
-            cx, cy, cz = _centroid_from_pos_str(r["pos_str"])
-            if cx is None:
-                continue
-            nodes.append({
-                "eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                "cx": cx, "cy": cy, "cz": float(cz or 0),
-                "jitter": True, "alt_extra": -3.0,
-            })
-            ok += 1
-        print(f"  {ok:>5} GeometryRing         ({time.perf_counter()-t0:.2f}s)", flush=True)
-
-        # 7. GeometryLineString
-        t0 = time.perf_counter()
-        rows = s.run("""
-            MATCH (ls:GeometryLineString)
-            WHERE ls.pos_list IS NOT NULL
-            RETURN elementId(ls)    AS eid,
-                   labels(ls)       AS labels,
-                   properties(ls)   AS props,
-                   ls.pos_list      AS pos_str
-        """).data()
-        ok = 0
-        for r in rows:
-            cx, cy, cz = _centroid_from_pos_str(r["pos_str"])
-            if cx is None:
-                continue
-            nodes.append({
-                "eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                "cx": cx, "cy": cy, "cz": float(cz or 0),
-                "jitter": True, "alt_extra": 0.0,
-            })
-            ok += 1
-        print(f"  {ok:>5} GeometryLineString   ({time.perf_counter()-t0:.2f}s)", flush=True)
-
-        # 8. TerrainIntersection — centroid of its line strings
-        t0 = time.perf_counter()
-        rows = s.run("""
-            MATCH (ti:TerrainIntersection)-[:HAS_LINE]->(ls:GeometryLineString)
-            WITH ti, collect(ls.pos_list) AS pos_lists
-            RETURN elementId(ti)   AS eid,
-                   labels(ti)      AS labels,
-                   properties(ti)  AS props,
-                   pos_lists       AS pos_lists
-        """).data()
-        ok = 0
-        for r in rows:
-            cx, cy, cz = _centroid_from_pos_lists(r["pos_lists"])
-            if cx is None:
-                continue
-            nodes.append({
-                "eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                "cx": cx, "cy": cy, "cz": float(cz or 0),
-                "jitter": False, "alt_extra": 0.0,
-            })
-            ok += 1
-        print(f"  {ok:>5} TerrainIntersection  ({time.perf_counter()-t0:.2f}s)", flush=True)
-
-        # 9. BuildingFunction — averaged position of its buildings, above rooftop
-        t0 = time.perf_counter()
-        rows = s.run("""
-            MATCH (b:Building)-[:HAS_FUNCTION]->(bf:BuildingFunction)
-            WHERE b.center_x IS NOT NULL AND b.center_y IS NOT NULL
-            WITH bf,
-                 avg(toFloat(b.center_x)) AS cx,
-                 avg(toFloat(b.center_y)) AS cy,
-                 max(toFloat(coalesce(b.bbox_max_z, b.ground_z, 0.0))) AS top_z
-            RETURN elementId(bf)    AS eid,
-                   labels(bf)       AS labels,
-                   properties(bf)   AS props,
-                   cx, cy, top_z AS cz
-        """).data()
-        for r in rows:
-            if r["cx"] is None:
-                continue
-            nodes.append({
-                "eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                "cx": float(r["cx"]), "cy": float(r["cy"]), "cz": float(r["cz"] or 0),
-                "jitter": True, "alt_extra": 8.0,
-            })
-        print(f"  {len(rows):>5} BuildingFunction     ({time.perf_counter()-t0:.2f}s)", flush=True)
-
-        # 10. RoofType — same approach, slightly lower than BuildingFunction
-        t0 = time.perf_counter()
-        rows = s.run("""
-            MATCH (b:Building)-[:HAS_ROOF_TYPE]->(rt:RoofType)
-            WHERE b.center_x IS NOT NULL AND b.center_y IS NOT NULL
-            WITH rt,
-                 avg(toFloat(b.center_x)) AS cx,
-                 avg(toFloat(b.center_y)) AS cy,
-                 max(toFloat(coalesce(b.bbox_max_z, b.ground_z, 0.0))) AS top_z
-            RETURN elementId(rt)    AS eid,
-                   labels(rt)       AS labels,
-                   properties(rt)   AS props,
-                   cx, cy, top_z AS cz
-        """).data()
-        for r in rows:
-            if r["cx"] is None:
-                continue
-            nodes.append({
-                "eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                "cx": float(r["cx"]), "cy": float(r["cy"]), "cz": float(r["cz"] or 0),
-                "jitter": True, "alt_extra": 5.0,
-            })
-        print(f"  {len(rows):>5} RoofType             ({time.perf_counter()-t0:.2f}s)", flush=True)
-
-        # 11. District — above centroid of its buildings
-        t0 = time.perf_counter()
-        rows = s.run("""
-            MATCH (d:District)<-[:LOCATED_IN]-(b:Building)
-            WHERE b.center_x IS NOT NULL
-            WITH d,
-                 avg(toFloat(b.center_x)) AS cx,
-                 avg(toFloat(b.center_y)) AS cy,
-                 max(toFloat(coalesce(b.bbox_max_z, b.ground_z, 0.0))) AS top_z
-            RETURN elementId(d)    AS eid,
-                   labels(d)       AS labels,
-                   properties(d)   AS props,
-                   cx, cy, top_z AS cz
-        """).data()
-        for r in rows:
-            if r["cx"] is None:
-                continue
-            nodes.append({
-                "eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                "cx": float(r["cx"]), "cy": float(r["cy"]), "cz": float(r["cz"] or 0),
-                "jitter": False, "alt_extra": 80.0,
-            })
-        print(f"  {len(rows):>5} District             ({time.perf_counter()-t0:.2f}s)", flush=True)
-
-        # 12. City — above centroid of its districts' buildings
-        t0 = time.perf_counter()
-        rows = s.run("""
-            MATCH (c:City)<-[:PART_OF]-(:District)<-[:LOCATED_IN]-(b:Building)
-            WHERE b.center_x IS NOT NULL
-            WITH c,
-                 avg(toFloat(b.center_x)) AS cx,
-                 avg(toFloat(b.center_y)) AS cy,
-                 max(toFloat(coalesce(b.bbox_max_z, b.ground_z, 0.0))) AS top_z
-            RETURN elementId(c)    AS eid,
-                   labels(c)       AS labels,
-                   properties(c)   AS props,
-                   cx, cy, top_z AS cz
-        """).data()
-        for r in rows:
-            if r["cx"] is None:
-                continue
-            nodes.append({
-                "eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                "cx": float(r["cx"]), "cy": float(r["cy"]), "cz": float(r["cz"] or 0),
-                "jitter": False, "alt_extra": 150.0,
-            })
-        print(f"  {len(rows):>5} City                 ({time.perf_counter()-t0:.2f}s)", flush=True)
-
-        # 13. Dataset — above centroid of all buildings
-        t0 = time.perf_counter()
-        rows = s.run("""
-            MATCH (ds:Dataset)-[:COVERS]->(:District)<-[:LOCATED_IN]-(b:Building)
-            WHERE b.center_x IS NOT NULL
-            WITH ds,
-                 avg(toFloat(b.center_x)) AS cx,
-                 avg(toFloat(b.center_y)) AS cy,
-                 max(toFloat(coalesce(b.bbox_max_z, b.ground_z, 0.0))) AS top_z
-            RETURN elementId(ds)   AS eid,
-                   labels(ds)      AS labels,
-                   properties(ds)  AS props,
-                   cx, cy, top_z AS cz
-        """).data()
-        for r in rows:
-            if r["cx"] is None:
-                continue
-            nodes.append({
-                "eid": r["eid"], "labels": r["labels"], "props": r["props"],
-                "cx": float(r["cx"]), "cy": float(r["cy"]), "cz": float(r["cz"] or 0),
-                "jitter": False, "alt_extra": 220.0,
-            })
-        print(f"  {len(rows):>5} Dataset              ({time.perf_counter()-t0:.2f}s)", flush=True)
-
-    total = len(nodes)
-    print(f"  --- total: {total} nodes  ({time.perf_counter()-t0_total:.2f}s)", flush=True)
-    return nodes
-
-
-def fetch_all_edges(driver) -> list:
-    """Return all graph edges, excluding Neo4j Spatial RTREE internals."""
-    print("Fetching all edges…", flush=True)
-    t0 = time.perf_counter()
-    with driver.session() as s:
-        rows = s.run("""
-            MATCH (a)-[r]->(b)
-            WHERE NOT (a:SpatialLayer OR b:SpatialLayer)
-              AND NOT type(r) IN ['RTREE_REFERENCE','RTREE_ROOT',
-                                   'RTREE_METADATA','RTREE_CHILD']
-            RETURN elementId(a) AS from_eid,
-                   elementId(b) AS to_eid,
-                   type(r)      AS rel_type
-        """).data()
-    print(f"  {len(rows)} edges ({time.perf_counter()-t0:.2f}s)", flush=True)
-    return rows
-
+from pykci.crs import geoid_undulation, horiz_epsg_from_srs
+from pykci.graphview import (DEFAULT_COLOR, LABEL_COLORS, PIXEL_SIZE, SKIP_PROPS, fetch_all_edges,
+                             fetch_all_nodes, fetch_dataset, node_group, node_label, xy_jitter)
+from pykci.runtime import connect, console
 
 # ── Data transformation ───────────────────────────────────────────────────────
 
-def _centroid_from_pos_lists(pos_lists):
-    xs, ys, zs = [], [], []
-    for pl in pos_lists:
-        if not pl:
-            continue
-        coords = list(map(float, pl.split()))
-        xs.extend(coords[0::3])
-        ys.extend(coords[1::3])
-        zs.extend(coords[2::3])
-    if not xs:
-        return None, None, None
-    return sum(xs) / len(xs), sum(ys) / len(ys), sum(zs) / len(zs)
-
-
-def _centroid_from_pos_str(pos_str: str):
-    return _centroid_from_pos_lists([pos_str]) if pos_str else (None, None, None)
-
-
-def _xy_jitter(eid_str: str, radius_m: float = 2.0) -> tuple:
-    digest = hashlib.md5(eid_str.encode()).hexdigest()
-    angle  = int(digest[:8],  16) / 0xFFFFFFFF * 2 * math.pi
-    r      = int(digest[8:16], 16) / 0xFFFFFFFF * radius_m
-    return r * math.cos(angle), r * math.sin(angle)
-
-
-def _node_group(labels: list, props: dict) -> str:
-    for lbl in ("Dataset", "City", "District", "Building",
-                "BuildingFunction", "RoofType",
-                "GeometrySolid", "GeometryMultiSurface",
-                "GeometryPolygon", "GeometryRing",
-                "GeometryLineString", "TerrainIntersection"):
-        if lbl in labels:
-            return lbl
-    if "BoundarySurface" in labels:
-        return props.get("surface_type", "BoundarySurface")
-    ftype = props.get("feature_type", "")
-    return ftype or next((l for l in labels if l not in ("CityObject",)), "CityObject")
-
-
-def _node_label(labels: list, props: dict) -> str:
-    pid = props.get("id", "")
-    if "Dataset" in labels:
-        return props.get("name", pid)[:24]
-    if "City" in labels:
-        return props.get("name", pid)[:20]
-    if "District" in labels:
-        return props.get("name", pid)[:20]
-    if "BuildingFunction" in labels:
-        return props.get("name", props.get("code", pid))[:20]
-    if "RoofType" in labels:
-        return props.get("name", props.get("code", pid))[:20]
-    if "Building" in labels:
-        return pid[:20]
-    if "BoundarySurface" in labels:
-        return props.get("surface_type", pid)[:16]
-    return pid[:12]
-
-
 def build_payload(raw_nodes: list, raw_edges: list, crs_string: str, geoid_m: float):
-    horiz       = _horiz_epsg(crs_string)
+    horiz       = horiz_epsg_from_srs(crs_string)
     transformer = Transformer.from_crs(horiz, "EPSG:4326", always_xy=True)
 
     nodes: list  = []
@@ -566,11 +45,11 @@ def build_payload(raw_nodes: list, raw_edges: list, crs_string: str, geoid_m: fl
     for r in raw_nodes:
         eid   = r["eid"]
         labs  = r["labels"]
-        props = {k: v for k, v in r["props"].items() if k not in _SKIP_PROPS}
+        props = {k: v for k, v in r["props"].items() if k not in SKIP_PROPS}
 
         cx, cy = r["cx"], r["cy"]
         if r.get("jitter"):
-            dx, dy = _xy_jitter(eid)
+            dx, dy = xy_jitter(eid)
             cx += dx
             cy += dy
 
@@ -580,7 +59,7 @@ def build_payload(raw_nodes: list, raw_edges: list, crs_string: str, geoid_m: fl
             continue
 
         alt   = r["cz"] + geoid_m + r.get("alt_extra", 0.0)
-        group = _node_group(labs, props)
+        group = node_group(labs, props)
 
         idx          = len(nodes)
         eid_map[eid] = idx
@@ -588,12 +67,12 @@ def build_payload(raw_nodes: list, raw_edges: list, crs_string: str, geoid_m: fl
             "lon":       round(lon, 8),
             "lat":       round(lat, 8),
             "alt":       round(alt, 3),
-            "label":     _node_label(labs, props),
+            "label":     node_label(labs, props),
             "group":     group,
-            "color":     LABEL_COLORS.get(group, _DEFAULT_COLOR),
+            "color":     LABEL_COLORS.get(group, DEFAULT_COLOR),
             "labels":    labs,
             "props":     props,
-            "pixelSize": _PIXEL_SIZE.get(group, 7),
+            "pixelSize": PIXEL_SIZE.get(group, 7),
         })
 
     edges: list = []
@@ -614,7 +93,7 @@ def build_html(nodes, edges, tileset_url, tile_opacity, title):
 
     legend_rows = []
     for g in all_groups:
-        color = LABEL_COLORS.get(g, _DEFAULT_COLOR)
+        color = LABEL_COLORS.get(g, DEFAULT_COLOR)
         legend_rows.append(
             f'<div class="leg-item" data-group="{g}">'
             f'<span class="leg-dot" style="background:{color}"></span>'
@@ -624,7 +103,7 @@ def build_html(nodes, edges, tileset_url, tile_opacity, title):
 
     nodes_json        = json.dumps(nodes,  ensure_ascii=False, default=str)
     edges_json        = json.dumps(edges,  ensure_ascii=False, default=str)
-    label_colors_json = json.dumps({**LABEL_COLORS, "default": _DEFAULT_COLOR})
+    label_colors_json = json.dumps({**LABEL_COLORS, "default": DEFAULT_COLOR})
     tileset_url_json  = json.dumps(tileset_url)
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
     n_nodes, n_edges  = len(nodes), len(edges)
@@ -1124,10 +603,10 @@ def main():
         Path(f"output/html/graph_3d_{datetime.now().strftime('%Y%m%d_%H%M%S')}.html")
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
+    driver = connect()
     try:
         crs, sx, sy, sz = fetch_dataset(driver)
-        raw_nodes  = fetch_all_nodes(driver)
+        raw_nodes  = fetch_all_nodes(driver, jitter_lookups=True)
         raw_edges  = fetch_all_edges(driver)
     finally:
         driver.close()
@@ -1137,7 +616,7 @@ def main():
         sys.exit(1)
 
     # Geoid undulation so node altitudes align with the 3D Tiles ECEF transform
-    geoid_m = _geoid_offset(crs, sx, sy, sz)
+    geoid_m, _ = geoid_undulation(crs, sx, sy, sz)
     print(f"  Geoid offset: {geoid_m:+.3f} m")
 
     nodes, edges = build_payload(raw_nodes, raw_edges, crs, geoid_m)
@@ -1152,4 +631,5 @@ def main():
 
 
 if __name__ == "__main__":
+    console()
     main()

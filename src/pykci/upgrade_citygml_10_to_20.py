@@ -22,6 +22,8 @@ import shutil
 import sys
 from pathlib import Path
 
+from pykci.runtime import console
+
 # opengis.net/citygml/1.0  and  opengis.net/citygml/<module>/1.0  ->  .../2.0
 _NS_10 = re.compile(rb"(opengis\.net/citygml(?:/[a-z]+)?)/1\.0")
 
@@ -80,4 +82,5 @@ def main():
 
 
 if __name__ == "__main__":
+    console()
     main()

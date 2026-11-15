@@ -1,8 +1,8 @@
 # CityGML 3.0 in pykci: codec, model, mapping, tests
 
 pykci reads and writes **CityGML 2.0 and 3.0** around one version-neutral graph model.
-CityGML 3.0 data (for example transportation spaces of intersections, or street-space
-tiles) goes into the same graph as a 2.0 city model. It comes back out as valid 3.0, or as
+CityGML 3.0 data (for example transportation spaces of intersections, or the tiles of a
+transportation model) goes into the same graph as a 2.0 city model. It comes back out as valid 3.0, or as
 valid 2.0 with a loss report.
 
 | File | Role |
@@ -14,7 +14,7 @@ valid 2.0 with a loss report.
 | `eval/roundtrip_census.py` | Element / attribute / text / coordinate census, now with `--include-appearance`, an object-count table and `--json` |
 | `tools/validate_citygml.py` | Offline XSD validation of CityGML 2.0 and 3.0 (`--setup` downloads the OGC schema bundle once into `~/.cache/pykci/citygml-schemas`) |
 | `eval/citygml3_tests.py` | End-to-end test runner (T1–T11, below) against a throwaway Neo4j |
-| `eval/fixtures/citygml3/` | XSD-valid synthetic fixtures: `kitchen_sink.gml` (every element type), `tile_a.gml` and `tile_b.gml` (street-space tile pair), `README.txt` with expected counts |
+| `eval/fixtures/citygml3/` | XSD-valid synthetic fixtures: `kitchen_sink.gml` (every element type), `tile_a.gml` and `tile_b.gml` (transportation tile pair), `README.txt` with expected counts |
 
 ## 1. Codec architecture
 
@@ -146,12 +146,12 @@ Rules that follow GRAPH.md:
 
 - **Sub-features never get `CityObject` nor `PART_OF Dataset`.** This follows the BuildingPart precedent. Verified: 0 leaks in every test.
 - **Provenance.** `source` is on every node. `--source-type / --method / --method-version` go on the Dataset and on every feature, sub-feature, surface, prototype, appearance and surface-data node (the 2.0 path now does the same for its features, sub-features, surfaces and openings). High-cardinality geometry leaves carry only `source`. `--source-type` predicted, reconstructed and derived need `--method` and `--method-version`.
-- **One R-tree layer per source.** `--rtree-layer streetspace` (or any other name) registers the top-level features in their own layer and stamps `rtree_layer` on each node. `_index_features_spatial` and `ingest_osm`'s post-fusion indexer skip foreign-layer nodes.
+- **One R-tree layer per source.** `--rtree-layer transport` (or any other name) registers the top-level features in their own layer and stamps `rtree_layer` on each node. `_index_features_spatial` and `ingest_osm`'s post-fusion indexer skip foreign-layer nodes.
 - **Never overwrite authoritative values.** `RESERVED_NODE_KEYS` now contains every module scalar (`class`, `function`, `usage`, `height`, `granularity`, `surface_material`, `lod`, …). A generic attribute with such a name is stored as `gen_<key>`; the kitchen sink tests this.
 - **Reuse the geometry chain.** No new geometry node types. Points are `GeometryLineString{geometry_type:'Point'}` (as relief mass points already are), CompositeSolid and MultiSolid are `GeometrySolid{geometry_type}` with `HAS_SOLID_MEMBER`, and templates are `GeometryPrototype` (the street-tree node) holding polygons, solids or lines.
 - **No hardcoding.** CRS, LoD, codes and code spaces are all read from the file.
 
-**Merge policy (street-space tiles).** Features MERGE on gml:id, with no id splitting (the 2.0 duplicate tiers are not used). The same Road / Section / TrafficSpace arriving in several tiles behaves like this:
+**Merge policy (transportation tiles).** Features MERGE on gml:id, with no id splitting (the 2.0 duplicate tiers are not used). The same Road / Section / TrafficSpace arriving in several tiles behaves like this:
 
 - Children accumulate.
 - `_gen_attrs_map` is unioned.
@@ -221,9 +221,9 @@ queryable scalar (as in 2.0); with several values the full list is kept in `<key
 python ingest_citygml.py intersections.gml \
     --dataset-name intersections --rtree-layer citygml3 --source-type authoritative
 
-# street-space tiles (a directory or several files) into ONE Dataset
-python ingest_citygml.py tiles/ --dataset-name city_streetspace --rtree-layer streetspace \
-    --source-type reconstructed --method streetspace-recon --method-version 1.0
+# transportation tiles (a directory or several files) into ONE Dataset
+python ingest_citygml.py tiles/ --dataset-name city_transport --rtree-layer transport \
+    --source-type reconstructed --method road-model --method-version 1.0
 python ingest_citygml.py --resolve-pending        # after loading more tiles out of order
 
 # a second model of buildings that are already in the graph, with the same ids
@@ -231,16 +231,16 @@ python ingest_citygml.py other_model.gml --dataset-name other_model --rtree-laye
     --id-prefix other_ --source-type authoritative --district HafenCity
 
 # export
-python export_citygml.py --dataset city_streetspace --version 3 --out streetspace_v3.gml
-python export_citygml.py --dataset city_streetspace --version 2 --out streetspace_v2.gml   # + .loss.json
-python export_citygml.py --dataset city_streetspace --version 2 --v2-subfeatures genattrs
+python export_citygml.py --dataset city_transport --version 3 --out transport_v3.gml
+python export_citygml.py --dataset city_transport --version 2 --out transport_v2.gml   # + .loss.json
+python export_citygml.py --dataset city_transport --version 2 --v2-subfeatures genattrs
 python export_citygml.py --dataset intersections --version 3 \
     --bbox "POLYGON((565090 5933680, 565220 5933680, 565220 5933780, 565090 5933780, 565090 5933680))"
 python export_citygml.py --dataset <2.0 dataset> --version 2 --writer strict   # XSD-ordered 2.0
 
 # validate
 python tools/validate_citygml.py --setup                          # once: OGC schema bundle
-python tools/validate_citygml.py streetspace_v3.gml --version 3
+python tools/validate_citygml.py transport_v3.gml --version 3
 ```
 
 Connection for both scripts: `--uri/--user/--password`, defaulting to `$NEO4J_URI`,
@@ -252,7 +252,7 @@ several Datasets; before, an arbitrary one was exported.
 
 **Why.** A Road spans its whole street, sometimes kilometres. When the R-tree selects
 such a Road for a 400 m box, the old writer pulled the Road's complete subtree into one
-in-memory document (on a city-wide street space: many GB of memory).
+in-memory document (on a city-wide transportation model: many GB of memory).
 
 **Ingest.** The 3.0 codec makes one post-order pass per top-level feature and stores
 `bbox_min/max_x/y/z` on every sub-feature and every BoundarySurface/Opening:
@@ -285,16 +285,16 @@ MultiSurfaces, solids, curves and points, unioned with the contained sub-feature
 **Scaling.** Every export step is proportional to the selection, never to the Dataset:
 R-tree selection → plan BFS over the selected subtree → batched feature load/write →
 appearance targets looked up by written ids. `--profile` prints time and peak memory per
-phase (also in `<out>.loss.json` under `profile`). A tiled street space can hold hundreds
+phase (also in `<out>.loss.json` under `profile`). A tiled transportation model can hold hundreds
 of tile Appearances sharing a few dozen X3DMaterials through millions of TARGETS edges, so
-materials are never expanded: a 400 m box of a city-wide street space exports in seconds
+materials are never expanded: a 400 m box of a city-wide transportation model exports in seconds
 with about 120 MB of memory, a 2 km box in under a minute with about 420 MB.
 
 ```bash
-python ingest_citygml.py --backfill-bbox --dataset city_streetspace   # once for older graphs; resumable
-python export_citygml.py --dataset city_streetspace --version 3 --profile \
+python ingest_citygml.py --backfill-bbox --dataset city_transport   # once for older graphs; resumable
+python export_citygml.py --dataset city_transport --version 3 --profile \
     --bbox "POLYGON((565000 5933500, 565400 5933500, 565400 5933900, 565000 5933900, 565000 5933500))" \
-    --out streetspace_box_v3.gml
+    --out transport_box_v3.gml
 ```
 
 ## 5. Fixes to existing behaviour
@@ -308,7 +308,7 @@ python export_citygml.py --dataset city_streetspace --version 3 --profile \
 - **Export defects:**
   - Features are selected by `PART_OF` the Dataset, not `source`; tiled datasets previously exported no buildings.
   - The Dataset is chosen explicitly.
-  - Prototype emission: a `GeometryPrototype` (street trees) is written inline once, and referencing instances use `relativeGMLGeometry xlink:href`. The invalid `<gml:MultiSurface xlink:href>` is gone, which removes 12 of Railway's 21 legacy validation errors.
+  - Prototype emission: a `GeometryPrototype` is written inline once, and referencing instances use `relativeGMLGeometry xlink:href`. The invalid `<gml:MultiSurface xlink:href>` is gone, which removes 12 of Railway's 21 legacy validation errors.
   - Legacy 2.0 writer, building element order: lodNSolid / MultiSurface / MultiCurve / TerrainIntersection are now written per LoD in the 2.0 sequence, with the installations and `boundedBy` between LoD2 and LoD3 (the solid used to follow `boundedBy`).
   - Verbatim fragments (address, metadata, external references, ADE) are appended without the source root's unused namespace declarations. An FZK-Haus address carried the file's default namespace (`profiles/base/2.0`), under which lxml wrote `core:Address` unprefixed, i.e. in the wrong namespace.
   - With both fixes all five FZK-Haus 2.0 models (LoD0-4) export through the legacy writer XSD-valid and census-lossless.
@@ -329,8 +329,8 @@ T5, T6 and T11 use only the fixtures in `eval/fixtures/citygml3/`. T1 to T4 and 
 `--sample` (a real CityGML 3.0 file; the expected counts are read from the file), T8 to T10
 with `--tiles`. T1 to T7, T11 and T12 below were run on Windows against Neo4j 2025.10.1
 with a CityGML 3.0 intersection (64 buildings, 210 traffic spaces, 105 furniture objects)
-as the sample; T8 to T10 are from the original run on three neighbouring street-space
-tiles, which are not public:
+as the sample; T8 to T10 are from the original run on three neighbouring tiles of a
+transportation model, which are not public:
 
 | Test | Result |
 |---|---|
@@ -341,7 +341,7 @@ tiles, which are not public:
 | **T5** kitchen sink (every element type) | 3.0 VALID and lossless incl. appearance, every object type 1:1 (61 types); 2.0 VALID |
 | **T6** tile merge (tile_b, then tile_a) | One `road_shared` with `source_files` = 2; the Section has 6 spaces, the shared TrafficSpace 4 areas; 3 cross-tile refs (written before their target existed) resolved through PendingRefs; re-ingest identical; merged 3.0 and 2.0 exports VALID |
 | **T7** 2.0-sourced → 3.0 | The sample's 2.0 export re-ingested (247 2.0 TrafficAreas) → 3.0 with 247 synthesised `__space` spaces, VALID |
-| **T8** three real street-space tiles | 15,326 top-level features in one Dataset (ingest 66 s in total; 58 MB tile ≈ 19 s, 274 MB RSS); 3.0 and 2.0 exports VALID (≈ 29 s each) |
+| **T8** three real transportation tiles | 15,326 top-level features in one Dataset (ingest 66 s in total; 58 MB tile ≈ 19 s, 274 MB RSS); 3.0 and 2.0 exports VALID (≈ 29 s each) |
 | **T9** clipped 400 m `--bbox` export (two of the tiles) | 3.0: VALID, 0 unresolved, 19.7 MB, 2.7 s, **119 MB peak RSS**, 1,791 areas/markings, none entirely outside the box, no empty Road. 2.0: VALID, 13.3 MB, 2.3 s, 112 MB |
 | **T10** backfill | After the sub-feature bboxes are removed, `--backfill-bbox` rewrites all 12,786 with 0 value differences from the ingest values (2.9 s); a re-run writes 0 |
 | **T11** dynamizer | `eval/fixtures/citygml3/dynamizer.gml` (a SensorConnection Dynamizer and a GenericTimeseries Dynamizer with 3 values): 2 `Dynamizer` sub-features (0 CityObject / PART_OF leaks), re-ingest identical, 3.0 export XSD-valid and lossless, 2.0 export valid with 2 dynamizers in the loss report |
@@ -352,7 +352,7 @@ tiles, which are not public:
 
 - 16 Roads, 18 Sections, 41 TrafficSpaces and 42 AuxiliaryTrafficSpaces are shared by two neighbouring tiles and merged.
 - No duplicate ids, no sub-feature leaks.
-- All 15,326 top-level features have a bbox and exactly one R-tree reference (layer `streetspace` only). This includes PlantCovers whose only geometry is an xlinked `lod0MultiSurface`.
+- All 15,326 top-level features have a bbox and exactly one R-tree reference (layer `transport` only). This includes PlantCovers whose only geometry is an xlinked `lod0MultiSurface`.
 - 666 cross-tile PREDECESSOR/SUCCESSOR edges are resolved. 635 references (on 188 nodes) into neighbouring tiles that were not loaded stay parked and are re-emitted with their original href.
 
 Census of two source tiles against their merged 3.0 export:

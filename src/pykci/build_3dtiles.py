@@ -43,11 +43,14 @@ from pathlib import Path
 import mapbox_earcut as earcut_lib
 import numpy as np
 from lxml import etree
-from neo4j import GraphDatabase
 from pyproj import Transformer
 
-from pykci_provenance import AUTHORITATIVE, DERIVED, LAYERS, property_provenance
-from pykci_runtime import neo4j_auth, neo4j_uri, progress
+from pykci.crs import geoid_undulation, horiz_epsg_from_srs
+from pykci.gltf import (WGS84_A, WGS84_E2, GlbWriter, ecef, enu_basis, finite_float, float_column,
+                        schema_json, string_column, unique_id)
+from pykci.provenance import AUTHORITATIVE, DERIVED, LAYERS, property_provenance
+from pykci.runtime import NO_SCHEMA_NOTICES, connect, console, progress
+from pykci.xal import first_address
 
 # Optional: shapely lets us union overlapping window/door openings before
 # cutting them as holes. earcut cannot bridge overlapping holes (it silently
@@ -62,22 +65,6 @@ except Exception:
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
-WGS84_A  = 6378137.0
-WGS84_F  = 1.0 / 298.257223563
-WGS84_E2 = 2 * WGS84_F - WGS84_F ** 2
-
-# ADV srsName pattern → compound EPSG (horizontal + DHHN92 vertical ≈ DHHN2016).
-# Used to derive the geoid undulation (orthometric → ellipsoidal height offset)
-# via a pyproj compound-CRS → EPSG:4979 (WGS84 3D) transformation.
-# Requires PROJ datum-grid files; falls back to 0.0 m with a warning if absent.
-_ADV_COMPOUND = {
-    "ETRS89_UTM32": "EPSG:5555",   # ETRS89-UTM32N + DHHN92 height
-    "ETRS89_UTM33": "EPSG:5556",   # ETRS89-UTM33N + DHHN92 height
-    "DE_DHDN_GK2":  "EPSG:5675",   # Gauss-Krüger zone 2 + DHHN92
-    "DE_DHDN_GK3":  "EPSG:5678",   # Gauss-Krüger zone 3 + DHHN92
-    "DE_DHDN_GK4":  "EPSG:5679",   # Gauss-Krüger zone 4 + DHHN92
-    "DE_DHDN_GK5":  "EPSG:5680",   # Gauss-Krüger zone 5 + DHHN92
-}
 
 NS = {
     "gml":   "http://www.opengis.net/gml",
@@ -315,86 +302,6 @@ def ecef_to_lonlat(X: float, Y: float, Z: float):
     return lon, lat
 
 
-def _horiz_epsg_from_srs(srs_name: str) -> str:
-    """Map a CityGML srsName to a horizontal EPSG CRS identifier for pyproj.
-
-    Handles the most common patterns found in CityGML files:
-      urn:ogc:def:crs:EPSG::25832   → EPSG:25832
-      EPSG:25832                    → EPSG:25832
-      urn:adv:crs:ETRS89_UTM32*…   → EPSG:25832
-      urn:adv:crs:ETRS89_UTM33*…   → EPSG:25833
-      urn:adv:crs:DE_DHDN_GK3*…    → EPSG:31467
-    Falls back to the raw srsName string (pyproj may still accept it).
-    """
-    # OGC/EPSG URN or plain prefix: EPSG:NNNNN
-    m = re.search(r"EPSG[:\s]+(\d+)", srs_name)
-    if m:
-        return f"EPSG:{m.group(1)}"
-    # ADV UTM: ETRS89_UTM32 → EPSG:25832, ETRS89_UTM33 → EPSG:25833
-    m = re.search(r"ETRS89_UTM(\d+)", srs_name, re.IGNORECASE)
-    if m:
-        return f"EPSG:{25800 + int(m.group(1))}"
-    # ADV Gauss-Krüger: GK2 → EPSG:31466, GK3 → 31467, GK4 → 31468, GK5 → 31469
-    m = re.search(r"GK(\d)", srs_name, re.IGNORECASE)
-    if m:
-        return f"EPSG:{31464 + int(m.group(1))}"
-    return srs_name
-
-
-def _geoid_m(srs_name: str, sample_x: float, sample_y: float, sample_z: float,
-             override: float | None = None) -> tuple[float, str]:
-    """Geoid undulation (m) at a sample point in the dataset CRS, and where it comes from.
-
-    `override` (--geoid-offset) wins. Otherwise a compound-CRS → EPSG:4979 (WGS84 3D
-    ellipsoidal) transformation via pyproj: the difference between the transformed
-    ellipsoidal height and the input orthometric height is the undulation.
-
-    Returns (0.0, 'none') and prints a warning when no compound CRS mapping is found for
-    the srsName, the transformation fails, or PROJ has no geoid grid for it: PROJ then
-    falls back to a 'ballpark' transformation that leaves the height unchanged, which
-    would silently give 0 m instead of the ~40 m of Germany.
-    """
-    if override is not None:
-        return float(override), "--geoid-offset"
-    compound = None
-    for pat, epsg in _ADV_COMPOUND.items():
-        if pat.lower() in srs_name.lower():
-            compound = epsg
-            break
-    if compound is None:
-        print(f"  Note: no compound CRS mapping for '{srs_name}'; geoid offset = 0.0 m "
-              "(pass --geoid-offset to set it)")
-        return 0.0, "none"
-    try:
-        t3d = Transformer.from_crs(compound, "EPSG:4979", always_xy=True)
-        _, _, h_ell = t3d.transform(sample_x, sample_y, sample_z)
-    except Exception as exc:
-        print(f"  WARNING: geoid transform unavailable ({exc}); geoid offset = 0.0 m "
-              "(pass --geoid-offset to set it)")
-        return 0.0, "none"
-    if "ballpark" in t3d.description.lower() or not np.isfinite(h_ell) or abs(h_ell - sample_z) < 1e-6:
-        print(f"  WARNING: PROJ has no geoid grid for {compound} (ballpark transformation); geoid offset = "
-              "0.0 m. Install the grid (projsync) or pass --geoid-offset")
-        return 0.0, "none"
-    return h_ell - sample_z, f"PROJ {compound} -> EPSG:4979 at the dataset centre"
-
-
-def enu_basis(lon_deg: float, lat_deg: float):
-    """East / North / Up unit vectors at a WGS84 geographic point."""
-    lon = math.radians(lon_deg)
-    lat = math.radians(lat_deg)
-    east  = np.array([-math.sin(lon),
-                       math.cos(lon),
-                       0.0])
-    north = np.array([-math.sin(lat) * math.cos(lon),
-                      -math.sin(lat) * math.sin(lon),
-                       math.cos(lat)])
-    up    = np.array([ math.cos(lat) * math.cos(lon),
-                       math.cos(lat) * math.sin(lon),
-                       math.sin(lat)])
-    return east, north, up
-
-
 # ---------------------------------------------------------------------------
 # Geometry helpers
 # ---------------------------------------------------------------------------
@@ -563,19 +470,10 @@ def triangulate_polygon_enu(verts_enu: np.ndarray, holes_enu=None):
 # Neo4j surface fetcher
 # ---------------------------------------------------------------------------
 
-_NEO4J_URI  = neo4j_uri()
-_NEO4J_AUTH = neo4j_auth()
-
-
 def _connect():
-    driver = GraphDatabase.driver(
-        _NEO4J_URI, auth=_NEO4J_AUTH,
-        # UNRECOGNIZED: the tiled queries probe optional properties (is_implicit,
-        # lod3_enriched, …) that a given city may not have
-        notifications_disabled_classifications={"DEPRECATION", "UNRECOGNIZED"},
-    )
-    driver.verify_connectivity()
-    return driver
+    # NO_SCHEMA_NOTICES: the tiled queries probe optional properties (is_implicit,
+    # lod3_enriched, …) that a given city may not have
+    return connect(verify=True, **NO_SCHEMA_NOTICES)
 
 
 def fetch_dataset(sess, source: str) -> dict:
@@ -904,7 +802,7 @@ def build_3dtiles(source: str, out_dir: Path, color_by: str = "type",
         srs_name   = ds.get("crs", "")
         lc_str     = ds.get("bbox_lower_corner", "")
         uc_str     = ds.get("bbox_upper_corner", "")
-        horiz_epsg = _horiz_epsg_from_srs(srs_name)
+        horiz_epsg = horiz_epsg_from_srs(srs_name)
         print(f"  Dataset     : {source}")
         print(f"  srsName     : {srs_name}")
         print(f"  Horiz. CRS  : {horiz_epsg}")
@@ -924,7 +822,7 @@ def build_3dtiles(source: str, out_dir: Path, color_by: str = "type",
             mid_z = (lc_v[2] + uc_v[2]) / 2 if len(lc_v) > 2 else 0.0
         else:
             mid_x = mid_y = mid_z = 0.0
-        geoid_m, geoid_source = _geoid_m(srs_name, mid_x, mid_y, mid_z, geoid_offset)
+        geoid_m, geoid_source = geoid_undulation(srs_name, mid_x, mid_y, mid_z, geoid_offset)
         print(f"  Geoid offset: {geoid_m:+.2f} m ({geoid_source})")
 
         # ---- 2. Fetch surfaces from graph and project to ECEF ---------------
@@ -1127,13 +1025,12 @@ def build_3dtiles(source: str, out_dir: Path, color_by: str = "type",
 #     attributes, so a viewer can show or style a clicked building without a
 #     database round-trip. Property names keep their namespace (osm_*,
 #     predicted_*, …) and each schema property records its provenance layer
-#     (pykci_provenance), mirrored in feature_schema.json next to tileset.json.
+#     (pykci.provenance), mirrored in feature_schema.json next to tileset.json.
 #
 # All tiles share ONE local ENU frame at the dataset centre (a single root
 # transform): per-tile transforms would be inherited by child tiles. Positions
 # stay within a few tens of km of the origin, i.e. millimetre float32 precision.
 
-_F64_NODATA = -1.7976931348623157e308   # "absent" marker for FLOAT64 properties
 _META_EXCLUDE = frozenset({
     "bbox", "bbox_wkt", "bbox_lower_corner", "bbox_upper_corner", "location",
     "has_bbox_envelope", "gtype", "composite_surface_id", "multi_surface_id",
@@ -1187,27 +1084,6 @@ _OVERVIEW_PROPS = frozenset({
     "address_street", "address_house_number", "address_postcode", "address_locality",
     "osm_name", "osm_height", "predictedroofmaterial", "longitude", "latitude",
 })
-_XAL_FIELDS = {
-    "ThoroughfareName": "address_street",
-    "ThoroughfareNumber": "address_house_number",
-    "PostalCodeNumber": "address_postcode",
-    "LocalityName": "address_locality",
-}
-
-
-def _lonlat_to_ecef_np(lon_deg, lat_deg, h):
-    """Vectorised lonlat_to_ecef for (N,) arrays → (N, 3)."""
-    lon = np.radians(lon_deg)
-    lat = np.radians(lat_deg)
-    sin_lat = np.sin(lat)
-    n = WGS84_A / np.sqrt(1.0 - WGS84_E2 * sin_lat ** 2)
-    return np.column_stack([
-        (n + h) * np.cos(lat) * np.cos(lon),
-        (n + h) * np.cos(lat) * np.sin(lon),
-        (n * (1.0 - WGS84_E2) + h) * sin_lat,
-    ])
-
-
 def _lod_num(lod) -> int:
     m = re.search(r"\d", str(lod or ""))
     return int(m.group(0)) if m else 0
@@ -1222,11 +1098,7 @@ def _meta_id(key: str, used: set) -> str:
         pid = "_" + pid
     if pid != key and pid.count("_") > len(pid) / 2:
         pid = "p_" + hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
-    base, i = pid, 2
-    while pid in used:
-        pid, i = f"{base}_{i}", i + 1
-    used.add(pid)
-    return pid
+    return unique_id(pid, used)
 
 
 def discover_feature_schema(sess, source: str) -> list[dict]:
@@ -1265,76 +1137,11 @@ def discover_feature_schema(sess, source: str) -> list[dict]:
     return props
 
 
-def _schema_json(props: list[dict]) -> dict:
-    """EXT_structural_metadata schema (embedded in every tile)."""
-    out = {}
-    for p in props:
-        d = {"name": p["name"], "extras": {"provenance": p["provenance"]}}
-        if p.get("description"):
-            d["description"] = p["description"]
-        if p["type"] == "FLOAT64":
-            d.update({"type": "SCALAR", "componentType": "FLOAT64", "noData": _F64_NODATA})
-        else:
-            d.update({"type": "STRING", "noData": ""})
-        if p["name"] == "id":
-            d["semantic"] = "ID"
-        elif p["name"] == "name":
-            d["semantic"] = "NAME"
-        out[p["id"]] = d
-    return {"id": "pykci_features", "classes": {"feature": {
-        "name": "City feature",
-        "description": "Top-level CityGML feature (Building incl. BuildingParts, or CityObject)",
-        "properties": out}}}
-
-
-def _parse_xal(address_xml) -> dict:
-    """Street / number / postcode / locality from the first bldg:address
-    (address_xml holds the verbatim xAL subtree(s), a JSON list for
-    multi-address buildings)."""
-    if not address_xml:
-        return {}
-    try:
-        items = json.loads(address_xml)
-        items = items if isinstance(items, list) else [items]
-    except (ValueError, TypeError):
-        items = [address_xml]
-    out = {"address_count": float(len(items))}
-    if not items or not isinstance(items[0], str):
-        return out
-    try:
-        root = etree.fromstring(items[0].encode("utf-8"),
-                                parser=etree.XMLParser(recover=True))
-    except Exception:
-        return out
-    if root is None:
-        return out
-    from citygml_writer import _parse_address
-    version, d = _parse_address(items[0].encode("utf-8"))
-    if version == "3" and d:                     # CityGML 3.0: xAL 3
-        for key, field in (("street", "address_street"), ("number", "address_house_number"),
-                           ("postcode", "address_postcode"), ("locality", "address_locality")):
-            if d.get(key):
-                out[field] = d[key].strip()
-        return out
-    for el in root.iter():
-        if not isinstance(el.tag, str):
-            continue
-        local = el.tag.rsplit("}", 1)[-1].rsplit(":", 1)[-1]
-        field = _XAL_FIELDS.get(local)
-        if field and field not in out and el.text and el.text.strip():
-            out[field] = el.text.strip()
-    return out
-
-
 def _coerce(value, mtype):
     if value is None:
         return None
     if mtype == "FLOAT64":
-        try:
-            v = float(value)
-        except (TypeError, ValueError):
-            return None
-        return v if math.isfinite(v) else None
+        return finite_float(value)
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (list, dict)):
@@ -1366,8 +1173,8 @@ def _ctx_driver():
 def _to_enu(pts: np.ndarray) -> np.ndarray:
     """(N,3) dataset-CRS points → (N,3) ENU metres in the shared tileset frame."""
     lon, lat = _CTX["to_wgs84"].transform(pts[:, 0], pts[:, 1])
-    ecef = _lonlat_to_ecef_np(np.asarray(lon), np.asarray(lat), pts[:, 2] + _CTX["geoid_m"])
-    return (ecef - _CTX["center_ecef"]) @ _CTX["basis"].T
+    xyz = ecef(np.asarray(lon), np.asarray(lat), pts[:, 2] + _CTX["geoid_m"])
+    return (xyz - _CTX["center_ecef"]) @ _CTX["basis"].T
 
 
 # ---- graph reads ------------------------------------------------------------
@@ -1639,7 +1446,7 @@ def _attribute_row(rec: dict, schema: list[dict]) -> dict:
         "district": "; ".join(sorted(x for x in rec["districts"] if x)) or None,
         "function_name": "; ".join(sorted(x for x in rec["functions"] if x)) or None,
         "roof_type_name": "; ".join(sorted(x for x in rec["roof_types"] if x)) or None,
-        **_parse_xal(props.get("address_xml")),
+        **first_address(props.get("address_xml")),
     }
     if props.get("bbox_max_z") is not None and props.get("bbox_min_z") is not None:
         derived["geometric_height"] = props["bbox_max_z"] - props["bbox_min_z"]
@@ -1663,46 +1470,7 @@ def _attribute_row(rec: dict, schema: list[dict]) -> dict:
 
 # ---- GLB packing with feature ids + property table -----------------------------
 
-class _GlbWriter:
-    def __init__(self):
-        self.buf = bytearray()
-        self.views: list = []
-        self.accessors: list = []
-
-    def view(self, data: bytes, target=None, align: int = 4) -> int:
-        while len(self.buf) % align:
-            self.buf.append(0)
-        v = {"buffer": 0, "byteOffset": len(self.buf), "byteLength": len(data)}
-        if target is not None:
-            v["target"] = target
-        self.buf.extend(data)
-        self.views.append(v)
-        return len(self.views) - 1
-
-    def accessor(self, arr: np.ndarray, component_type: int, type_: str, target, minmax=False) -> int:
-        acc = {"bufferView": self.view(arr.tobytes(), target), "byteOffset": 0,
-               "componentType": component_type, "count": int(len(arr)), "type": type_}
-        if minmax:
-            acc["min"] = arr.min(axis=0).tolist()
-            acc["max"] = arr.max(axis=0).tolist()
-        self.accessors.append(acc)
-        return len(self.accessors) - 1
-
-    def glb(self, gltf: dict) -> bytes:
-        gltf["bufferViews"] = self.views
-        gltf["accessors"] = self.accessors
-        while len(self.buf) % 4:
-            self.buf.append(0)
-        gltf["buffers"] = [{"byteLength": len(self.buf)}]
-        js = json.dumps(gltf, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-        js += b" " * (-len(js) % 4)
-        total = 12 + 8 + len(js) + 8 + len(self.buf)
-        return (struct.pack("<III", 0x46546C67, 2, total)
-                + struct.pack("<II", len(js), 0x4E4F534A) + js
-                + struct.pack("<II", len(self.buf), 0x004E4942) + bytes(self.buf))
-
-
-def _property_table(w: _GlbWriter, schema: list[dict], rows: list[dict]) -> dict:
+def _property_table(w: GlbWriter, schema: list[dict], rows: list[dict]) -> dict:
     """Encode rows as one EXT_structural_metadata property table. Properties
     that are absent on every feature of this tile are omitted (a viewer then
     reports them as undefined, which is what 'not covered' means)."""
@@ -1711,17 +1479,7 @@ def _property_table(w: _GlbWriter, schema: list[dict], rows: list[dict]) -> dict
         vals = [r.get(p["id"]) for r in rows]
         if all(v is None for v in vals):
             continue
-        if p["type"] == "FLOAT64":
-            arr = np.array([_F64_NODATA if v is None else v for v in vals], dtype="<f8")
-            props[p["id"]] = {"values": w.view(arr.tobytes(), align=8)}
-        else:
-            enc = [("" if v is None else v).encode("utf-8") for v in vals]
-            offsets = np.zeros(len(enc) + 1, dtype="<u4")
-            offsets[1:] = np.cumsum([len(e) for e in enc], dtype=np.uint64)
-            data = b"".join(enc) or b" "      # a bufferView must not be empty
-            props[p["id"]] = {"values": w.view(data, align=8),
-                              "stringOffsets": w.view(offsets.tobytes(), align=8),
-                              "stringOffsetType": "UINT32"}
+        props[p["id"]] = float_column(w, vals) if p["type"] == "FLOAT64" else string_column(w, vals)
     return {"name": "features", "class": "feature", "count": len(rows), "properties": props}
 
 
@@ -1735,7 +1493,7 @@ def _pack_tile(mesh_parts, materials, mat_index, rows, schema) -> bytes:
     for fidx, fid, stype, verts, normal, tri in mesh_parts:
         buckets[mat_index(fid, stype)].append((fidx, verts, normal, tri))
 
-    w = _GlbWriter()
+    w = GlbWriter()
     prims = []
     for mi, items in enumerate(buckets):
         if not items:
@@ -1755,11 +1513,11 @@ def _pack_tile(mesh_parts, materials, mat_index, rows, schema) -> bytes:
         n_gl = np.column_stack([nn[:, 0], nn[:, 2], -nn[:, 1]]).astype(np.float32)
         prim = {
             "attributes": {
-                "POSITION": w.accessor(p_gl, 5126, "VEC3", 34962, minmax=True),
-                "NORMAL": w.accessor(n_gl, 5126, "VEC3", 34962),
-                "_FEATURE_ID_0": w.accessor(np.concatenate(ids), 5126, "SCALAR", 34962),
+                "POSITION": w.array(p_gl, 5126, "VEC3", 34962, minmax=True),
+                "NORMAL": w.array(n_gl, 5126, "VEC3", 34962),
+                "_FEATURE_ID_0": w.array(np.concatenate(ids), 5126, "SCALAR", 34962),
             },
-            "indices": w.accessor(np.concatenate(idx).astype(np.uint32), 5125, "SCALAR", 34963),
+            "indices": w.array(np.concatenate(idx).astype(np.uint32), 5125, "SCALAR", 34963),
             "material": mi,
             "mode": 4,
         }
@@ -1782,7 +1540,7 @@ def _pack_tile(mesh_parts, materials, mat_index, rows, schema) -> bytes:
         present = [p for p in schema if p["id"] in table["properties"]]
         gltf["extensionsUsed"].append("EXT_structural_metadata")
         gltf["extensions"] = {"EXT_structural_metadata": {
-            "schema": _schema_json(present), "propertyTables": [table]}}
+            "schema": schema_json(present), "propertyTables": [table]}}
     return w.glb(gltf)
 
 
@@ -2007,7 +1765,7 @@ def build_3dtiles_tiled(source: str, out_dir: Path, color_by: str = "type",
             driver.close()
             raise SystemExit(f"ERROR: no Dataset with source='{source}' found in graph.")
         srs_name = ds.get("crs", "")
-        horiz_epsg = _horiz_epsg_from_srs(srs_name)
+        horiz_epsg = horiz_epsg_from_srs(srs_name)
         print(f"  Dataset     : {source}\n  srsName     : {srs_name}\n  Horiz. CRS  : {horiz_epsg}")
         progress("tiles.index", message="reading feature index")
         feats = fetch_feature_index(sess, source)
@@ -2029,7 +1787,7 @@ def build_3dtiles_tiled(source: str, out_dir: Path, color_by: str = "type",
     z0s = np.array([f["z0"] for f in feats if f["z0"] is not None] or [0.0])
     mid_x, mid_y, mid_z = float((xs.min() + xs.max()) / 2), float((ys.min() + ys.max()) / 2), \
         float(np.median(z0s))
-    geoid_m, geoid_source = _geoid_m(srs_name, mid_x, mid_y, mid_z, geoid_offset)
+    geoid_m, geoid_source = geoid_undulation(srs_name, mid_x, mid_y, mid_z, geoid_offset)
     print(f"  Geoid offset: {geoid_m:+.2f} m ({geoid_source})")
     c_lon, c_lat = to_wgs84.transform(mid_x, mid_y)
     center_ecef = np.array(lonlat_to_ecef(c_lon, c_lat, mid_z + geoid_m))
@@ -2189,6 +1947,7 @@ def _iter_internal(nd):
 # Entry point
 # ---------------------------------------------------------------------------
 if __name__ == "__main__":
+    console()
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--dataset", "--source", default=None, dest="dataset",

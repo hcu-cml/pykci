@@ -54,6 +54,9 @@ from pathlib import Path
 
 from lxml import etree
 
+from pykci.graphdb import create_indexes, ensure_spatial_layer
+from pykci.runtime import NO_SCHEMA_NOTICES, connect, console
+
 # --------------------------------------------------------------------------- #
 # Namespaces / qualified names
 # --------------------------------------------------------------------------- #
@@ -80,9 +83,6 @@ MARKER_LABEL = "Lod3Facade"           # extra label on every node we create -> s
 SPATIAL_LAYER = "lod3_features"       # own R-tree layer -> authoritative 'features' untouched
 FACADE_EDGE = "HAS_LOD3_FACADE"       # explicit, confidence-carrying fusion edge
 
-# Neo4j (same instance the rest of pykci uses)
-NEO4J_URI = "bolt://localhost:7687"
-NEO4J_AUTH = ("neo4j", "neo4jneo4j")
 BATCH_SIZE = 1000
 
 # Facade vocabulary (CityGML building module)
@@ -506,10 +506,9 @@ def _flush(sess, query, rows):
 
 
 def ensure_indexes(sess):
-    for label in ("BoundarySurface", "Opening", "GeometryPolygon", "GeometryRing",
-                  "GeometryMultiSurface", MARKER_LABEL, "Entity", "Building"):
-        idx = f"{label.lower()}_id_idx"
-        sess.run(f"CREATE INDEX {idx} IF NOT EXISTS FOR (n:{label}) ON (n.id)")
+    create_indexes(sess, [(label, "id") for label in (
+        "BoundarySurface", "Opening", "GeometryPolygon", "GeometryRing",
+        "GeometryMultiSurface", MARKER_LABEL, "Entity", "Building")])
 
 
 def reset_lod3(sess, source):
@@ -624,10 +623,9 @@ def write_facades(sess, batch, per_building, source, confidence):
 
 def index_spatial(sess):
     """Register LoD3 surfaces in their OWN R-tree layer (best effort)."""
+    if not ensure_spatial_layer(sess, SPATIAL_LAYER):
+        return 0
     try:
-        existing = {r["name"] for r in sess.run("CALL spatial.layers() YIELD name RETURN name")}
-        if SPATIAL_LAYER not in existing:
-            sess.run("CALL spatial.addWKTLayer($l, 'bbox_wkt')", l=SPATIAL_LAYER)
         return sess.run(
             f"MATCH (n:{MARKER_LABEL}:BoundarySurface) WHERE n.bbox_wkt IS NOT NULL "
             "WITH collect(n) AS ns CALL spatial.addNodes($l, ns) YIELD count RETURN count AS c",
@@ -744,11 +742,7 @@ def main():
         return
 
     # --- enrich the graph (only buildings that already have an anchor) ---
-    from neo4j import GraphDatabase
-    driver = GraphDatabase.driver(
-        NEO4J_URI, auth=NEO4J_AUTH,
-        notifications_disabled_classifications={"DEPRECATION", "UNRECOGNIZED"})
-    driver.verify_connectivity()
+    driver = connect(verify=True, **NO_SCHEMA_NOTICES)
     with driver.session(database="neo4j") as sess:
         dataset = resolve_dataset(sess, args.dataset)
         ensure_indexes(sess)
@@ -773,4 +767,5 @@ def main():
 
 
 if __name__ == "__main__":
+    console()
     main()

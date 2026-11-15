@@ -16,9 +16,9 @@ Read-only database access
     role). Community Edition has no roles, so there the READ session is the only
     guard: run the benchmark against a copy of the graph you can afford to lose.
 
-Connection (the same variables as the pipeline scripts, see pykci_runtime.py)
-    NEO4J_URI (or the older NEO4J_URL), NEO4J_USER, NEO4J_PASSWORD; defaults
-    bolt://localhost:7687, neo4j / neo4jneo4j. --database picks the database.
+Connection (the same variables as the pipeline, see pykci.runtime)
+    NEO4J_URI (or the older NEO4J_URL), NEO4J_USER, NEO4J_PASSWORD, with the defaults
+    of pykci.runtime. --database picks the database.
 
 LLM backends (pip install -e ".[llm]")
     ollama  a local model served by Ollama (--ollama-url or OLLAMA_BASE_URL,
@@ -48,11 +48,11 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from neo4j import READ_ACCESS, GraphDatabase, Query
+from neo4j import READ_ACCESS, Query
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # the repository root
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "src"))  # the pykci package
 
-from pykci_provenance import (
+from pykci.provenance import (
     AUTHORITATIVE,
     CROWD_SOURCED,
     DERIVED,
@@ -61,10 +61,10 @@ from pykci_provenance import (
     RECONSTRUCTED,
     SENSED,
 )
-from pykci_runtime import neo4j_auth, neo4j_uri
+from pykci.runtime import connect, console, neo4j_auth, neo4j_uri
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+console("utf-8")
+
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
@@ -381,7 +381,7 @@ def selected_questions(only):
 def check_solutions(sets, args):
     """--solutions-only: run the reference queries read-only, no LLM."""
     solutions = load_solutions()
-    driver = GraphDatabase.driver(neo4j_uri(), auth=neo4j_auth())
+    driver = connect()
     failed = 0
     try:
         for _, questions in sets:
@@ -479,7 +479,7 @@ def main():
     )
 
     solutions = load_solutions() if args.solutions else {}
-    driver = GraphDatabase.driver(neo4j_uri(), auth=neo4j_auth()) if args.solutions else None
+    driver = connect() if args.solutions else None
     cache, results, set_times = {}, [], {}
     t_total = time.perf_counter()
     try:

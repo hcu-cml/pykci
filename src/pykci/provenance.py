@@ -22,7 +22,7 @@ sensed, derived. Exporters and clients SHOW the layers above. SOURCE_TYPE_LAYER
 maps one to the other, and layer_of() labels one value of a node from its key, the
 node's `derived_keys` and the node's `source_type`.
 
-Exporters (build_3dtiles.py) and clients (the pykci web client) use this one
+Exporters (build_3dtiles.py) and the programs that show the graph use this one
 rule so a value is labelled the same way everywhere it is shown.
 """
 
@@ -42,13 +42,15 @@ LAYERS = {
     DERIVED: "Derived: computed from other data (by an exporter or a pipeline step)",
 }
 
-_PREFIXES = (
+# key prefixes → layer, and the keys that are named without their prefix: the whole rule of
+# property_provenance(), public so that other programs can show or generate it
+PREFIXES = (
     (("osm_", "addr_"), CROWD_SOURCED),
     (("predicted_", "pred_"), ML_PREDICTED),
     (("lod3_",), RECONSTRUCTED),
     (("live_",), SENSED),
 )
-_EXACT = {
+EXACT = {
     "predictedroofmaterial": ML_PREDICTED,
 }
 
@@ -71,9 +73,9 @@ PROVENANCE_KEYS = frozenset({"source", "source_type", "method", "method_version"
 def property_provenance(key: str) -> str:
     """Provenance layer of a Building/CityObject property name."""
     k = key.lower()
-    if k in _EXACT:
-        return _EXACT[k]
-    for prefixes, layer in _PREFIXES:
+    if k in EXACT:
+        return EXACT[k]
+    for prefixes, layer in PREFIXES:
         if k.startswith(prefixes):
             return layer
     return AUTHORITATIVE

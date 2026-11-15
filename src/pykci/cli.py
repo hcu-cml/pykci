@@ -1,25 +1,34 @@
 """
 pykci command-line interface: one entry point to the pipeline scripts, for
-people and for programs (the pykci web client, CI jobs, containers).
+people and for programs (CI jobs, containers, other applications).
 
     pykci [--neo4j-uri URI] [--neo4j-user USER] [--neo4j-password PW] [--progress]
           <command> [command arguments …]
 
-    (without installing: python pykci_cli.py <command> …)
+    (without installing, from a checkout: python pykci_cli.py <command> …)
 
-Pipeline commands forward their arguments unchanged to the script, so
-`pykci <command> --help` shows that script's own options:
+Pipeline commands forward their arguments unchanged to the module, so
+`pykci <command> --help` shows that module's own options:
 
-    ingest-citygml   ingest_citygml.py           CityGML 2.0 / 3.0 → Neo4j
-    ingest-osm       ingest_osm.py               OpenStreetMap enrichment (.osm.pbf)
-    ingest-roofmats  ingest_roof_materials.py    ML roof-material predictions (GeoJSON)
-    export-citygml   export_citygml.py           Neo4j → CityGML 2.0 / 3.0 (dataset, --ids or --bbox)
-    build-3dtiles    build_3dtiles.py            Neo4j → 3D Tiles (--tiled for whole cities)
-    footprints       tools/extract_citygml_building_footprints.py   CityGML → GeoJSON (no Neo4j)
-    upgrade-citygml  tools/upgrade_citygml_10_to_20.py              CityGML 1.0 → 2.0 (no Neo4j)
-    inventory        eval/parse_citygml_inventory.py                feature inventory of a GML file
-    stats            eval/stats_control.py                          precheck / postcheck / report
-    osm-census       eval/osm_ingestion_census.py                   OSM completeness gate
+    ingest-citygml    pykci.ingest_citygml          CityGML 2.0 / 3.0 → Neo4j
+    ingest-osm        pykci.ingest_osm              OpenStreetMap enrichment (.osm.pbf)
+    ingest-roofmats   pykci.ingest_roof_materials   ML roof-material predictions (GeoJSON)
+    export-citygml    pykci.export_citygml          Neo4j → CityGML 2.0 / 3.0 (dataset, --ids or --bbox)
+    build-3dtiles     pykci.build_3dtiles           Neo4j → 3D Tiles (--tiled for whole cities)
+    footprints        pykci.extract_citygml_building_footprints   CityGML → GeoJSON (no Neo4j)
+    upgrade-citygml   pykci.upgrade_citygml_10_to_20              CityGML 1.0 → 2.0 (no Neo4j)
+    validate-citygml  pykci.validate_citygml        offline XSD validation of CityGML 2.0 / 3.0 (no Neo4j)
+    inventory         eval/parse_citygml_inventory.py   feature inventory of a GML file
+    stats             eval/stats_control.py             precheck / postcheck / report
+    osm-census        eval/osm_ingestion_census.py      OSM completeness gate
+
+The module commands are part of the installed package. The eval/ commands are research
+scripts that stay outside it: they run from a source checkout (or `pip install -e .`).
+
+main() also takes further commands for one call, and the program name its help shows:
+
+    from pykci import cli
+    cli.main(argv, commands={"my-command": ("module", "my_package.my_command")}, prog="my-cli")
 
 Built-in commands print one JSON document on stdout:
 
@@ -40,19 +49,21 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-from pykci_runtime import neo4j_auth, neo4j_uri, progress
+from pykci.runtime import NO_SCHEMA_NOTICES, connect, console, neo4j_uri, progress
 
-ROOT = Path(__file__).resolve().parent
+# the source checkout (src/pykci/cli.py → the repository root); the eval/ commands live there
+ROOT = Path(__file__).resolve().parents[2]
 
-# command → (module at the repo root | path relative to the repo root)
+# command → ("module", importable module run as __main__) | ("path", script relative to ROOT)
 COMMANDS = {
-    "ingest-citygml": ("module", "ingest_citygml"),
-    "ingest-osm": ("module", "ingest_osm"),
-    "ingest-roofmats": ("module", "ingest_roof_materials"),
-    "export-citygml": ("module", "export_citygml"),
-    "build-3dtiles": ("module", "build_3dtiles"),
-    "footprints": ("path", "tools/extract_citygml_building_footprints.py"),
-    "upgrade-citygml": ("path", "tools/upgrade_citygml_10_to_20.py"),
+    "ingest-citygml": ("module", "pykci.ingest_citygml"),
+    "ingest-osm": ("module", "pykci.ingest_osm"),
+    "ingest-roofmats": ("module", "pykci.ingest_roof_materials"),
+    "export-citygml": ("module", "pykci.export_citygml"),
+    "build-3dtiles": ("module", "pykci.build_3dtiles"),
+    "footprints": ("module", "pykci.extract_citygml_building_footprints"),
+    "upgrade-citygml": ("module", "pykci.upgrade_citygml_10_to_20"),
+    "validate-citygml": ("module", "pykci.validate_citygml"),
     "inventory": ("path", "eval/parse_citygml_inventory.py"),
     "stats": ("path", "eval/stats_control.py"),
     "osm-census": ("path", "eval/osm_ingestion_census.py"),
@@ -60,10 +71,10 @@ COMMANDS = {
 BUILTINS = ("inspect", "info")
 
 
-def _run_script(command: str, argv: list[str]) -> int:
-    kind, target = COMMANDS[command]
+def _run_script(command: str, argv: list[str], commands: dict) -> int:
+    kind, target = commands[command]
     if kind == "module":
-        sys.argv = [f"{target}.py", *argv]
+        sys.argv = [f"{target.rsplit('.', 1)[-1]}.py", *argv]
         runpy.run_module(target, run_name="__main__", alter_sys=True)
         return 0
     path = ROOT / target
@@ -186,21 +197,17 @@ def cmd_inspect(argv: list[str]) -> int:
 
 
 # ---------------------------------------------------------------------------
-# info: what is in the graph (for a client to configure itself)
+# info: what is in the graph (for a program to configure itself)
 # ---------------------------------------------------------------------------
 
 def cmd_info(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="pykci info", description="Graph summary as JSON.")
     ap.parse_args(argv)
-    from neo4j import GraphDatabase
     from pyproj import Transformer
 
-    from build_3dtiles import _horiz_epsg_from_srs
+    from pykci.crs import horiz_epsg_from_srs
 
-    driver = GraphDatabase.driver(
-        neo4j_uri(), auth=neo4j_auth(),
-        notifications_disabled_classifications={"DEPRECATION", "UNRECOGNIZED"})
-    driver.verify_connectivity()
+    driver = connect(verify=True, **NO_SCHEMA_NOTICES)
     out: dict = {"neo4j": {"uri": neo4j_uri()}}
     with driver.session(database="neo4j") as sess:
         comp = sess.run("CALL dbms.components() YIELD name, versions, edition "
@@ -251,7 +258,7 @@ def cmd_info(argv: list[str]) -> int:
                 ds["extent"] = [ext["x0"], ext["y0"], ext["x1"], ext["y1"]]
                 ds["z_range"] = [ext["z0"], ext["z1"]]
                 try:
-                    t = Transformer.from_crs(_horiz_epsg_from_srs(d.get("crs") or ""),
+                    t = Transformer.from_crs(horiz_epsg_from_srs(d.get("crs") or ""),
                                              "EPSG:4326", always_xy=True)
                     xs = [ext["x0"], ext["x1"], ext["x1"], ext["x0"]]
                     ys = [ext["y0"], ext["y0"], ext["y1"], ext["y1"]]
@@ -268,24 +275,22 @@ def cmd_info(argv: list[str]) -> int:
 
 # ---------------------------------------------------------------------------
 
-def main(argv=None) -> int:
-    # The scripts print arrows/umlauts; on a Windows cp1252 console that raises
-    # UnicodeEncodeError. Replace what the console cannot show instead of crashing
-    # (machine-readable output, i.e. progress lines and inspect/info JSON, is ASCII).
-    for stream in (sys.stdout, sys.stderr):
-        if hasattr(stream, "reconfigure"):
-            stream.reconfigure(errors="replace")
-    commands = "\n".join(f"  {c}" for c in [*COMMANDS, *BUILTINS])
+def main(argv=None, *, commands: dict | None = None, prog: str = "pykci") -> int:
+    """Run one command. `commands` adds to (or replaces entries of) COMMANDS for this call;
+    `prog` is the program name its help shows."""
+    console()       # machine-readable output (progress lines, inspect / info JSON) is ASCII anyway
+    table = {**COMMANDS, **(commands or {})}
+    names = "\n".join(f"  {c}" for c in [*table, *BUILTINS])
     ap = argparse.ArgumentParser(
-        prog="pykci", formatter_class=argparse.RawDescriptionHelpFormatter,
+        prog=prog, formatter_class=argparse.RawDescriptionHelpFormatter,
         description="pykci: CityGML <-> Neo4j knowledge graph pipeline.",
-        epilog=f"commands:\n{commands}\n\n`pykci <command> --help` shows the command's options.")
+        epilog=f"commands:\n{names}\n\n`{prog} <command> --help` shows the command's options.")
     ap.add_argument("--neo4j-uri", help="Bolt URI (env NEO4J_URI; default bolt://localhost:7687)")
     ap.add_argument("--neo4j-user", help="Neo4j user (env NEO4J_USER; default neo4j)")
     ap.add_argument("--neo4j-password", help="Neo4j password (env NEO4J_PASSWORD)")
     ap.add_argument("--progress", action="store_true",
                     help="emit machine-readable 'PYKCI_PROGRESS {json}' lines on stdout")
-    ap.add_argument("command", choices=[*COMMANDS, *BUILTINS], metavar="command")
+    ap.add_argument("command", choices=[*table, *BUILTINS], metavar="command")
     ap.add_argument("args", nargs=argparse.REMAINDER)
     a = ap.parse_args(argv)
 
@@ -295,16 +300,12 @@ def main(argv=None) -> int:
             os.environ[var] = getattr(a, flag)
     if a.progress:
         os.environ["PYKCI_PROGRESS"] = "1"
-    # Scripts write their reports to output/… relative to the working directory
-    # and import each other by module name, so the repo root must be importable.
-    if str(ROOT) not in sys.path:
-        sys.path.insert(0, str(ROOT))
 
     if a.command == "inspect":
         return cmd_inspect(a.args)
     if a.command == "info":
         return cmd_info(a.args)
-    return _run_script(a.command, a.args)
+    return _run_script(a.command, a.args, table)
 
 
 if __name__ == "__main__":

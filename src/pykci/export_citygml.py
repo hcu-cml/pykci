@@ -49,12 +49,9 @@ from pathlib import Path
 
 
 from lxml import etree
-from neo4j import GraphDatabase
 
-from pykci_runtime import neo4j_auth, neo4j_uri, progress
+from pykci.runtime import NO_SCHEMA_NOTICES, add_connection_arguments, connect, console, progress
 
-NEO4J_URI = neo4j_uri()
-NEO4J_USER, NEO4J_PASSWORD = neo4j_auth()
 
 # ---------------------------------------------------------------------------
 # Namespace declarations
@@ -1561,7 +1558,7 @@ def _write_nested_feature(parent_el, nf, ns_uri, crs, srs_dim):
 # ---------------------------------------------------------------------------
 
 def attach_prototypes(sess, ms_map):
-    """Attach the GeometryPrototype (street-tree pattern: implicit GeometryMultiSurface
+    """Attach the GeometryPrototype (the 2.0 pattern: implicit GeometryMultiSurface
     -[:HAS_PROTOTYPE]-> GeometryPrototype) to each implicit MS entry, with its ordered
     face rings, so the template can be written inline once."""
     ids = [e["ms"]["id"] for lst in ms_map.values() for e in lst if e["ms"].get("is_implicit")]
@@ -1763,7 +1760,7 @@ def build_city_object_element(co_id, core, ms_list, surfaces, crs, srs_dim):
             proto     = ms_props.get("prototype_href")
             gproto    = ms_entry.get("prototype")
             if gproto is not None and gproto["id"] not in _EMITTED_PROTOTYPES:
-                # GeometryPrototype (street-tree pattern) not yet in this document:
+                # GeometryPrototype (2.0 pattern) not yet in this document:
                 # write the template inline once
                 _write_prototype_inline(rel_geom, gproto)
                 _EMITTED_PROTOTYPES.add(gproto["id"])
@@ -1824,13 +1821,9 @@ def export(out_path, bbox_wkt=None, dataset=None, ids=None, driver=None):
     """
     own_driver = driver is None
     if own_driver:
-        driver = GraphDatabase.driver(
-            neo4j_uri(),
-            auth=neo4j_auth(),
-            # UNRECOGNIZED: the queries probe optional structure (Opening, BuildingPart,
-            # orientation, …) that a given city may not have
-            notifications_disabled_classifications={"DEPRECATION", "UNRECOGNIZED"},
-        )
+        # NO_SCHEMA_NOTICES: the queries probe optional structure (Opening, BuildingPart,
+        # orientation, …) that a given city may not have
+        driver = connect(**NO_SCHEMA_NOTICES)
     driver.verify_connectivity()
     print("Connected to Neo4j.")
     _EMITTED_PROTOTYPES.clear()
@@ -2061,9 +2054,7 @@ def main(argv=None):
                          "(default: the prefix is stripped, as in the source files)")
     ap.add_argument("--loss-report", default=None,
                     help="loss-report JSON (default <out>.loss.json; strict writer only)")
-    ap.add_argument("--uri", default=NEO4J_URI)
-    ap.add_argument("--user", default=NEO4J_USER)
-    ap.add_argument("--password", default=NEO4J_PASSWORD)
+    add_connection_arguments(ap)
     args = ap.parse_args(argv)
 
     sel_ids = []
@@ -2077,14 +2068,12 @@ def main(argv=None):
     bbox_wkt = _bbox_to_wkt(args.bbox) if args.bbox else None
 
     target = "3.0" if args.version.startswith("3") else "2.0"
-    drv = GraphDatabase.driver(args.uri, auth=(args.user, args.password),
-                               notifications_disabled_classifications={"DEPRECATION", "UNRECOGNIZED"})
-    drv.verify_connectivity()
+    drv = connect(args.uri, args.user, args.password, verify=True, **NO_SCHEMA_NOTICES)
     with drv.session(database="neo4j") as sess:
         ds = query_dataset(sess, args.dataset, feature_ids=sel_ids or None)
     if not ds:
         raise SystemExit("ERROR: no Dataset in the graph.")
-    from citygml_writer import node_versions, source_version
+    from pykci.citygml_writer import node_versions, source_version
     src_version = source_version(ds)
     writer = args.writer
     if writer == "auto":
@@ -2115,7 +2104,7 @@ def main(argv=None):
         export(out, bbox_wkt, dataset=ds.get("id"), ids=sel_ids or None, driver=drv)
     else:
         import time
-        from citygml_writer import export_document
+        from pykci.citygml_writer import export_document
         t0 = time.perf_counter()
         with drv.session(database="neo4j") as sess:
             counts, loss = export_document(sess, ds, target, out,
@@ -2148,7 +2137,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
-    for _stream in (sys.stdout, sys.stderr):   # a cp1252 console must not crash on non-ASCII output
-        if hasattr(_stream, "reconfigure"):
-            _stream.reconfigure(errors="replace")
+    console()
     main()

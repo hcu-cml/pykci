@@ -9,7 +9,11 @@ RUN pip install --no-cache-dir \
     langchain-neo4j \
     neo4j
 
-COPY db-llm/query_ollama_full.py .
-COPY GRAPH.md .
+# The layout of a checkout, so the script finds what it looks for next to itself: the pykci
+# package in ../src (its connection settings, pykci.runtime) and GRAPH.md / CYPHER.md one
+# level up, which it gives the model as context.
+COPY src/pykci src/pykci
+COPY db-llm db-llm
+COPY GRAPH.md CYPHER.md ./
 
-ENTRYPOINT ["python", "-u", "query_ollama_full.py"]
+ENTRYPOINT ["python", "-u", "db-llm/query_ollama_full.py"]

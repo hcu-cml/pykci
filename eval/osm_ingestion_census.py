@@ -62,7 +62,6 @@ database or the pbf. Exit code 0 only when every gate is clean.
 import argparse
 import hashlib
 import json
-import os
 import re
 import subprocess
 import sys
@@ -73,26 +72,25 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from neo4j import GraphDatabase
 from pyproj import Transformer
 from shapely.geometry import shape
 
-import ingest_osm as osm
-from ingest_osm import (
-    NEO4J_URI, NEO4J_AUTH, KIND_LABEL, PROMOTED_TAGS, ENRICH_KEYS,
+from pykci import ingest_osm as osm
+from pykci.crs import epsg_from_srs
+from pykci.runtime import NO_SCHEMA_NOTICES, connect, console
+
+console("utf-8")
+from pykci.ingest_osm import (
+    NEO4J_URI, NEO4J_AUTH, KIND_LABEL, PROMOTED_TAGS, ENRICH_KEYS, WORKERS,
     _slug, _all_tags, _pos_list, build_osm_props, classify_kind,
-    extract_layer, _epsg_from_srs, get_dataset, resolve_extent,
+    extract_layer, get_dataset, resolve_extent,
 )
 
 ADDR_SUBKEYS = ("street", "housenumber", "postcode", "city", "country")
 BATCH = 1000
-# Read-only verification sessions; scales with the machine (capped at 16).
-WORKERS = min(16, os.cpu_count() or 6)
 
 
 # ── expectation (source side) ─────────────────────────────────────────────────
@@ -441,14 +439,11 @@ def main():
     source = f"osm:{pbf.stem}"
 
     print("Connecting to Neo4j ...")
-    driver = GraphDatabase.driver(
-        NEO4J_URI, auth=NEO4J_AUTH,
-        notifications_disabled_classifications={"DEPRECATION", "UNRECOGNIZED"})
-    driver.verify_connectivity()
+    driver = connect(NEO4J_URI, *NEO4J_AUTH, verify=True, **NO_SCHEMA_NOTICES)
 
     with driver.session(database="neo4j") as sess:
         ds = get_dataset(sess, args.dataset)
-        crs = _epsg_from_srs(ds["crs"])
+        crs = epsg_from_srs(ds["crs"])
         minx, miny, maxx, maxy, recomputed = resolve_extent(sess, ds)
         if recomputed:
             print("  NOTE: stored Dataset bbox degenerate; using true feature extent "

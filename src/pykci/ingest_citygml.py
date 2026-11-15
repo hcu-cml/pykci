@@ -82,10 +82,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from lxml import etree
-from neo4j import GraphDatabase
 from neo4j.exceptions import TransientError
 
-from pykci_runtime import neo4j_auth, neo4j_uri, progress
+from pykci.runtime import NO_SCHEMA_NOTICES, add_connection_arguments, connect, console, progress
+from pykci.crs import Reprojector, epsg_from_srs, peek_srsname
+from pykci.graphdb import (backfill_bbox_from_geometry, create_indexes, create_point_index,
+                           ensure_spatial_layer, slug as _slug)
 
 # ---------------------------------------------------------------------------
 # Namespaces
@@ -394,25 +396,7 @@ def _run_retry(sess, query, retries=5, **params):
     return sess.run(query, **params).consume()
 
 
-def _epsg_from_srs(srs):
-    """Resolve a CityGML srsName to an 'EPSG:NNNN' string (mirrors ingest_osm)."""
-    if not srs:
-        return None
-    m = re.search(r"EPSG[:/]+(?:\d+/)?(\d{4,6})", srs)
-    if m:
-        return f"EPSG:{m.group(1)}"
-    u = srs.upper().replace(" ", "")
-    m = re.search(r"UTM(\d{2})", u)
-    if m:
-        return f"EPSG:258{m.group(1)}"
-    if "CH1903+" in u or "LV95" in u:
-        return "EPSG:2056"
-    if "CH1903" in u or "LV03" in u:
-        return "EPSG:21781"
-    return srs
-
-
-class _Reprojector:
+class _Reprojector(Reprojector):
     """Reproject CityGML coordinates from a source CRS to a target metric CRS.
     Emits (easting, northing[, height_m]) so downstream x/y are metric-planar.
     Handles GML axis order (geographic CRS store lat,lon) and scales Z by the
@@ -420,26 +404,9 @@ class _Reprojector:
     (geographic Z is already a metric height and passes through)."""
 
     def __init__(self, src_srs, dst_crs):
-        from pyproj import CRS, Transformer
-        src = _epsg_from_srs(src_srs) or src_srs
-        dst = _epsg_from_srs(dst_crs) or dst_crs
+        dst = epsg_from_srs(dst_crs) or dst_crs
+        super().__init__(epsg_from_srs(src_srs) or src_srs, dst)
         self.dst_epsg = dst
-        src_obj = CRS.from_user_input(src)
-        self.geographic = src_obj.is_geographic
-        self.z_factor = 1.0
-        if not self.geographic:
-            try:
-                f = src_obj.axis_info[0].unit_conversion_factor
-                if f:
-                    self.z_factor = f
-            except Exception:
-                pass
-        self.tf = Transformer.from_crs(src_obj, CRS.from_user_input(dst), always_xy=True)
-
-    def point(self, a, b, z=0.0):
-        # GML geographic order is (lat, lon); always_xy wants (lon, lat).
-        x, y = self.tf.transform(b, a) if self.geographic else self.tf.transform(a, b)
-        return x, y, z * self.z_factor
 
     def poslist(self, text, srs_dim):
         vals = text.split()
@@ -461,14 +428,6 @@ class _Reprojector:
 def _reproject_poslist(text, srs_dim):
     xf = getattr(_tls, "reproj", None)
     return xf.poslist(text, srs_dim) if (xf is not None and text) else text
-
-
-def _peek_srsname(path, limit=2_000_000):
-    """Read the first srsName from a (possibly huge) CityGML file, bounded."""
-    with open(path, "rb") as fh:
-        chunk = fh.read(limit).decode("utf-8", "ignore")
-    m = re.search(r'srsName="([^"]+)"', chunk)
-    return m.group(1) if m else None
 
 
 def _parse_corner(raw):
@@ -523,10 +482,6 @@ def _bbox_from_geometry(el):
 def _fmt_num(v):
     """Render a float without trailing ``.0`` for whole numbers (compact corners)."""
     return str(int(v)) if v == int(v) else repr(v)
-
-
-def _slug(s):
-    return re.sub(r"[^a-z0-9_]", "_", s.lower())
 
 
 def _attr_key(s):
@@ -867,28 +822,6 @@ def _resolve_municipality(gemeinde_key, filename_stem):
 # Spatial R-tree (neo4j-spatial plugin)
 # ---------------------------------------------------------------------------
 
-def _ensure_spatial_layer(session, layer_name="features"):
-    try:
-        existing = {
-            r["name"]
-            for r in session.run(
-                "CALL spatial.layers() YIELD name RETURN name"
-            )
-        }
-        if layer_name not in existing:
-            session.run(
-                "CALL spatial.addWKTLayer($layer, 'bbox_wkt')",
-                layer=layer_name,
-            )
-            print(f"  Spatial layer '{layer_name}' created.")
-        else:
-            print(f"  Spatial layer '{layer_name}' already exists.")
-        return True
-    except Exception as exc:
-        print(f"  WARNING: spatial layer setup failed ({exc})")
-        return False
-
-
 def _derive_code_hubs(sess, source_filter=None):
     """Derive the BuildingFunction / RoofType vocabulary HUB nodes and their
     HAS_FUNCTION / HAS_ROOF_TYPE edges from the scalar codes already stored on
@@ -954,7 +887,7 @@ def _index_features_spatial(session, layer_name="features", batch_size=25000):
         # Collect ids first (cheap: no geometry materialized), then re-match each
         # batch through the Entity(id) index — a single scan, index-backed lookups.
         # A feature registered in another source's own layer (n.rtree_layer, set by
-        # --rtree-layer, e.g. the street-space reconstruction) never leaks into this
+        # --rtree-layer, e.g. a tiled transportation model) never leaks into this
         # layer (GRAPH.md: a separate R-tree layer per source). Nodes without the
         # property belong to 'features', so a 2.0-only graph indexes exactly as before.
         # spatial.addNodes is NOT idempotent (verified on neo4j-spatial 2025.10: a
@@ -998,62 +931,13 @@ def _backfill_cityobject_bbox_from_geometry(session, batch_size=2000):
     pos_list convention: "x y z …" (x=idx0, y=idx1, stride 3); only non-degenerate
     boxes are written. Serial, idempotent (SET only), safe to re-run.
     """
-    def _bbox(pos_lists):
-        minx = miny = minz = float("inf")
-        maxx = maxy = maxz = float("-inf")
-        ok = False
-        for pl in pos_lists:
-            v = pl.split()
-            if len(v) < 3 or len(v) % 3 != 0:
-                continue
-            f = [float(t) for t in v]
-            xs, ys, zs = f[0::3], f[1::3], f[2::3]
-            minx, maxx = min(minx, min(xs)), max(maxx, max(xs))
-            miny, maxy = min(miny, min(ys)), max(maxy, max(ys))
-            minz, maxz = min(minz, min(zs)), max(maxz, max(zs))
-            ok = True
-        if not ok or not (maxx > minx and maxy > miny):
-            return None
-        return minx, miny, minz, maxx, maxy, maxz
-
     try:
         ids = [r["id"] for r in session.run(
             "MATCH (c:CityObject) WHERE c.bbox_wkt IS NULL RETURN c.id AS id")]
         if not ids:
             return 0
         print(f"  Backfilling bbox for {len(ids)} CityObject(s) from graph geometry …")
-        written = 0
-        for i in range(0, len(ids), batch_size):
-            batch = ids[i:i + batch_size]
-            rows = session.run(
-                "UNWIND $ids AS cid MATCH (c:Entity {id: cid}) "
-                "OPTIONAL MATCH (c)-[*1..6]->(g) "
-                "WHERE (g:GeometryRing OR g:GeometryLineString) AND g.pos_list IS NOT NULL "
-                "RETURN cid AS id, collect(g.pos_list) AS pl", ids=batch).data()
-            writes = []
-            for r in rows:
-                if not r["pl"]:
-                    continue
-                bb = _bbox(r["pl"])
-                if bb is None:
-                    continue
-                minx, miny, minz, maxx, maxy, maxz = bb
-                writes.append({
-                    "id": r["id"],
-                    "wkt": (f"POLYGON(({minx} {miny}, {maxx} {miny}, {maxx} {maxy}, "
-                            f"{minx} {maxy}, {minx} {miny}))"),
-                    "minx": minx, "miny": miny, "minz": minz,
-                    "maxx": maxx, "maxy": maxy, "maxz": maxz,
-                    "cx": (minx + maxx) / 2.0, "cy": (miny + maxy) / 2.0})
-            if writes:
-                session.run(
-                    "UNWIND $rows AS row MATCH (n:Entity {id: row.id}) "
-                    "SET n.bbox_wkt=row.wkt, n.bbox_min_x=row.minx, n.bbox_min_y=row.miny, "
-                    "n.bbox_min_z=row.minz, n.bbox_max_x=row.maxx, n.bbox_max_y=row.maxy, "
-                    "n.bbox_max_z=row.maxz, n.center_x=row.cx, n.center_y=row.cy",
-                    rows=writes)
-                written += len(writes)
-        return written
+        return backfill_bbox_from_geometry(session, ids, batch_size)
     except Exception as exc:
         print(f"  WARNING: CityObject bbox backfill failed ({exc})")
         return 0
@@ -2966,7 +2850,7 @@ def _collect_city_object(el, feature_type, ns_prefix, scalar_attrs,
 # ---------------------------------------------------------------------------
 
 def _create_indexes(sess):
-    for label, prop in [
+    create_indexes(sess, [
         # Shared label carried by every node — lets the generic, multi-label
         # relationship MATCHes in _flush_batch (where the source/target node type
         # is not known at flush time) resolve by id through a single index
@@ -2994,29 +2878,9 @@ def _create_indexes(sess):
         ("Building",              "source"),
         ("CityObject",            "source"),
         ("GeometryMultiSurface",  "source"),
-    ]:
-        try:
-            idx_name = f"{label.lower()}_{prop}_idx"
-            sess.run(
-                f"CREATE INDEX {idx_name} IF NOT EXISTS "
-                f"FOR (n:{label}) ON (n.{prop})"
-            )
-        except Exception:
-            pass
-    try:
-        sess.run(
-            "CREATE POINT INDEX building_location_idx IF NOT EXISTS "
-            "FOR (n:Building) ON (n.location)"
-        )
-    except Exception:
-        pass
-    try:
-        sess.run(
-            "CREATE POINT INDEX cityobject_location_idx IF NOT EXISTS "
-            "FOR (n:CityObject) ON (n.location)"
-        )
-    except Exception:
-        pass
+    ], tolerant=True)
+    create_point_index(sess, "Building")
+    create_point_index(sess, "CityObject")
 
 
 # ---------------------------------------------------------------------------
@@ -3221,14 +3085,14 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
     cg_version = fmt.split(" ", 1)[1] if fmt.startswith("CityGML ") else None
 
     # Set up (or clear) the per-thread reprojector before any coordinate is parsed.
-    reproj_target = _epsg_from_srs(target_crs) if target_crs else None
+    reproj_target = epsg_from_srs(target_crs) if target_crs else None
     if reproj_target:
-        src_srs = source_crs or _peek_srsname(gml_path)
+        src_srs = source_crs or peek_srsname(gml_path, limit=2_000_000)
         if not src_srs:
             raise SystemExit(f"ERROR: --target-crs set but no source CRS found in "
                              f"{gml_path.name}; pass --source-crs.")
         _tls.reproj = _Reprojector(src_srs, reproj_target)
-        print(f"  Reprojecting: {_epsg_from_srs(src_srs) or src_srs} -> {reproj_target}")
+        print(f"  Reprojecting: {epsg_from_srs(src_srs) or src_srs} -> {reproj_target}")
     else:
         _tls.reproj = None
     src_crs_original = None
@@ -3556,7 +3420,7 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
         else:
             print("  Populating spatial R-tree index on bounding boxes …")
             progress("ingest.spatial_index", file=source, message="building spatial R-tree")
-            spatial_ok = _ensure_spatial_layer(sess, rtree_layer or "features")
+            spatial_ok = ensure_spatial_layer(sess, rtree_layer or "features", report=True)
             if spatial_ok:
                 # NB: CityObject footprints are intentionally NOT indexed here.
                 # OSM fusion (ingest_osm.py) pulls candidate footprints from this
@@ -3655,7 +3519,7 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
 # nothing is namespace-wildcarded. Sub-features never get the CityObject label nor
 # PART_OF Dataset (BuildingPart precedent).
 #
-# Merge policy (street-space tiles): features MERGE on gml:id. The same Road / Section
+# Merge policy (transportation tiles): features MERGE on gml:id. The same Road / Section
 # / TrafficSpace gml:id may occur in many tile files with different children; every
 # file adds its children (MERGE on deterministic ids and edge keys), the generic
 # attribute map is unioned, the bbox is unioned, `source` is the last file and
@@ -3664,8 +3528,8 @@ def ingest(gml_path: Path, driver, num_writers: int = 3, nearby_edges: bool = Tr
 
 from collections import Counter as _Counter, defaultdict as _defaultdict  # noqa: E402
 
-from citygml_profiles import (PROFILE_V3 as _P3, detect_citygml_version,  # noqa: E402
-                              href_fragment)
+from pykci.citygml_profiles import (FEATURE_RELS, PROFILE_V3 as _P3,  # noqa: E402
+                                     detect_citygml_version, href_fragment)
 
 NS3 = dict(_P3.ns)
 _GML3 = NS3["gml"]
@@ -5919,13 +5783,6 @@ def _backfill_bbox3(sess, dataset_id):
     return done
 
 
-# containment edges below a top-level feature (sub-features, surfaces, openings)
-_BBOX_CHILD_RELS = ("HAS_SECTION", "HAS_INTERSECTION", "HAS_TRAFFIC_SPACE", "HAS_MARKING",
-                    "HAS_HOLE", "HAS_CLEARANCE_SPACE", "HAS_BOUNDARY", "HAS_OPENING",
-                    "HAS_NESTED", "HAS_BRIDGE_PART", "HAS_BUILDING_PART",
-                    "HAS_OUTER_INSTALLATION", "HAS_INTERIOR_INSTALLATION", "HAS_INTERIOR_ROOM",
-                    "HAS_ROOM_INSTALLATION", "HAS_INTERIOR_FURNITURE", "HAS_SUBDIVISION",
-                    "HAS_POINT_CLOUD")
 _BBOX_GEOM_Q = (
     "UNWIND $ids AS i MATCH (x:Entity {id: i}) "
     "CALL (x) { "
@@ -5949,7 +5806,7 @@ _BBOX_GEOM_Q = (
     "} "
     "RETURN i AS id, collect([pl, d]) AS geo")
 _BBOX_CHILD_Q = (
-    "UNWIND $ids AS i MATCH (x:Entity {id: i})-[:" + "|".join(_BBOX_CHILD_RELS) + "]->(c) "
+    "UNWIND $ids AS i MATCH (x:Entity {id: i})-[:" + "|".join(FEATURE_RELS) + "]->(c) "
     "WHERE c.bbox_min_x IS NOT NULL "
     "RETURN i AS id, min(c.bbox_min_x) AS x0, min(c.bbox_min_y) AS y0, min(c.bbox_min_z) AS z0, "
     "       max(c.bbox_max_x) AS x1, max(c.bbox_max_y) AS y1, max(c.bbox_max_z) AS z1")
@@ -5975,7 +5832,7 @@ def backfill_subfeature_bbox(sess, dataset_id=None, top_batch=200, chunk=1000, l
     else:
         dids = [r["id"] for r in sess.run(
             "MATCH (d:Dataset) WHERE d.citygml_version STARTS WITH '3' RETURN d.id AS id")]
-    rels = "|".join(_BBOX_CHILD_RELS)
+    rels = "|".join(FEATURE_RELS)
     stats = _Counter()
     t0 = time.perf_counter()
     for did in dids:
@@ -6041,20 +5898,10 @@ def backfill_subfeature_bbox(sess, dataset_id=None, top_batch=200, chunk=1000, l
 
 
 def _create_indexes3(sess):
-    for label in _V3_INDEX_LABELS:
-        try:
-            sess.run(f"CREATE INDEX {label.lower()}_id_idx IF NOT EXISTS FOR (n:{label}) ON (n.id)")
-        except Exception:
-            pass
-    try:
-        sess.run("CREATE INDEX pendingrefs_id_idx IF NOT EXISTS FOR (n:PendingRefs) ON (n.id)")
-    except Exception:
-        pass
-    try:   # xlink targets that are the primary MultiSurface of a BoundarySurface
-        sess.run("CREATE INDEX boundarysurface_multi_surface_id_idx IF NOT EXISTS "
-                 "FOR (n:BoundarySurface) ON (n.multi_surface_id)")
-    except Exception:
-        pass
+    create_indexes(sess, [(label, "id") for label in _V3_INDEX_LABELS], tolerant=True)
+    create_indexes(sess, [("PendingRefs", "id")], tolerant=True)
+    # xlink targets that are the primary MultiSurface of a BoundarySurface
+    create_indexes(sess, [("BoundarySurface", "multi_surface_id")], tolerant=True)
 
 
 def _reindex_stale(sess, ids=None):
@@ -6079,7 +5926,7 @@ def _index_rtree3(sess, ids, layer):
     source, GRAPH.md). spatial.addNodes is not idempotent: only unindexed features are
     added; features whose extent grew since they were indexed (rtree_stale, e.g. a Road
     continued in this tile) are removed and re-added."""
-    if not ids or not _ensure_spatial_layer(sess, layer):
+    if not ids or not ensure_spatial_layer(sess, layer, report=True):
         return 0
     total = 0
     for i in range(0, len(ids), 5000):
@@ -6116,14 +5963,14 @@ def ingest_citygml3(gml_path: Path, driver, num_writers: int = 3, nearby_edges: 
     ctx = _Ctx3(source, dataset_id, prov, layer, id_prefix)
     _tls.srs_dim3 = None
 
-    reproj_target = _epsg_from_srs(target_crs) if target_crs else None
+    reproj_target = epsg_from_srs(target_crs) if target_crs else None
     if reproj_target:
-        src_srs = source_crs or _peek_srsname(gml_path)
+        src_srs = source_crs or peek_srsname(gml_path, limit=2_000_000)
         if not src_srs:
             raise SystemExit(f"ERROR: --target-crs set but no source CRS found in "
                              f"{gml_path.name}; pass --source-crs.")
         _tls.reproj = _Reprojector(src_srs, reproj_target)
-        print(f"  Reprojecting: {_epsg_from_srs(src_srs) or src_srs} -> {reproj_target}")
+        print(f"  Reprojecting: {epsg_from_srs(src_srs) or src_srs} -> {reproj_target}")
     else:
         _tls.reproj = None
 
@@ -6282,7 +6129,7 @@ def ingest_citygml3(gml_path: Path, driver, num_writers: int = 3, nearby_edges: 
         # ── Dataset metadata (coalesce / bbox union: safe for tiled datasets)
         cm_name, cm_desc, cm_schema_loc = _read_citymodel_header(gml_path)
         if not crs:
-            crs = _peek_srsname(gml_path)
+            crs = peek_srsname(gml_path, limit=2_000_000)
         stored_crs = reproj_target or crs
         lod = f"LOD{ctx.max_lod}" if ctx.max_lod >= 0 else "LOD0"
         _run_retry(sess,
@@ -6321,7 +6168,7 @@ def ingest_citygml3(gml_path: Path, driver, num_writers: int = 3, nearby_edges: 
                        id=dataset_id, b=box)
 
         # ── District / City / LOCATED_IN: only when buildings were ingested (a
-        #    street-space tile would otherwise create one District per tile file) and the
+        #    transportation tile would otherwise create one District per tile file) and the
         #    file names its municipality (Gemeindeschluessel) or --district names it; a
         #    District named after a file says nothing
         if ctx.building_ids and not (ctx.gemeinde_key or district):
@@ -6386,9 +6233,7 @@ def ingest_citygml3(gml_path: Path, driver, num_writers: int = 3, nearby_edges: 
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    for _stream in (sys.stdout, sys.stderr):   # a cp1252 console must not crash on non-ASCII output
-        if hasattr(_stream, "reconfigure"):
-            _stream.reconfigure(errors="replace")
+    console()
     import argparse
 
     parser = argparse.ArgumentParser(description="Ingest CityGML 2.0 or 3.0 (all modules) into "
@@ -6452,10 +6297,10 @@ if __name__ == "__main__":
                         help="Provenance trust class (GRAPH.md provenance rules), written as "
                              "source_type on the Dataset and on every feature / sub-feature / "
                              "surface / prototype / appearance node of the ingested files "
-                             "(e.g. --source-type reconstructed for the street-space tiles).")
+                             "(e.g. --source-type reconstructed for a reconstructed model).")
     parser.add_argument("--method", default=None,
                         help="Method / model id of derived data, stored as `method` beside "
-                             "source_type (e.g. --method streetspace-recon).")
+                             "source_type (e.g. --method road-model).")
     parser.add_argument("--method-version", default=None,
                         help="Version of --method, stored as `method_version`. --method and "
                              "--method-version are required for predicted, reconstructed and "
@@ -6478,7 +6323,7 @@ if __name__ == "__main__":
     parser.add_argument("--rtree-layer", default=None,
                         help="Neo4j Spatial R-tree layer for the top-level features of these "
                              "files (default 'features'). Give every non-authoritative source its "
-                             "own layer, e.g. --rtree-layer streetspace or citygml3; features of "
+                             "own layer, e.g. --rtree-layer transport or citygml3; features of "
                              "another layer never leak into 'features'.")
     parser.add_argument("--resolve-pending", action="store_true",
                         help="Only retry the parked cross-file references (PendingRefs: "
@@ -6491,12 +6336,7 @@ if __name__ == "__main__":
                              "3.0 Dataset. Idempotent and resumable.")
     parser.add_argument("--dataset", default=None,
                         help="Dataset id for --backfill-bbox (default: all CityGML 3.0 Datasets).")
-    parser.add_argument("--uri", default=neo4j_uri(),
-                        help="Neo4j bolt URI (default $NEO4J_URI or bolt://localhost:7687).")
-    parser.add_argument("--user", default=neo4j_auth()[0],
-                        help="Neo4j user (default $NEO4J_USER or neo4j).")
-    parser.add_argument("--password", default=neo4j_auth()[1],
-                        help="Neo4j password (default $NEO4J_PASSWORD or neo4jneo4j).")
+    add_connection_arguments(parser)
     args = parser.parse_args()
     if args.source_type in ("predicted", "reconstructed", "derived") and not (
             args.method and args.method_version):
@@ -6511,15 +6351,14 @@ if __name__ == "__main__":
                  district=args.district)
 
     if args.backfill_bbox and not args.paths:
-        _drv = GraphDatabase.driver(args.uri, auth=(args.user, args.password),
-                                    notifications_disabled_classifications={"DEPRECATION", "UNRECOGNIZED"})
+        _drv = connect(args.uri, args.user, args.password, **NO_SCHEMA_NOTICES)
         with _drv.session(database="neo4j") as _s:
             backfill_subfeature_bbox(_s, args.dataset)
         _drv.close()
         sys.exit(0)
 
     if args.resolve_pending and not args.paths:
-        _drv = GraphDatabase.driver(args.uri, auth=(args.user, args.password))
+        _drv = connect(args.uri, args.user, args.password)
         with _drv.session(database="neo4j") as _s:
             _res, _left = resolve_pending_refs(_s)
         _drv.close()
@@ -6550,13 +6389,8 @@ if __name__ == "__main__":
     pool_size = max(20, concurrent_ingests * (writers_per + 2) + 4)
 
     print("Connecting to Neo4j …")
-    driver = GraphDatabase.driver(
-        args.uri,
-        auth=(args.user, args.password),
-        max_connection_pool_size=pool_size,
-        notifications_disabled_classifications={"DEPRECATION", "UNRECOGNIZED"},
-    )
-    driver.verify_connectivity()
+    driver = connect(args.uri, args.user, args.password, verify=True,
+                     max_connection_pool_size=pool_size, **NO_SCHEMA_NOTICES)
     print("  Connected.")
 
     results = {}
@@ -6614,7 +6448,7 @@ if __name__ == "__main__":
         with driver.session(database="neo4j") as sess:
             print("Populating spatial R-tree index on bounding boxes (final pass) …")
             progress("ingest.spatial_index", message="building spatial R-tree (final pass)")
-            if _ensure_spatial_layer(sess, args.rtree_layer or "features"):
+            if ensure_spatial_layer(sess, args.rtree_layer or "features", report=True):
                 # CityObject footprints are added to the R-tree AFTER OSM fusion,
                 # not here — see the note at the single-file call site above and
                 # ingest_osm.py's post-fusion CityObject-index step.
@@ -6659,7 +6493,7 @@ if __name__ == "__main__":
     print(json.dumps(results, indent=2))
     failed = sorted(k for k, v in results.items() if isinstance(v, dict) and "error" in v)
     progress("ingest.done", message="failed" if failed else "ok", failed=failed)
-    # A non-zero exit lets callers (pykci_cli, the web client) detect a failed file
+    # A non-zero exit lets callers (pykci.cli, other programs) detect a failed file
     # instead of parsing the log; manual runs still see the same printed summary.
     if failed:
         sys.exit(1)

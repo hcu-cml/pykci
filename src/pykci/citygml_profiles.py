@@ -26,6 +26,14 @@ from dataclasses import dataclass, field
 XLINK_NS = "http://www.w3.org/1999/xlink"
 XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
 
+# containment edges below a top-level feature (sub-features, surfaces, openings): what an
+# export walks down to collect a feature, and what the ingest walks to give them their bbox
+FEATURE_RELS = ("HAS_SECTION", "HAS_INTERSECTION", "HAS_TRAFFIC_SPACE", "HAS_MARKING", "HAS_HOLE",
+                "HAS_CLEARANCE_SPACE", "HAS_BOUNDARY", "HAS_OPENING", "HAS_NESTED",
+                "HAS_BRIDGE_PART", "HAS_BUILDING_PART", "HAS_OUTER_INSTALLATION",
+                "HAS_INTERIOR_INSTALLATION", "HAS_INTERIOR_ROOM", "HAS_ROOM_INSTALLATION",
+                "HAS_INTERIOR_FURNITURE", "HAS_SUBDIVISION", "HAS_POINT_CLOUD")
+
 _MODULES_2 = {
     "app": "appearance", "bldg": "building", "brid": "bridge", "frn": "cityfurniture",
     "grp": "cityobjectgroup", "gen": "generics", "luse": "landuse", "dem": "relief",

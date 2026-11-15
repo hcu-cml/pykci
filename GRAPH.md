@@ -94,7 +94,7 @@ This is a **binding rule for all current and future mapping functions**: before 
 | **Crowd-sourced** | OSM `osm_height`, `osm_building`, POIs | `(:OsmFeature)` node + `ENRICHED_BY`/`HAS_POI` edge; scalars under the `osm_*` prefix |
 | **ML-predicted** | roof materials (5 classes, partial ~50% coverage, Hamburg) | `predicted_roof_material` gen-attr scalar on `Building` — *should additionally carry confidence + coverage; see rules below* |
 | **Reconstructed** | LoD3 building models from facade images (few, Hamburg) | LoD3 geometry edges — *should carry method + a provenance node; see rules below* |
-| **Sensed / live** | live values of sensors and live feeds (traffic counts, free parking spaces, charge-point status); potholes, street condition (planned) | `live_*` scalars beside the feature's other values (for a CityGML 3.0 feature with a `(:Dynamizer)`, on the Dynamizer of the sensed attribute, never on the feature's own keys); `source_type: 'sensed'` on nodes that hold only sensed data, `live_source_type: 'sensed'` and `live_source` where the node's other keys come from another source |
+| **Sensed / live** | live values of sensors and live feeds | `live_*` scalars beside the feature's other values (for a CityGML 3.0 feature with a `(:Dynamizer)`, on the Dynamizer of the sensed attribute, never on the feature's own keys); `source_type: 'sensed'` on nodes that hold only sensed data, `live_source_type: 'sensed'` and `live_source` where the node's other keys come from another source |
 | **Derived / computed** | values a pipeline step computes from other data: aggregates, averaged or interpolated positions, matched links | `source_type: 'derived'` with `method` and `method_version` on a node or edge that is computed as a whole; on a node that otherwise holds a source's values, the computed keys are listed in `derived_keys` |
 
 ### Existing provenance mechanisms (reuse these — do not invent parallel ones)
@@ -114,7 +114,7 @@ When adding a new data source (e.g. potholes, energy models, sensor feeds, a new
 - [ ] **Record the trust class + method.** Add a `source_type` property (one of: `authoritative`, `crowdsourced`, `predicted`, `reconstructed`, `sensed`, `derived`) and, for derived data, the method/model id **and version** (e.g. `method='roofnet'`, `method_version='1.2'`). `derived` is for values a pipeline step computes from other data (an aggregate, an averaged or interpolated position, a matched link). These stored values are shown as the layers of `pykci_provenance.py` (`crowdsourced` → `crowd_sourced`, `predicted` → `ml_predicted`, the others by the same name); label a value with `pykci_provenance.layer_of(key, node)`.
 - [ ] **Name computed keys on a sourced node.** When a node holds a source's values plus some values you computed (a mapped category, an averaged position), keep its `source_type` and list the computed property names in `derived_keys`; drop a computed key (set it to null) when it cannot be computed any more, never leave an old value behind.
 - [ ] **Live values under `live_`.** Values read from sensors or live feeds, and the time they were observed or written, use the `live_` prefix (shown as *sensed*). Bookkeeping that is not a sensed value (when a node was last seen in a feed or refreshed) uses other names.
-- [ ] **Never overwrite an authoritative value.** Put derived scalars on a namespaced key (`<src>_<attr>`, e.g. `pred_roof_material`, `pothole_severity`) beside the authoritative one.
+- [ ] **Never overwrite an authoritative value.** Put derived scalars on a namespaced key (`<src>_<attr>`, e.g. `pred_roof_material`, `osm_height`) beside the authoritative one.
 - [ ] **Carry confidence.** ML-predicted scalars store a `*_confidence` (probability/score); fused links store confidence on the edge.
 - [ ] **Flag partial coverage explicitly.** If the source covers only some features (e.g. 50% of buildings), the *absence* of a value must be distinguishable from a *negative* value — never impute. A city-wide statistic must be answerable only relative to the covered subset. (This is what makes **coverage-aware** queries — and honest infeasibility answers — possible.)
 - [ ] **Prefer a provenance node + explicit edge** over a silent scalar when the source is external or the mapping is uncertain (follow the `OsmFeature` + `ENRICHED_BY` pattern).
@@ -192,7 +192,7 @@ BridgePart, BoundarySurface, Opening, NestedFeature, Appearance, …) carries **
 only by traversal from its top-level feature, so `MATCH (n:CityObject)` counts, the
 exporters, the R-tree and the OSM matcher see top-level features only.
 
-**Merge across files (street-space tiles):** 3.0 features MERGE on `gml:id`. The same
+**Merge across files (transportation tiles):** 3.0 features MERGE on `gml:id`. The same
 Road / Section / TrafficSpace id may arrive from many tile files with different
 children; children accumulate (MERGE on ids and edge keys), the generic-attribute map
 and the bbox are unioned, `source` is the last file and `source_files` lists all files.
@@ -359,9 +359,8 @@ their original href.
              sensor_location, dynamic_data_type + dynamic_data_xml (verbatim timeseries), first/last_timestamp,
              live_result, live_previous_result, live_phenomenon_time, live_result_time, live_updated_at,
              live_seq, live_source, live_source_type:'sensed'}           # live_* only from a live job
-(LiveFeed {id:'sta:<host>', connected, received, written, last_flush_at})  # state of the live sync
 
-── Implicit geometry (generalised street-tree pattern) ─────────────────────────────
+── Implicit geometry (shared templates) ────────────────────────────────────────────
 (feature)                  -[:HAS_PROTOTYPE {lod, transformation_matrix, reference_point,
                               reference_point_id?, mime_type?, library_object?, via_xlink}]-> (GeometryPrototype)
 (GeometryPrototype)        -[:HAS_SURFACE_MEMBER {order}]->   (GeometryPolygon)       # MultiSurface / Solid shell / TriangulatedSurface template
@@ -369,7 +368,7 @@ their original href.
 (GeometryPrototype)        -[:HAS_LINE {order}]->             (GeometryLineString)    # MultiCurve template
 (GeometrySolid {geometry_type:'CompositeSolid'|'MultiSolid'}) -[:HAS_SOLID_MEMBER {order, via_xlink}]-> (GeometrySolid)
 # two variants exist: the 3.0 codec puts the placement on the feature's HAS_PROTOTYPE edge
-# (above); the 2.0 ingest and the street trees keep one implicit MultiSurface per instance:
+# (above); the 2.0 ingest keeps one implicit MultiSurface per instance:
 # (SolitaryVegetationObject)-[:HAS_LOD_SURFACE]->(GeometryMultiSurface{is_implicit,…})-[:HAS_PROTOTYPE]->(GeometryPrototype)
 # build_3dtiles draws both.
 
@@ -594,7 +593,7 @@ excluded). The values are union-merged when the same id arrives from several til
 top-level features they have no `center_*`/`bbox_wkt`/`location` and are **not** in an
 R-tree layer — they serve hierarchical clipping (`export_citygml.py --bbox --clip`; the
 exporter's plan and loader apply the same bbox test in Cypher level by level, so a clipped
-400 m box of a city-wide street space takes seconds and about 120 MB, `--profile` prints the phases) and
+400 m box of a city-wide transportation model takes seconds and about 120 MB, `--profile` prints the phases) and
 cheap `WHERE`-filters below an R-tree-selected feature, e.g.
 `MATCH (r:Road)-[:HAS_SECTION|HAS_TRAFFIC_SPACE*1..2]->(t:TrafficSpace) WHERE t.bbox_max_x > $x0 …`.
 Graphs ingested before this existed get the same values with
@@ -621,7 +620,7 @@ diffuse_color, emissive_color, specular_color, shininess, transparency, is_smoot
 `TARGETS` edges to the geometry node with that gml:id (texture coordinates on the edge:
 `texture_coordinates_json` = `[[ring_id, "u v …"], …]`, or `world_to_texture`), so one
 polygon can carry several themes. In a tiled Dataset the per-tile Appearances share their
-materials (MERGE by id): in a city-wide tiled street space hundreds of Appearances can share a
+materials (MERGE by id): in a city-wide tiled transportation model hundreds of Appearances can share a
 few dozen X3DMaterials through millions of `TARGETS` edges. Never
 expand a material or an Appearance in a query or exporter; look up `TARGETS` from the
 geometry side (`UNWIND $ids AS i MATCH (g:Entity {id: i})<-[t:TARGETS]-(sd)`), which is
@@ -778,7 +777,8 @@ The Neo4j Spatial plugin (https://github.com/neo4j-contrib/spatial) is installed
 - A WKT spatial layer named **`features`** is created once via `CALL spatial.addWKTLayer('features', 'bbox_wkt')`.
 - All `Building` and `CityObject` nodes with a valid `bbox_wkt` are registered in the layer via `CALL spatial.addNodes('features', nodes)`, inserting their bounding-box polygons into the R-tree.
 - Re-running the ingest script is safe: the layer is only created if absent, and nodes that already have an R-tree entry are skipped (`spatial.addNodes` itself is **not** idempotent — a second add creates a duplicate entry). A 3.0 feature whose bbox grew because a later tile extended it is flagged `rtree_stale` and removed + re-added.
-- **One layer per source:** `--rtree-layer <name>` puts the top-level features of an ingest into their own layer and records it on each node (`rtree_layer`) and on the Dataset; such nodes never enter `features`. For example a street-space reconstruction in `streetspace`, a CityGML 3.0 intersection model in `citygml3`. Query them with `spatial.bbox('streetspace', …)`. A degenerate extent (an axis-parallel fence, a pole) gets a ±0.5 mm padded `bbox_wkt` so it is still indexed.
+- **The index itself is stored in the graph.** The plugin keeps a layer as a `SpatialLayer` node with its R-tree below it (`RTREE_ROOT`, `RTREE_CHILD`) and one `RTREE_REFERENCE` relationship from a leaf to every indexed node. These nodes and relationships belong to the plugin: pykci only reads them (is a node indexed already, which layers exist), never writes them, and the graph viewers leave them out. Do not query or delete them directly; use the `spatial.*` procedures.
+- **One layer per source:** `--rtree-layer <name>` puts the top-level features of an ingest into their own layer and records it on each node (`rtree_layer`) and on the Dataset; such nodes never enter `features`. For example a tiled transportation model in `transport`, a CityGML 3.0 intersection model in `citygml3`. Query them with `spatial.bbox('transport', …)`. A degenerate extent (an axis-parallel fence, a pole) gets a ±0.5 mm padded `bbox_wkt` so it is still indexed.
 
 **OSM features use a separate layer `osm_features`.** When `ingest_osm.py` has been run, all `OsmFeature` nodes are indexed in their own WKT layer **`osm_features`** (same `bbox_wkt` property), kept distinct from `features` so CityGML spatial queries are unaffected. Query OSM by location with `CALL spatial.intersects('osm_features', <wkt>)` / `spatial.bbox('osm_features', …)`; query CityGML with `'features'`. See [OSM_INTEGRATION.md](OSM_INTEGRATION.md) §5.
 
@@ -1275,14 +1275,14 @@ Parses CityGML 2.0 **or 3.0** files (codec chosen per file from the root namespa
 
 ```bash
 python3 ingest_citygml.py <path-to-file.gml>
-# CityGML 3.0 street-space tiles into one Dataset, own R-tree layer, provenance:
-python3 ingest_citygml.py tiles/ --dataset-name city_streetspace --rtree-layer streetspace \
-    --source-type reconstructed --method streetspace-recon --method-version 1.0
+# CityGML 3.0 transportation tiles into one Dataset, own R-tree layer, provenance:
+python3 ingest_citygml.py tiles/ --dataset-name city_transport --rtree-layer transport \
+    --source-type reconstructed --method road-model --method-version 1.0
 python3 ingest_citygml.py --resolve-pending        # retry parked cross-tile references
-python3 ingest_citygml.py --backfill-bbox --dataset city_streetspace   # sub-feature bboxes for older graphs
+python3 ingest_citygml.py --backfill-bbox --dataset city_transport   # sub-feature bboxes for older graphs
 ```
 
-Options: `--dataset-name`, `--rtree-layer`, `--backfill-bbox [--dataset <id>]` (idempotent, resumable: only nodes still missing `bbox_min_x`), `--source-type` (authoritative | crowdsourced | predicted | reconstructed | sensed | derived; predicted, reconstructed and derived need `--method` and `--method-version`), `--method`, `--method-version`, `--id-prefix` (own id space for a source that reuses another source's ids), `--no-id-check`, `--district` (District name when the file has no Gemeindeschluessel), `--resolve-pending`, `--target-crs/--source-crs`, `--writers`, `--parse-workers`, `--nearby-edges`, `--uri/--user/--password` (default `$NEO4J_URI`/`$NEO4J_USER`/`$NEO4J_PASSWORD` or bolt://localhost:7687, neo4j, neo4jneo4j). Use `--parse-workers 1` (default) for street-space tiles: tiles share Road/Section ids.
+Options: `--dataset-name`, `--rtree-layer`, `--backfill-bbox [--dataset <id>]` (idempotent, resumable: only nodes still missing `bbox_min_x`), `--source-type` (authoritative | crowdsourced | predicted | reconstructed | sensed | derived; predicted, reconstructed and derived need `--method` and `--method-version`), `--method`, `--method-version`, `--id-prefix` (own id space for a source that reuses another source's ids), `--no-id-check`, `--district` (District name when the file has no Gemeindeschluessel), `--resolve-pending`, `--target-crs/--source-crs`, `--writers`, `--parse-workers`, `--nearby-edges`, `--uri/--user/--password` (default `$NEO4J_URI`/`$NEO4J_USER`/`$NEO4J_PASSWORD` or bolt://localhost:7687, neo4j, neo4jneo4j). Use `--parse-workers 1` (default) for transportation tiles: tiles share Road/Section ids.
 
 - Input : path to a `.gml` file passed as argument
 - Output: nodes and relationships in Neo4j (see Graph Model above)
@@ -1353,7 +1353,7 @@ python3 export_citygml.py --dataset <id> --version 3 --bbox "POLYGON((…))" --n
 - 2.0-sourced → 2.0 uses the legacy writer below (unchanged output). Every other combination uses the strict writer `citygml_writer.py`: XSD content-model order, gml:id uniqueness, implicit templates inline once then `xlink:href`, appearance, and a loss report `<out>.loss.json` listing everything the target version cannot express (3.0 → 2.0: spaces/sections/markings/relations flattened; 2.0 → 3.0: synthesised `<ta_id>__space` TrafficSpaces with granularity `way`, measuredHeight → `con:Height`). `--writer strict` forces it for 2.0 → 2.0 as well (XSD-valid ordering).
 - Features are selected by `PART_OF` the Dataset (not by `source`); `--dataset` is required when the graph holds several Datasets; `--bbox` uses the Dataset's R-tree layer.
 - `--clip` (default on with `--bbox`): the R-tree selects top-level features; below transportation features (Road, Railway, Track, Square, Waterway) only the sub-features and areas whose `bbox_*` meets the box are loaded and written, and a Road / Section / space is written only when a descendant is kept (a city-wide Road contributes just its in-box part). Other features are written whole. Sub-features without a bbox are kept (run `--backfill-bbox`). Appearance targets are written only for polygons that are in the document; references to features outside the box are written as their original cross-tile href or reported.
-- The strict writer streams: top-level features are loaded, written and released in batches (`--batch`, default 200) — memory is bounded by the batch (a 400 m street-space box: about 150 MB).
+- The strict writer streams: top-level features are loaded, written and released in batches (`--batch`, default 200) — memory is bounded by the batch (a 400 m box of a transportation model: about 150 MB).
 
 - Input : Neo4j (queries `Dataset`, `Building`, `CityObject`, geometry, and lookup nodes)
 - Output: `output/citygml/<stem>_export.gml` / `<stem>_export_v3.gml` (stem derived from `Dataset.source`)

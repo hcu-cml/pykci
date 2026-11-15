@@ -11,7 +11,6 @@ Dependencies:
 """
 
 import argparse
-import os
 import time
 from pathlib import Path
 
@@ -19,19 +18,10 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_neo4j import GraphCypherQAChain, Neo4jGraph
 from langchain_ollama import ChatOllama
-from neo4j import GraphDatabase
 from neo4j.exceptions import ServiceUnavailable
 
-# ---------------------------------------------------------------------------
-# Connection settings
-# ---------------------------------------------------------------------------
-
-NEO4J_URL = os.getenv("NEO4J_URL", "bolt://localhost:7687")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "neo4jneo4j")
-
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "deepseek-r1:14b")
+from ollama_session import (DEFAULT_MODEL, OLLAMA_BASE_URL, check_ollama, connect, neo4j_auth,
+                            neo4j_uri, print_rows, run_cypher)
 
 # ---------------------------------------------------------------------------
 # Load GRAPH.md as session context
@@ -91,55 +81,6 @@ QA_PROMPT = ChatPromptTemplate.from_messages([
 ])
 
 # ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-
-def check_ollama(base_url: str, model: str) -> bool:
-    import urllib.request
-    import urllib.error
-
-    try:
-        with urllib.request.urlopen(f"{base_url}/api/tags", timeout=3) as resp:
-            import json
-            data = json.loads(resp.read())
-            available = [m["name"] for m in data.get("models", [])]  # keep full name with tag
-            if model not in available:
-                print(f"[warn] Model '{model}' not found locally. Available: {available}")
-                print(f"       Run:  ollama pull {model}")
-                return False
-            return True
-    except urllib.error.URLError:
-        print(f"[error] Ollama not reachable at {base_url}.")
-        print("        Start it with:  ollama serve")
-        return False
-
-
-def run_cypher(driver, query: str) -> tuple[list[dict], float]:
-    with driver.session() as session:
-        t0 = time.perf_counter()
-        result = session.run(query)
-        rows = [dict(r) for r in result]
-        elapsed = time.perf_counter() - t0
-    return rows, elapsed
-
-
-def print_rows(rows: list[dict]) -> None:
-    if not rows:
-        print("  (no results)")
-        return
-    keys = list(rows[0].keys())
-    col_widths = {k: max(len(k), max(len(str(r.get(k, ""))) for r in rows)) for k in keys}
-    header = "  " + "  ".join(k.ljust(col_widths[k]) for k in keys)
-    print(header)
-    print("  " + "-" * (len(header) - 2))
-    for row in rows[:50]:
-        print("  " + "  ".join(str(row.get(k, "")).ljust(col_widths[k]) for k in keys))
-    if len(rows) > 50:
-        print(f"  ... ({len(rows)} rows total, showing first 50)")
-
-
-# ---------------------------------------------------------------------------
 # Chain builders
 # ---------------------------------------------------------------------------
 
@@ -170,7 +111,7 @@ def build_cypher_chain(schema: str, llm: ChatOllama):
 
 def repl(qa_chain, cypher_chain, schema: str, driver, args) -> None:
     print("\nNeo4j + Ollama via LangChain")
-    print(f"Model : {args.model}   Neo4j : {NEO4J_URL}   ctx : 65536 tokens")
+    print(f"Model : {args.model}   Neo4j : {neo4j_uri()}   ctx : 65536 tokens")
 
     # Show which context files are loaded and their sizes
     def _ctx_status(label: str, block: str) -> str:
@@ -273,14 +214,15 @@ def main() -> None:
 
     # -- Connect to Neo4j --
     try:
-        graph = Neo4jGraph(url=NEO4J_URL, username=NEO4J_USER, password=NEO4J_PASSWORD)
+        user, password = neo4j_auth()
+        graph = Neo4jGraph(url=neo4j_uri(), username=user, password=password)
         graph.refresh_schema()
     except ServiceUnavailable:
-        print(f"[error] Cannot reach Neo4j at {NEO4J_URL}.")
+        print(f"[error] Cannot reach Neo4j at {neo4j_uri()}.")
         print("        Start Neo4j and try again.")
         return
 
-    driver = GraphDatabase.driver(NEO4J_URL, auth=(NEO4J_USER, NEO4J_PASSWORD))
+    driver = connect()
 
     cypher_prompt = None if args.no_spatial else CYPHER_PROMPT
     qa_chain = GraphCypherQAChain.from_llm(

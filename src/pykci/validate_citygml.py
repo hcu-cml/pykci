@@ -49,6 +49,8 @@ from pathlib import Path
 
 from lxml import etree
 
+from pykci.runtime import console
+
 DEFAULT_SCHEMA_DIR = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "pykci" / "citygml-schemas"
 BUNDLE = "SCHEMAS_OPENGIS_NET"
 BUNDLE_URL = "https://schemas.opengis.net/SCHEMAS_OPENGIS_NET.zip"
@@ -148,15 +150,24 @@ def write_masters(schema_dir: Path) -> None:
     (schema_dir / "catalog.xml").write_text("\n".join(cat), encoding="utf-8")
 
 
+def bundle_paths(schema_dir: Path) -> tuple[Path, Path]:
+    """The cached bundle zip and the folder it is extracted to."""
+    return schema_dir / f"{BUNDLE}.zip", schema_dir / BUNDLE
+
+
+def bundle_extracted(folder: Path) -> bool:
+    return (folder / "citygml" / "3.0" / "core.xsd").is_file()
+
+
 def setup(schema_dir: Path) -> None:
-    """One-time download (the only function that touches the network)."""
+    """One-time download (the only function that touches the network). What is in the cache
+    already is not fetched again."""
     schema_dir.mkdir(parents=True, exist_ok=True)
-    z = schema_dir / f"{BUNDLE}.zip"
+    z, out = bundle_paths(schema_dir)
     if not z.is_file():
         print(f"downloading {BUNDLE_URL} ...", file=sys.stderr)
         urllib.request.urlretrieve(BUNDLE_URL, z)
-    out = schema_dir / BUNDLE
-    if not (out / "citygml" / "3.0" / "core.xsd").is_file():
+    if not bundle_extracted(out):
         with zipfile.ZipFile(z) as zf:
             for m in zf.namelist():
                 if m.startswith("/") or ".." in Path(m).parts:
@@ -380,7 +391,8 @@ def print_report(res: dict, max_lines: int) -> None:
             print(f"    unresolved reference {h} (line {line})")
 
 
-def main(argv=None) -> int:
+def parser() -> argparse.ArgumentParser:
+    """The options of the command."""
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("files", nargs="*", type=Path, help="CityGML file(s) to validate")
     ap.add_argument("--version", choices=["2", "3"], help="force CityGML version (default: auto-detect)")
@@ -394,7 +406,12 @@ def main(argv=None) -> int:
     ap.add_argument("--json", type=Path, help="also write the full result as JSON")
     ap.add_argument("--setup", action="store_true", help="download OGC bundle + W3C xsds (network!), build masters")
     ap.add_argument("--write-masters", action="store_true", help="(re)build master XSDs and catalog.xml")
-    args = ap.parse_args(argv)
+    return ap
+
+
+def run(ap: argparse.ArgumentParser, args) -> int:
+    """Set up the cache, build the masters and validate the files the arguments ask for;
+    the exit status: 0 valid, 1 invalid or broken references, 2 a file that cannot be read."""
     sd = args.schema_dir.resolve()
     if args.setup:
         setup(sd)
@@ -425,8 +442,11 @@ def main(argv=None) -> int:
     return rc
 
 
+def main(argv=None) -> int:
+    ap = parser()
+    return run(ap, ap.parse_args(argv))
+
+
 if __name__ == "__main__":
-    for _stream in (sys.stdout, sys.stderr):   # a cp1252 console must not crash on non-ASCII output
-        if hasattr(_stream, "reconfigure"):
-            _stream.reconfigure(errors="replace")
+    console()
     sys.exit(main())

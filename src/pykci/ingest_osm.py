@@ -47,7 +47,6 @@ from pathlib import Path
 
 import numpy as np
 import shapely
-from neo4j import GraphDatabase
 from neo4j.exceptions import TransientError
 from pyproj import Transformer
 from shapely.geometry import shape, Point
@@ -55,7 +54,11 @@ from shapely.ops import unary_union
 from shapely.prepared import prep
 from shapely.strtree import STRtree
 
-from pykci_runtime import neo4j_auth, neo4j_uri, progress
+from pykci.runtime import NO_SCHEMA_NOTICES, connect, console, neo4j_auth, neo4j_uri, progress
+from pykci.crs import epsg_from_srs
+from pykci.geometry import ring_xy
+from pykci.graphdb import (backfill_bbox_from_geometry, create_indexes, create_point_index,
+                           ensure_spatial_layer, slug as _slug)
 
 NEO4J_URI = neo4j_uri()
 NEO4J_AUTH = neo4j_auth()
@@ -131,32 +134,6 @@ ENRICH_KEYS = [
 
 
 # ── tag helpers ─────────────────────────────────────────────────────────────────
-
-def _slug(s):
-    return re.sub(r"[^a-z0-9_]", "_", s.lower())
-
-
-def _epsg_from_srs(srs):
-    """Extract an 'EPSG:NNNNN' string from a CityGML srsName, for ogr2ogr / pyproj."""
-    if not srs:
-        return None
-    # EPSG code in any common encoding: 'EPSG:6697', 'EPSG::6697' (URN),
-    # or the OGC HTTP form '.../def/crs/EPSG/0/6697' (the '0/' is a version).
-    m = re.search(r"EPSG[:/]+(?:\d+/)?(\d{4,6})", srs)
-    if m:
-        return f"EPSG:{m.group(1)}"
-    u = srs.upper().replace(" ", "")
-    # ADV UTM aliases (ETRS89_UTM32/33 → 25832/25833)
-    m = re.search(r"UTM(\d{2})", u)
-    if m:
-        return f"EPSG:258{m.group(1)}"
-    # Swiss national CRS sometimes given as a bare name with no EPSG code
-    if "CH1903+" in u or "LV95" in u:
-        return "EPSG:2056"
-    if "CH1903" in u or "LV03" in u:
-        return "EPSG:21781"
-    return srs  # let pyproj try to resolve the raw string
-
 
 def _parse_other_tags(raw):
     """Parse GDAL's HSTORE other_tags string  '"k"=>"v","k2"=>"v2"'  → dict."""
@@ -388,14 +365,8 @@ def resolve_extent(sess, ds, min_span=50.0):
 
 
 def ensure_indexes(sess):
-    for label, prop in [("OsmFeature", "id"), ("OsmFeature", "osm_id"), ("OsmFeature", "osm_kind")]:
-        idx = f"{label.lower()}_{prop}_idx"
-        sess.run(f"CREATE INDEX {idx} IF NOT EXISTS FOR (n:{label}) ON (n.{prop})")
-    try:
-        sess.run("CREATE POINT INDEX osmfeature_location_idx IF NOT EXISTS "
-                 "FOR (n:OsmFeature) ON (n.location)")
-    except Exception:
-        pass
+    create_indexes(sess, [("OsmFeature", "id"), ("OsmFeature", "osm_id"), ("OsmFeature", "osm_kind")])
+    create_point_index(sess, "OsmFeature")
 
 
 def reset_osm(sess, layer="osm_features"):
@@ -455,17 +426,6 @@ def _batch_parallel(driver, query, rows, workers=WORKERS, **params):
     with ThreadPoolExecutor(max_workers=workers) as ex:
         for f in [ex.submit(_run_chunk, driver, query, c, **params) for c in chunks]:
             f.result()
-
-
-def ensure_spatial_layer(sess, layer="osm_features"):
-    try:
-        existing = {r["name"] for r in sess.run("CALL spatial.layers() YIELD name RETURN name")}
-        if layer not in existing:
-            sess.run("CALL spatial.addWKTLayer($layer, 'bbox_wkt')", layer=layer)
-        return True
-    except Exception as exc:
-        print(f"  WARNING: spatial layer setup failed ({exc})")
-        return False
 
 
 def index_osm_spatial(sess, layer="osm_features", batch=10000):
@@ -546,11 +506,6 @@ def write_osm_nodes(driver, sess, nodes, polys, rings, foot_rels, ext_rels, int_
                  "IN TRANSACTIONS OF 10000 ROWS", src=src, did=district_id)
 
 
-def _batch(sess, query, rows):
-    for i in range(0, len(rows), BATCH_SIZE):
-        sess.run(query, rows=rows[i:i + BATCH_SIZE])
-
-
 # ── matching: overlap graph + connected components ────────────────────────────────
 
 def fetch_pykci_footprints(driver, target_type, bbox, tile_m=6000.0, workers=WORKERS):
@@ -604,7 +559,7 @@ def fetch_pykci_footprints(driver, target_type, bbox, tile_m=6000.0, workers=WOR
             for r in s.run(q, wkt=wkt, ft=target_type):
                 poly = None
                 for pl in (r["rings"] or []):
-                    ring = _ring_xy(pl)
+                    ring = ring_xy(pl)
                     if len(ring) >= 4:
                         try:
                             p = Polygon(ring)
@@ -626,19 +581,6 @@ def fetch_pykci_footprints(driver, target_type, bbox, tile_m=6000.0, workers=WOR
             for pid, poly in part.items():
                 out.setdefault(pid, poly)   # dedupe straddlers
     return out
-
-
-def _ring_xy(pos_list):
-    v = pos_list.split()
-    # CityGML rings are usually x y z triplets; detect stride by length divisibility
-    stride = 3 if len(v) % 3 == 0 else 2
-    pts = []
-    for i in range(0, len(v) - stride + 1, stride):
-        try:
-            pts.append((float(v[i]), float(v[i + 1])))
-        except ValueError:
-            pass
-    return pts
 
 
 def match_areas(osm_geoms, pykci_polys, tau):
@@ -853,24 +795,6 @@ def index_cityobjects_post_fusion(sess, layer="features", batch=2000):
     3) when it has none; only non-degenerate boxes are written/indexed. Serial +
     idempotent. No-op for building-only cities (few/zero CityObjects).
     """
-    def _bbox(pos_lists):
-        minx = miny = minz = float("inf")
-        maxx = maxy = maxz = float("-inf")
-        ok = False
-        for pl in pos_lists:
-            v = pl.split()
-            if len(v) < 3 or len(v) % 3 != 0:
-                continue
-            f = [float(t) for t in v]
-            xs, ys, zs = f[0::3], f[1::3], f[2::3]
-            minx, maxx = min(minx, min(xs)), max(maxx, max(xs))
-            miny, maxy = min(miny, min(ys)), max(maxy, max(ys))
-            minz, maxz = min(minz, min(zs)), max(maxz, max(zs))
-            ok = True
-        if not ok or not (maxx > minx and maxy > miny):
-            return None
-        return minx, miny, minz, maxx, maxy, maxz
-
     # 1. Compute bbox_wkt for CityObjects that lack one, from their graph geometry.
     need = [r["id"] for r in sess.run(
         # (features of another source's own R-tree layer — e.g. the CityGML 3.0 street
@@ -878,33 +802,7 @@ def index_cityobjects_post_fusion(sess, layer="features", batch=2000):
         #  would cross HAS_PROTOTYPE template-local coordinates and RELATED_TO links)
         "MATCH (c:CityObject) WHERE c.bbox_wkt IS NULL AND c.rtree_layer IS NULL "
         "RETURN c.id AS id")]
-    for i in range(0, len(need), batch):
-        rows = sess.run(
-            "UNWIND $ids AS cid MATCH (c:Entity {id: cid}) "
-            "OPTIONAL MATCH (c)-[*1..6]->(g) "
-            "WHERE (g:GeometryRing OR g:GeometryLineString) AND g.pos_list IS NOT NULL "
-            "RETURN cid AS id, collect(g.pos_list) AS pl", ids=need[i:i + batch]).data()
-        writes = []
-        for r in rows:
-            if not r["pl"]:
-                continue
-            bb = _bbox(r["pl"])
-            if bb is None:
-                continue
-            minx, miny, minz, maxx, maxy, maxz = bb
-            writes.append({
-                "id": r["id"],
-                "wkt": (f"POLYGON(({minx} {miny}, {maxx} {miny}, {maxx} {maxy}, "
-                        f"{minx} {maxy}, {minx} {miny}))"),
-                "minx": minx, "miny": miny, "minz": minz,
-                "maxx": maxx, "maxy": maxy, "maxz": maxz,
-                "cx": (minx + maxx) / 2.0, "cy": (miny + maxy) / 2.0})
-        if writes:
-            sess.run(
-                "UNWIND $rows AS row MATCH (n:Entity {id: row.id}) "
-                "SET n.bbox_wkt=row.wkt, n.bbox_min_x=row.minx, n.bbox_min_y=row.miny, "
-                "n.bbox_min_z=row.minz, n.bbox_max_x=row.maxx, n.bbox_max_y=row.maxy, "
-                "n.bbox_max_z=row.maxz, n.center_x=row.cx, n.center_y=row.cy", rows=writes)
+    backfill_bbox_from_geometry(sess, need, batch)
 
     # 2. Index every CityObject that has a bbox into the 'features' R-tree (serial).
     ids = [r["id"] for r in sess.run(
@@ -947,13 +845,11 @@ def main():
     tau = args.overlap_threshold
 
     print("Connecting to Neo4j …")
-    driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH,
-                                  notifications_disabled_classifications={"DEPRECATION", "UNRECOGNIZED"})
-    driver.verify_connectivity()
+    driver = connect(NEO4J_URI, *NEO4J_AUTH, verify=True, **NO_SCHEMA_NOTICES)
 
     with driver.session(database="neo4j") as sess:
         ds = get_dataset(sess, args.dataset)
-        crs = _epsg_from_srs(ds["crs"])
+        crs = epsg_from_srs(ds["crs"])
         dataset_id, district_id = ds["id"], None
         drow = sess.run("MATCH (d:Dataset {id:$id})-[:COVERS]->(dist:District) RETURN dist.id AS id",
                         id=dataset_id).single()
@@ -1044,7 +940,7 @@ def main():
         write_osm_nodes(driver, sess, nodes, polys, rings, foot_rels, ext_rels, int_rels,
                         lines, line_rels, dataset_id, district_id)
         print(f"  … nodes + geometry written in {time.perf_counter()-t0:.0f}s")
-        ensure_spatial_layer(sess)
+        ensure_spatial_layer(sess, "osm_features")
         t0 = time.perf_counter()
         n_idx = index_osm_spatial(sess)
         print(f"  Indexed {n_idx} OsmFeatures in 'osm_features' R-tree "
@@ -1172,4 +1068,5 @@ def main():
 
 
 if __name__ == "__main__":
+    console()
     main()

@@ -50,12 +50,7 @@ import sys
 import time
 from pathlib import Path
 
-from neo4j import GraphDatabase
-
-from pykci_runtime import neo4j_auth, neo4j_uri
-
-NEO4J_URI = neo4j_uri()
-NEO4J_AUTH = neo4j_auth()
+from pykci.runtime import connect, console
 
 # Bounded set of prediction keys to clear for idempotency: at most one index per
 # roof-material class, so <material-class-count> indices is a safe upper bound.
@@ -176,7 +171,7 @@ def main():
     print(f"  {len(rows):,} buildings with a prediction "
           f"({skipped} features skipped, {dup_ids} duplicate gml_ids ignored)")
 
-    driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
+    driver = connect()
     with driver.session(database="neo4j") as s:
         # 0. idempotency: clear any prior run of this layer
         reset_prior_layer(s, source_tag, args.dataset)
@@ -233,4 +228,5 @@ def main():
 
 
 if __name__ == "__main__":
+    console()
     main()
