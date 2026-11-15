@@ -85,6 +85,7 @@ from neo4j.exceptions import TransientError
 
 from pykci.runtime import NO_SCHEMA_NOTICES, add_connection_arguments, connect, console, progress
 from pykci.crs import Reprojector, epsg_from_srs, peek_srsname
+from pykci.geometry import gml_position_list
 from pykci.graphdb import (backfill_bbox_from_geometry, create_indexes, create_point_index, element_id,
                            ensure_spatial_layer, slug as _slug)
 
@@ -1397,18 +1398,11 @@ def _ring_coords(ring_el):
     gml:pos values are concatenated into the canonical posList form; coordinate
     values are preserved verbatim (never rounded or reordered).
     """
-    pos_el = ring_el.find("gml:posList", NS)
-    if pos_el is not None and pos_el.text:
-        srs_dim = int(pos_el.get("srsDimension", "3"))
-        return _reproject_poslist(pos_el.text.strip(), srs_dim), srs_dim
-
-    pos_els = ring_el.findall("gml:pos", NS)
-    if pos_els:
-        srs_dim = int(pos_els[0].get("srsDimension", "3"))
-        coords = " ".join(p.text.strip() for p in pos_els if p.text and p.text.strip())
-        return _reproject_poslist(coords, srs_dim), srs_dim
-
-    return "", 3
+    coords, dim_el = gml_position_list(ring_el, NS["gml"])
+    if dim_el is None:
+        return "", 3
+    srs_dim = int(dim_el.get("srsDimension", "3"))
+    return _reproject_poslist(coords, srs_dim), srs_dim
 
 
 def _collect_polygon(poly_el, source, batch):
@@ -4135,17 +4129,13 @@ def _dim_of(pos_el, n_values):
 
 def _coords3(holder, reproject=True):
     """(pos_list, srs_dimension) of a LinearRing / LineString (posList or pos*)."""
-    pos_el = holder.find("gml:posList", NS3)
-    if pos_el is not None and pos_el.text:
-        txt = pos_el.text.strip()
-        dim = _dim_of(pos_el, len(txt.split()))
-        return (_reproject_poslist(txt, dim) if reproject else txt), dim
-    pos_els = holder.findall("gml:pos", NS3)
-    if pos_els:
-        txt = " ".join(p.text.strip() for p in pos_els if p.text and p.text.strip())
-        dim = _dim_of(pos_els[0], len(pos_els[0].text.split()) if pos_els[0].text else 3)
-        return (_reproject_poslist(txt, dim) if reproject else txt), dim
-    return "", 3
+    txt, dim_el = gml_position_list(holder, _GML3)
+    if dim_el is None:
+        return "", 3
+    # the value count the dimension is guessed from, when nothing names it: the whole
+    # posList, or one pos
+    dim = _dim_of(dim_el, len((txt if dim_el.tag == _POSLIST3 else dim_el.text).split()))
+    return (_reproject_poslist(txt, dim) if reproject else txt), dim
 
 
 def _collect_polygon3(poly_el, fallback_id, source, batch, reproject=True, patch=None):

@@ -44,6 +44,9 @@ pykci = "pykci.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+pykci = ["osmconf.ini"]          # the OSM driver configuration of ingest_osm
+
 [tool.setuptools.dynamic]
 version = { attr = "pykci.__version__" }
 

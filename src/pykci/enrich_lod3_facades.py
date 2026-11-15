@@ -54,6 +54,7 @@ from pathlib import Path
 
 from lxml import etree
 
+from pykci.geometry import gml_position_list
 from pykci.graphdb import create_indexes, element_id, ensure_spatial_layer
 from pykci.runtime import NO_SCHEMA_NOTICES, connect, console
 
@@ -199,11 +200,13 @@ def diagnose_and_fix(tree):
                     child.tag = f"{{{BLDG}}}lod3Solid"
                     issues.append(f"{bid}: shell solid tagged {ln} but building is LoD3")
                     fixes.append(f"{bid}: {ln} -> lod3Solid")
-            # boundary-surface multi-surfaces
+            # boundary-surface multi-surfaces: an issue of their own, so that a file whose only
+            # defect they are gets its repaired copy too
             for ms in b_el.iter():
                 if _local(ms) in ("lod2MultiSurface", "lod1MultiSurface"):
                     old = _local(ms)
                     ms.tag = f"{{{BLDG}}}lod3MultiSurface"
+                    issues.append(f"{bid}: boundary surface tagged {old} but building is LoD3")
                     fixes.append(f"{bid}: boundary {old} -> lod3MultiSurface")
 
         # (a) element-order violation: canonicalise the geometry block.  Non-geometry
@@ -340,19 +343,34 @@ class _Batch:
 
 
 def _collect_ring(ring_el, batch, source, ring_type, ring_index=None):
-    """gml:LinearRing -> GeometryRing row + return its (prefixed) id. pos_list verbatim."""
+    """gml:LinearRing -> GeometryRing row. Returns its (prefixed) id and its points; (None, [])
+    for a ring without positions, which is counted as skipped. pos_list verbatim."""
     rid = ring_el.get(GML_ID) or element_id(ring_el, "ring", (GML_ID,))
-    pos = ring_el.find("gml:posList", NS)
-    if pos is None:
-        return None, 0
-    pos_list = (pos.text or "").strip()          # NEVER reformatted (lossless invariant)
-    dim = int(pos.get("srsDimension", "3"))
+    pos_list, dim_el = gml_position_list(ring_el, GML)   # NEVER reformatted (lossless invariant)
+    if dim_el is None:
+        batch.add("skipped", {"id": _pid(rid), "what": "ring without gml:posList or gml:pos"})
+        return None, []
+    dim = int(dim_el.get("srsDimension", "3"))
     batch.add("rings", {
         "id": _pid(rid), "pos_list": pos_list, "srs_dimension": dim,
         "ring_type": ring_type, "source": source,
     })
-    npts = len(_parse_poslist(pos_list, dim))
-    return _pid(rid), npts
+    return _pid(rid), _parse_poslist(pos_list, dim)
+
+
+def _member_polygons(ms_el, batch):
+    """The gml:Polygons of a gml:MultiSurface in document order: its members, and the members
+    of a gml:CompositeSurface among them (the FZK-Haus LoD3 model writes its walls so). Any
+    other member (a reference, an OrientableSurface, ...) is counted as skipped."""
+    for member in ms_el.findall("gml:surfaceMember", NS):
+        surface = next((c for c in member if isinstance(c.tag, str)), None)     # not a comment
+        if surface is not None and surface.tag == f"{{{GML}}}Polygon":
+            yield surface
+        elif surface is not None and surface.tag == f"{{{GML}}}CompositeSurface":
+            yield from _member_polygons(surface, batch)
+        else:
+            what = "gml:" + _local(surface) if surface is not None else "a reference"
+            batch.add("skipped", {"id": ms_el.get(GML_ID), "what": f"surface member {what}"})
 
 
 def _collect_polygon(poly_el, batch, source):
@@ -364,12 +382,10 @@ def _collect_polygon(poly_el, batch, source):
     ext = poly_el.find("gml:exterior/gml:LinearRing", NS)
     ext_pts = []
     if ext is not None:
-        rid, _ = _collect_ring(ext, batch, source, "exterior")
+        rid, pts = _collect_ring(ext, batch, source, "exterior")
         if rid:
             batch.add("poly_ext", {"src": _pid(pid), "tgt": rid})
-            pos = ext.find("gml:posList", NS)
-            if pos is not None:
-                ext_pts = _parse_poslist(pos.text or "", int(pos.get("srsDimension", "3")))
+            ext_pts = pts
 
     n_holes = 0
     for k, inter in enumerate(poly_el.findall("gml:interior/gml:LinearRing", NS)):
@@ -413,7 +429,7 @@ def _collect_opening(op_el, surf_id, order, batch, source):
         msid = ms.get(GML_ID) or element_id(ms, "ms", (GML_ID,))
         batch.add("multisurfaces", {"id": _pid(msid), "lod": lod, "source": source})
         batch.add("opening_ms", {"src": _pid(oid), "tgt": _pid(msid), "lod": lod})
-        for m_order, poly in enumerate(ms.findall("gml:surfaceMember/gml:Polygon", NS)):
+        for m_order, poly in enumerate(_member_polygons(ms, batch)):
             poly_id, _, _ = _collect_polygon(poly, batch, source)
             batch.add("ms_member", {"src": _pid(msid), "tgt": poly_id,
                                     "order": m_order, "via_xlink": False, "orientation": "+"})
@@ -472,7 +488,7 @@ def parse_facades(tree, source, allowed=None):
             # polygons -> HAS_POLYGON (flattened, matching ingest_citygml.py)
             all_pts = []
             if ms_el is not None:
-                for p_order, poly in enumerate(ms_el.findall("gml:surfaceMember/gml:Polygon", NS)):
+                for p_order, poly in enumerate(_member_polygons(ms_el, batch)):
                     poly_id, n_holes, ext_pts = _collect_polygon(poly, batch, source)
                     all_pts.extend(ext_pts)
                     stats["holes"] += n_holes
@@ -645,6 +661,16 @@ def index_spatial(sess):
 # --------------------------------------------------------------------------- #
 # Summary
 # --------------------------------------------------------------------------- #
+def skipped(batch) -> dict:
+    """What the facade holds that is not read, by kind: {kind: count}."""
+    return dict(Counter(row["what"] for row in batch.d["skipped"]))
+
+
+def report_skipped(batch):
+    for what, n in skipped(batch).items():
+        print(f"  WARNING: {n} element(s) not read: {what}")
+
+
 def write_summary(source, stem, dataset, issues, fixes, validation, batch,
                   per_building, present, missing, spatial_count, confidence):
     n_windows = sum(s.get("windows", 0) for s in per_building.values())
@@ -670,6 +696,7 @@ def write_summary(source, stem, dataset, issues, fixes, validation, batch,
             "geometry_polygons_written": len(batch.d["polys"]),
             "geometry_rings_written": len(batch.d["rings"]),
         },
+        "skipped_elements": skipped(batch),
         "enrichment": {
             "buildings_matched": len(present),
             "buildings_not_found": len(missing),
@@ -745,6 +772,7 @@ def main():
         print(f"Facade inventory: {len(per_building)} building(s), "
               f"{len(batch.d['surfaces'])} boundary surfaces, "
               f"{len(batch.d['openings'])} openings, {len(batch.d['rings'])} rings.")
+        report_skipped(batch)
         print("--fix-only: done (database not touched).")
         return
 
@@ -760,6 +788,7 @@ def main():
               f"{len(batch.d['surfaces'])} boundary surfaces, "
               f"{len(batch.d['openings'])} openings, {len(batch.d['rings'])} rings "
               f"({len(missing)} building(s) not in graph — skipped).")
+        report_skipped(batch)
         reset_lod3(sess, source)                       # idempotent re-run
         write_facades(sess, batch, per_building, source, args.confidence)
         spatial_count = index_spatial(sess)

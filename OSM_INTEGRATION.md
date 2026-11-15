@@ -98,7 +98,10 @@ makes spatial clipping (§9) mandatory.
    (EPSG:25832 for Hamburg) at ingest, so OSM and pykci geometries share one coordinate
    system and one R-tree.
 5. **Lossless tags.** No OSM tag is dropped; unmodelled keys survive verbatim in
-   `other_tags`, the same proven pattern as CityGML's `ade_xml`.
+   `other_tags`, the same proven pattern as CityGML's `ade_xml`. GDAL's default
+   `osmconf.ini` leaves `source`, `ele`, `note`, `fixme`, `created_by` and some other keys
+   out, so `ingest_osm.py` passes its own (`src/pykci/osmconf.ini`: GDAL's default without
+   the `ignore` lists, with `report_all_tags=yes`).
 
 ---
 
@@ -167,8 +170,9 @@ and `measured_height` differ by > 3 m") — a ready-made cross-source quality-an
 ### Topology
 
 - **Multipolygon holes** → interior rings (`HAS_INTERIOR_RING`), same as CityGML.
-- **Relation membership** → `(:OsmFeature)-[:HAS_OSM_MEMBER {role, order}]->(:OsmFeature)`
-  for relations we keep (multipolygons, optionally routes/boundaries).
+- **Relations** → one `OsmFeature` (`osm:relation/<id>`) with the polygon GDAL assembles
+  from the members: outer ways give the rings, inner ways the holes. The members are not
+  linked; a member way with tags of its own is also a feature of its own.
 - **Shared-node adjacency / route order** is *not* materialised by default (expensive,
   rarely queried); it can be derived on demand from geometry via `spatial.intersects`.
   This is a deliberate compactness choice.
@@ -312,7 +316,6 @@ representation*, single-storage *where redundancy would be wrong*, and a confide
 (CityObject)        -[:ENRICHED_BY {…}]->          (OsmFeature)       # water / landuse / vegetation / bridge …
 (Building)          -[:HAS_POI {distance_m}]->     (OsmFeature)       # point POI inside the footprint
 (OsmFeature)        -[:HAS_FOOTPRINT]->            (GeometryPolygon)  # reuse CityGML geometry chain
-(OsmFeature)        -[:HAS_OSM_MEMBER {role, order}]-> (OsmFeature)   # relation members
 (OsmFeature)        -[:LOCATED_IN]->               (District)
 ```
 

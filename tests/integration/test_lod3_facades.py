@@ -5,9 +5,9 @@ LOD3_FACADE_INTEGRATION.md: the file is repaired in a copy, the facade is added 
 its own (Lod3Facade nodes behind HAS_LOD3_FACADE, lod3_* values on the building), and the
 city model stays as it was. pykci.build_3dtiles then draws the facade.
 
-The FZK-Haus LoD3 model of the repository has the same gml:ids, but its rings are written
-as gml:pos and its walls as composite surfaces, which the command does not read (see the
-known defects below), so the fixture is written by hand.
+The FZK-Haus LoD3 model of the repository has the same gml:ids, but none of the defects the
+command repairs, so the fixture is written by hand. Its rings are written as gml:pos and its
+walls as composite surfaces; the command reads both (see the end of this file).
 """
 
 import json
@@ -133,7 +133,8 @@ def test_fix_only_repairs_a_copy_and_leaves_the_graph_alone(copy, city_model, ru
     out = run_module("pykci.enrich_lod3_facades", facade, "--fix-only", "--no-validate", cwd=tmp_path).stdout
     assert facade.read_bytes() == original                              # the evidence is not edited
     assert database.census(neo4j_driver) == before and not (tmp_path / "output").exists()
-    assert "Found 3 issue(s)" in out and "XSD re-validation" not in out
+    # the shell solid, the two boundary surfaces tagged lod2MultiSurface, the order, the envelope
+    assert "Found 5 issue(s)" in out and "XSD re-validation" not in out
     assert "Facade inventory: 2 building(s), 3 boundary surfaces, 2 openings, 7 rings." in out
 
     source, fixed = ET.parse(facade).getroot(), ET.parse(tmp_path / "fzk_haus_facade_fixed.gml").getroot()
@@ -271,7 +272,7 @@ def test_a_building_missing_from_the_graph_is_reported_not_created(enrich, neo4j
     assert _query(neo4j_driver, "MATCH (n) WHERE n.id = $absent OR n.id CONTAINS 'OTHER_' RETURN count(n) AS n",
                   absent=ABSENT) == [{"n": 0}]
     # the summary also says what was repaired, and that --no-validate left the check out
-    assert summary["fix"]["issue_count"] == 3 and summary["fix"]["xsd_validation_after_fix"] == {"ran": False}
+    assert summary["fix"]["issue_count"] == 5 and summary["fix"]["xsd_validation_after_fix"] == {"ran": False}
     assert (summary["source"], summary["source_type"], summary["confidence"]) == (SOURCE, "reconstructed", 0.9)
 
 
@@ -346,11 +347,8 @@ def test_dataset_is_found_or_named(enrich, copy, run_module, neo4j_driver, tmp_p
     assert database.census(neo4j_driver) == before
 
 
-# ---- known defects (also in the code before the package) ---------------------------------------
+# ---- the defect of the LoD tag alone, and other ways to write the geometry ------------------------
 
-@pytest.mark.xfail(strict=True, reason="surfaces with openings that are tagged lod2MultiSurface are renamed in memory "
-                   "but not counted as an issue: when that is the only defect, no repaired file is written "
-                   "(LOD3_FACADE_INTEGRATION.md, section 3, defect b)")
 def test_a_file_whose_only_defect_is_the_lod_tag_is_repaired_too(copy, fixture_text, run_module, tmp_path):
     text = re.sub(r"\s*<bldg:lod2Solid>.*?</bldg:lod2Solid>", "", fixture_text, flags=re.S)
     text = text.replace("457000 5439000 0", "457842 5439083 111.8").replace("457003 5439014 3", "457870 5439088 118.4")
@@ -374,15 +372,41 @@ def _roof_in_a_composite_surface(text: str) -> str:
                                   + "</gml:surfaceMember></gml:CompositeSurface>", text, flags=re.S)
 
 
-@pytest.mark.xfail(strict=True, reason="only a gml:Polygon directly below the multi-surface and only gml:posList are "
-                   "read: a ring of gml:pos elements and a polygon inside a gml:CompositeSurface (the FZK-Haus "
-                   "LoD3 model of the repository writes its rings and walls so) are skipped without a message")
 @pytest.mark.parametrize("rewrite", [_door_ring_as_gml_pos, _roof_in_a_composite_surface])
 def test_other_valid_ways_to_write_the_geometry_are_read(rewrite, copy, fixture_text, run_module, tmp_path):
+    """A ring of gml:pos elements and a polygon inside a gml:CompositeSurface, as the FZK-Haus
+    LoD3 model of the repository writes its rings and walls."""
     text = rewrite(fixture_text)
     assert text != fixture_text
     out = run_module("pykci.enrich_lod3_facades", copy(text), "--fix-only", "--no-validate", cwd=tmp_path).stdout
     assert "Facade inventory: 2 building(s), 3 boundary surfaces, 2 openings, 7 rings." in out
+    assert "not read" not in out
+
+
+def test_what_is_not_read_is_reported(copy, fixture_text, run_module, tmp_path):
+    """A surface member that refers to a polygon elsewhere, and a ring without positions."""
+    text = re.sub(r'<gml:surfaceMember>\s*<gml:Polygon gml:id="FZK_L3_ROOF_SOUTH_POLY">.*?</gml:Polygon>\s*'
+                  r'</gml:surfaceMember>', '<gml:surfaceMember xlink:href="#FZK_L3_WALL_SOUTH_POLY"/>',
+                  fixture_text, flags=re.S)
+    text = _door_ring_as_gml_pos(text).replace("<gml:pos>", "<gml:coordinates>").replace(
+        "</gml:pos>", "</gml:coordinates>")
+    out = run_module("pykci.enrich_lod3_facades", copy(text), "--fix-only", "--no-validate", cwd=tmp_path).stdout
+    assert "Facade inventory: 2 building(s), 3 boundary surfaces, 2 openings, 5 rings." in out
+    assert "WARNING: 1 element(s) not read: surface member a reference" in out
+    assert "WARNING: 1 element(s) not read: ring without gml:posList or gml:pos" in out
+
+
+def test_the_lod3_model_of_the_repository_is_read(fzk_lod2, run_module, tmp_path):
+    """Rings of gml:pos elements, walls as composite surfaces: every surface comes with its
+    polygons and rings, and nothing is left unread."""
+    import shutil
+    model = shutil.copy(fzk_lod2.with_name("FZK-Haus-LoD3-KIT-IAI-KHH-B36-V1.gml"), tmp_path / "fzk_lod3.gml")
+    out = run_module("pykci.enrich_lod3_facades", model, "--fix-only", "--no-validate", cwd=tmp_path).stdout
+    inventory = re.search(r"Facade inventory: 1 building\(s\), (\d+) boundary surfaces, (\d+) openings, "
+                          r"(\d+) rings\.", out)
+    assert inventory, out
+    surfaces, openings, rings = map(int, inventory.groups())
+    assert surfaces > 0 and openings > 0 and rings >= surfaces and "not read" not in out
 
 
 def test_geometry_without_gml_id_gets_the_same_node_id_in_every_run(fixture_text):

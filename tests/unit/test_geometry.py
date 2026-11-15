@@ -1,6 +1,6 @@
-"""pykci.geometry: position lists of the graph read back as coordinates."""
+"""pykci.geometry: position lists of the graph read back as coordinates, and read from GML."""
 
-from pykci.geometry import bbox_of_pos_lists, centroid_of_pos_lists, ring_xy
+from pykci.geometry import bbox_of_pos_lists, centroid_of_pos_lists, gml_position_list, ring_xy
 
 
 # ---- ring_xy ----------------------------------------------------------------------------------
@@ -54,3 +54,31 @@ def test_bbox_is_none_when_flat_in_x_or_y_or_empty():
 
 def test_bbox_may_be_flat_in_z():
     assert bbox_of_pos_lists(["0 0 5 2 3 5"]) == (0.0, 0.0, 5.0, 2.0, 3.0, 5.0)
+
+
+# ---- gml_position_list ------------------------------------------------------------------------
+
+GML31, GML32 = "http://www.opengis.net/gml", "http://www.opengis.net/gml/3.2"
+
+
+def ring(gml: str, inner: str):
+    from lxml import etree
+    return etree.fromstring(f'<gml:LinearRing xmlns:gml="{gml}">{inner}</gml:LinearRing>')
+
+
+def test_gml_position_list_reads_a_pos_list_verbatim():
+    el = ring(GML31, '<gml:posList srsDimension="3"> 1.50 2 3.000  4 5 6 </gml:posList>')
+    text, dim_el = gml_position_list(el, GML31)
+    assert text == "1.50 2 3.000  4 5 6" and dim_el.get("srsDimension") == "3"
+
+
+def test_gml_position_list_joins_pos_elements_in_their_order():
+    el = ring(GML32, "<gml:pos>1 2 3</gml:pos><gml:pos/><gml:pos> 4.0 5 6 </gml:pos>")
+    text, dim_el = gml_position_list(el, GML32)
+    assert text == "1 2 3 4.0 5 6" and dim_el.text == "1 2 3"
+
+
+def test_gml_position_list_of_the_other_gml_version_or_without_positions_is_empty():
+    assert gml_position_list(ring(GML32, "<gml:posList>1 2 3</gml:posList>"), GML31) == ("", None)
+    assert gml_position_list(ring(GML31, "<gml:posList>  </gml:posList>"), GML31) == ("", None)
+    assert gml_position_list(ring(GML31, "<gml:coordinates>1,2,3</gml:coordinates>"), GML31) == ("", None)
