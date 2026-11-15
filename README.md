@@ -252,6 +252,8 @@ python export_citygml.py
 
 Reconstructs a CityGML 2.0 file from the graph, covering all ingested modules. Geometry, bounding boxes, `creationDate`, `gen:stringAttribute` values (original CamelCase names preserved), `externalReference`, LOD solids, boundary surfaces, and terrain intersections are all restored.
 
+Instead of a whole Dataset: `--ids` / `--ids-file` (these features), `--bbox` (an area), or `--source-file <file>` / `--each-source-file --out <dir>`, which rebuild the files a Dataset was ingested from, e.g. the tiles of a tiled Dataset (see [GRAPH.md](GRAPH.md)).
+
 Output: `output/citygml/<stem>_export.gml`
 
 ### 3 · Export CityGML → 3D Tiles

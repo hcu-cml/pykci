@@ -1347,7 +1347,11 @@ python3 export_citygml.py --dataset <id> --version 3 --out out.gml   # 3.0
 python3 export_citygml.py --dataset <id> --version 2 --v2-subfeatures genattrs
 python3 export_citygml.py --dataset <id> --version 3 --bbox "POLYGON((…))"            # clipped (default)
 python3 export_citygml.py --dataset <id> --version 3 --bbox "POLYGON((…))" --no-clip  # selected features whole
+python3 export_citygml.py --dataset <id> --version 3 --source-file tile_565_5933.gml   # one source file rebuilt
+python3 export_citygml.py --dataset <id> --version 3 --each-source-file --out tiles/ --workers 8
 ```
+
+- `--source-file` / `--each-source-file` rebuild the files a Dataset was ingested from (e.g. the tiles of a tiled Dataset): the top-level features from that file (`source` / `source_files`), below transportation features only the sub-features, areas and geometry from it, the file's own Appearances, and the file's stem as the CityModel id. References within the file stay local, references into other files keep their original href; where the edge stored none (the reference was local in the file that resolved it, e.g. a TrafficSpace that two tiles share), they point into the target's own file (`<source>#<id>`). A material that several files declare lists each of its targets once (its TARGETS edges are merged on `order`, so it can hold a target at several positions). Ingesting the rebuilt files gives the same graph (eval/citygml3_tests.py T14), up to the content hash of synthetic ids and the layout of verbatim XML fragments.
 
 - 2.0-sourced → 2.0 uses the legacy writer below (unchanged output). Every other combination uses the strict writer `citygml_writer.py`: XSD content-model order, gml:id uniqueness, implicit templates inline once then `xlink:href`, appearance, and a loss report `<out>.loss.json` listing everything the target version cannot express (3.0 → 2.0: spaces/sections/markings/relations flattened; 2.0 → 3.0: synthesised `<ta_id>__space` TrafficSpaces with granularity `way`, measuredHeight → `con:Height`). `--writer strict` forces it for 2.0 → 2.0 as well (XSD-valid ordering).
 - Features are selected by `PART_OF` the Dataset (not by `source`); `--dataset` is required when the graph holds several Datasets; `--bbox` uses the Dataset's R-tree layer.

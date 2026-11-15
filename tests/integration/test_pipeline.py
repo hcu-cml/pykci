@@ -77,6 +77,43 @@ def test_export_by_ids(graph, run_module, building_id, tmp_path):
     assert building_id in out.read_text(encoding="utf-8")
 
 
+def test_export_by_source_file(graph, run_module, building_id, tmp_path):
+    """The file the Dataset was ingested from, rebuilt from the graph: its features, the
+    file's stem as the CityModel id, and the loss report next to it. (Two tiles of one Dataset,
+    rebuilt and ingested again: eval/citygml3_tests.py T14, run by test_eval_harness.py.)"""
+    out = tmp_path / "rebuilt.gml"
+    run_module("pykci.export_citygml", "--dataset", DATASET, "--version", "3", "--source-file", SOURCE,
+               "--out", out)
+    root = _root(out)
+    assert root.get("{http://www.opengis.net/gml/3.2}id") == SOURCE.removesuffix(".gml")
+    assert building_id in out.read_text(encoding="utf-8")
+    assert json.loads(out.with_suffix(".loss.json").read_text(encoding="utf-8"))["source_file"] == SOURCE
+    # a file the Dataset does not hold gives an empty CityModel
+    other = tmp_path / "other.gml"
+    run_module("pykci.export_citygml", "--dataset", DATASET, "--version", "3", "--source-file", "other.gml",
+               "--out", other)
+    assert building_id not in other.read_text(encoding="utf-8")
+
+
+def test_export_each_source_file_into_a_folder(graph, run_module, building_id, tmp_path):
+    out = tmp_path / "tiles"
+    run_module("pykci.export_citygml", "--dataset", DATASET, "--version", "3", "--each-source-file",
+               "--out", out)
+    assert sorted(p.name for p in out.iterdir()) == [SOURCE, SOURCE.replace(".gml", ".loss.json")]
+    assert building_id in (out / SOURCE).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("arguments, message", [
+    (("--source-file", SOURCE, "--bbox", "POLYGON((0 0, 1 0, 1 1, 0 1, 0 0))"), "leave out --ids, --ids-file and --bbox"),
+    (("--each-source-file", "--version", "3"), "--each-source-file needs --out <directory>"),
+    (("--source-file", SOURCE, "--version", "2"), "export by source file needs the strict writer"),
+])
+def test_export_by_source_file_refusals(graph, run_module, tmp_path, arguments, message):
+    result = run_module("pykci.export_citygml", "--dataset", DATASET, *arguments, cwd=tmp_path, ok=False)
+    assert result.returncode != 0 and message in result.stderr
+    assert not (tmp_path / "output").exists()
+
+
 def test_export_round_trip_gives_the_same_graph(graph, run_module, neo4j_driver, tmp_path, data_dir):
     """Export, wipe, ingest the export: the same nodes and relationships as the recorded
     graph of the source file (the Dataset is named after the exported file, so only counts

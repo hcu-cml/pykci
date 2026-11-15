@@ -15,7 +15,8 @@ from pykci.testing import database
 from pykci.testing.plugin import run
 
 # the checks that need no data beyond the repository (T1-T4, T7-T10 take real city files)
-EXPECTED = {"T5_kitchen_sink", "T6_tile_merge", "T11_dynamizer", "T12_id_scope", "T13_fzk_haus"}
+EXPECTED = {"T5_kitchen_sink", "T6_tile_merge", "T11_dynamizer", "T12_id_scope", "T13_fzk_haus",
+            "T14_export_by_source_file"}
 
 
 @pytest.mark.slow
