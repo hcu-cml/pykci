@@ -43,24 +43,9 @@ SLOW_CASES = {
 }
 
 
-# Known defect, found by these tests and present before the package: a second ingest of a
-# CityGML 2.0 file whose polygons carry no gml:id (the LoD0 and LoD1 models) writes their
-# GeometryPolygon and GeometryRing nodes again. strict: the day the ingest is fixed these
-# cases pass, the run fails on the unexpected pass, and the entry is removed.
-REINGEST_DUPLICATES = {
-    "fzk_lod0": "second ingest duplicates GeometryPolygon / GeometryRing of polygons without gml:id",
-    "fzk_lod1": "second ingest duplicates GeometryPolygon / GeometryRing of polygons without gml:id",
-}
-
-
 def _ingest(run_module, repo, calls):
     for path, *extra in calls:
         run_module("pykci.ingest_citygml", repo / path, *extra)
-
-
-def _params(cases):
-    return [pytest.param(name, marks=pytest.mark.xfail(reason=REINGEST_DUPLICATES[name], strict=True))
-            if name in REINGEST_DUPLICATES else name for name in cases]
 
 
 @pytest.mark.parametrize("name", list(CASES))
@@ -69,7 +54,7 @@ def test_ingest_writes_the_recorded_graph(name, empty_graph, run_module, repo, d
     snapshot.check(data_dir / "graph" / f"{name}.json", database.census(empty_graph))
 
 
-@pytest.mark.parametrize("name", _params(CASES))
+@pytest.mark.parametrize("name", list(CASES))
 def test_second_ingest_changes_nothing(name, empty_graph, run_module, repo):
     _ingest(run_module, repo, CASES[name])
     first = database.census(empty_graph)

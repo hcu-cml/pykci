@@ -103,3 +103,50 @@ def test_backfill_reads_in_batches_and_writes_nothing_without_boxes(fake_graph):
     assert backfill_bbox_from_geometry(sess, [f"f{i}" for i in range(5)], batch_size=2) == 0
     assert [p["ids"] for _, p in sess.calls] == [["f0", "f1"], ["f2", "f3"], ["f4"]]
     assert backfill_bbox_from_geometry(fake_graph(), []) == 0
+
+
+# ---- element_id: stable ids for elements without gml:id --------------------------------------
+
+GML = "{http://www.opengis.net/gml}id"
+_DOC = (b'<m xmlns:gml="http://www.opengis.net/gml"><b gml:id="B1"><s><p/><p/></s><s><p/></s></b>'
+        b'<b gml:id="B2"><s><p/></s></b><q><p/></q></m>')
+
+
+def _polygons():
+    from lxml import etree
+
+    root = etree.fromstring(_DOC)
+    return root, list(root.iter("p"))
+
+
+def test_element_id_is_the_same_in_every_parse():
+    from pykci.graphdb import element_id
+
+    first = [element_id(p, "poly", (GML,)) for p in _polygons()[1]]
+    second = [element_id(p, "poly", (GML,)) for p in _polygons()[1]]
+    assert first == second
+
+
+def test_element_id_is_unique_and_names_its_anchor():
+    from pykci.graphdb import element_id
+
+    ids = [element_id(p, "poly", (GML,)) for p in _polygons()[1]]
+    assert len(set(ids)) == len(ids) == 5
+    assert [i.rsplit("_", 1)[0] for i in ids] == ["poly_B1", "poly_B1", "poly_B1", "poly_B2", "poly_doc"]
+
+
+def test_element_id_does_not_depend_on_what_comes_after_or_on_other_anchors():
+    """Adding a building behind another one, or a polygon behind one, leaves the earlier ids as
+    they are; a polygon at the same place under another anchor gets another id."""
+    from lxml import etree
+
+    from pykci.graphdb import element_id
+
+    def ids(doc):
+        return [element_id(p, "poly", (GML,)) for p in etree.fromstring(doc).iter("p")]
+
+    base = ids(_DOC)
+    longer = ids(_DOC.replace(b"<s><p/></s></b><q>", b'<s><p/></s></b><b gml:id="B3"><s><p/></s></b><q>')
+                 .replace(b"<s><p/><p/></s>", b"<s><p/><p/><p/></s>"))
+    assert set(base[:4]) <= set(longer)
+    assert element_id(etree.fromstring(_DOC).find(".//b[2]/s/p"), "poly", (GML,)).startswith("poly_B2_")

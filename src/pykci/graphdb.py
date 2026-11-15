@@ -6,6 +6,7 @@ share the plumbing around them: ids, indexes, the R-tree layers of the Neo4j Spa
 plugin, and the bounding boxes the R-tree works on.
 
   slug()                          an id-safe name
+  element_id()                    a stable id for an element of the source without gml:id
   create_indexes()                range indexes, named <label>_<property>_idx
   create_point_index()            the point index on <label>.location
   ensure_spatial_layer()          an R-tree layer on bbox_wkt
@@ -13,6 +14,7 @@ plugin, and the bounding boxes the R-tree works on.
                                   from the geometry stored below them
 """
 
+import hashlib
 import re
 
 from pykci.geometry import bbox_of_pos_lists
@@ -21,6 +23,31 @@ from pykci.geometry import bbox_of_pos_lists
 def slug(s):
     """Lower-case ASCII id: everything but a-z, 0-9 and _ becomes _."""
     return re.sub(r"[^a-z0-9_]", "_", s.lower())
+
+
+def element_id(el, kind: str, id_attrs) -> str:
+    """A node id for an XML element of the source that has no gml:id of its own (a polygon,
+    a ring, a multi-surface): `kind`, the gml:id of its nearest ancestor that has one, and a
+    digest of the element's position below that ancestor. The same file gives the same ids in
+    every run, so a second ingest finds the nodes of the first instead of adding new ones, and
+    two elements of one file never share an id. `id_attrs` are the attribute names of gml:id
+    (GML 3.1 and/or 3.2). Without such an ancestor the element's content is part of the digest."""
+    steps, node, anchor = [], el, None
+    while anchor is None:
+        parent = node.getparent()
+        if parent is None:
+            break
+        position = sum(1 for _ in node.itersiblings(node.tag, preceding=True))
+        steps.append(f"{node.tag.rsplit('}', 1)[-1]}[{position}]")
+        node = parent
+        anchor = next((node.get(a) for a in id_attrs if node.get(a)), None)
+    path = "/".join(reversed(steps))
+    if anchor is None:
+        from lxml import etree      # only in this rare case: the module stays free of lxml
+
+        anchor = "doc"
+        path += etree.tostring(el, with_tail=False).decode("utf-8", "replace")
+    return f"{kind}_{anchor}_{hashlib.sha1(path.encode('utf-8')).hexdigest()[:12]}"
 
 
 def create_indexes(sess, pairs, *, tolerant=False):

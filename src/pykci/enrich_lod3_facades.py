@@ -54,7 +54,7 @@ from pathlib import Path
 
 from lxml import etree
 
-from pykci.graphdb import create_indexes, ensure_spatial_layer
+from pykci.graphdb import create_indexes, element_id, ensure_spatial_layer
 from pykci.runtime import NO_SCHEMA_NOTICES, connect, console
 
 # --------------------------------------------------------------------------- #
@@ -341,7 +341,7 @@ class _Batch:
 
 def _collect_ring(ring_el, batch, source, ring_type, ring_index=None):
     """gml:LinearRing -> GeometryRing row + return its (prefixed) id. pos_list verbatim."""
-    rid = ring_el.get(GML_ID) or f"ring_{id(ring_el)}"
+    rid = ring_el.get(GML_ID) or element_id(ring_el, "ring", (GML_ID,))
     pos = ring_el.find("gml:posList", NS)
     if pos is None:
         return None, 0
@@ -358,7 +358,7 @@ def _collect_ring(ring_el, batch, source, ring_type, ring_index=None):
 def _collect_polygon(poly_el, batch, source):
     """gml:Polygon -> GeometryPolygon + exterior/interior GeometryRing rows.
     Returns (polygon_id, n_interior_rings, [exterior_points])."""
-    pid = poly_el.get(GML_ID) or f"poly_{id(poly_el)}"
+    pid = poly_el.get(GML_ID) or element_id(poly_el, "poly", (GML_ID,))
     batch.add("polys", {"id": _pid(pid), "source": source})
 
     ext = poly_el.find("gml:exterior/gml:LinearRing", NS)
@@ -400,7 +400,7 @@ def _collect_opening(op_el, surf_id, order, batch, source):
     if concrete is None:
         return None
     op_type = _local(concrete)
-    oid = concrete.get(GML_ID) or f"opening_{id(concrete)}"
+    oid = concrete.get(GML_ID) or element_id(concrete, "opening", (GML_ID,))
     batch.add("openings", {"id": _pid(oid), "opening_type": op_type,
                            "source": source, "source_type": SOURCE_TYPE})
     batch.add("surf_opening", {"src": surf_id, "tgt": _pid(oid), "order": order})
@@ -410,7 +410,7 @@ def _collect_opening(op_el, surf_id, order, batch, source):
         ms = concrete.find(f"bldg:lod{lod}MultiSurface/gml:MultiSurface", NS)
         if ms is None:
             continue
-        msid = ms.get(GML_ID) or f"ms_{id(ms)}"
+        msid = ms.get(GML_ID) or element_id(ms, "ms", (GML_ID,))
         batch.add("multisurfaces", {"id": _pid(msid), "lod": lod, "source": source})
         batch.add("opening_ms", {"src": _pid(oid), "tgt": _pid(msid), "lod": lod})
         for m_order, poly in enumerate(ms.findall("gml:surfaceMember/gml:Polygon", NS)):
