@@ -21,13 +21,13 @@ Installed, every step is also `python -m pykci.<module>`.
 
 | Command | Runs | Purpose |
 | --- | --- | --- |
-| `ingest-citygml` | `pykci.ingest_citygml` | CityGML 2.0 / 3.0 → Neo4j (see CITYGML3.md) |
+| `ingest-citygml` | `pykci.ingest_citygml` | CityGML 2.0 / 3.0 → Neo4j (see CITYGML3.md); a file or a folder of tiles. CityGML 1.0 is refused: convert it with `upgrade-citygml` first |
 | `ingest-osm` | `pykci.ingest_osm` | OpenStreetMap enrichment (`.osm.pbf`) |
 | `ingest-roofmats` | `pykci.ingest_roof_materials` | ML roof-material predictions (GeoJSON) |
-| `export-citygml` | `pykci.export_citygml` | Neo4j → CityGML 2.0 / 3.0 (`--version 3`): whole dataset, `--ids`/`--ids-file` selection, or `--bbox` |
+| `export-citygml` | `pykci.export_citygml` | Neo4j → CityGML 2.0 / 3.0 (`--version 3`): whole dataset, `--ids`/`--ids-file` selection, `--bbox`, or the files the dataset was ingested from (`--source-file`, `--each-source-file`) |
 | `build-3dtiles` | `pykci.build_3dtiles` | Neo4j → 3D Tiles; `--tiled` for whole cities (see below) |
 | `footprints` | `pykci.extract_citygml_building_footprints` | CityGML → GeoJSON footprints, no Neo4j |
-| `upgrade-citygml` | `pykci.upgrade_citygml_10_to_20` | CityGML 1.0 → 2.0, no Neo4j |
+| `upgrade-citygml` | `pykci.upgrade_citygml_10_to_20` | CityGML 1.0 → 2.0 (files or a folder, `--out <folder>`), no Neo4j; run it before `ingest-citygml` on 1.0 data |
 | `validate-citygml` | `pykci.validate_citygml` | Offline XSD validation of CityGML 2.0 / 3.0 files (`--setup` once), no Neo4j |
 | `inventory` | `eval/parse_citygml_inventory.py` | Per-feature inventory of a GML file |
 | `stats` | `eval/stats_control.py` | `precheck` / `postcheck` / `report` |

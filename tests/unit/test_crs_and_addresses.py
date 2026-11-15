@@ -1,4 +1,5 @@
-"""pykci.crs (srsName → EPSG, geoid undulation) and pykci.xal (the address of a building)."""
+"""pykci.crs (srsName → EPSG, geoid undulation), pykci.xal (the address of a building) and the
+municipality a building's key names (pykci.ingest_citygml)."""
 
 import json
 
@@ -97,3 +98,20 @@ def test_no_address(value):
 
 def test_text_that_is_not_xml_counts_but_has_no_fields():
     assert xal.first_address("not xml at all") == {"address_count": 1.0}
+
+
+# ---- the municipality of a key --------------------------------------------------------------
+
+@pytest.mark.parametrize("key, expected", [
+    ("02000000", ("Hamburg", "Hamburg")),           # LGV LoD2-DE 2026: the municipality key only
+    ("02200227", ("Hamburg", "Hamburg")),           # a district key of the 2025 release
+    ("02100104", ("HafenCity", "Hamburg")),         # a finer entry wins over the Land
+    ("09161000", ("Ingolstadt", "Ingolstadt")),
+    ("05315000", ("LoD2_tile", "LoD2_tile")),       # a key the table does not know: the file name
+    ("", ("LoD2_tile", "LoD2_tile")),
+])
+def test_municipality_of_a_key(key, expected):
+    """Hamburg is a city-state: every key of its Land (02) is Hamburg. Before, a tile of the 2026
+    release named its own City and District after the file, 783 of each."""
+    from pykci.ingest_citygml import _resolve_municipality
+    assert _resolve_municipality(key, "LoD2_tile") == expected

@@ -350,6 +350,9 @@ ROOF_TYPE_NAMES = {
 GEMEINDE_MAP = {
     "02100104": ("HafenCity",  "Hamburg"),
     "02100":    ("Hamburg",    "Hamburg"),
+    # Hamburg is a city-state: every key of its Land (02) is Hamburg. LGV's LoD2-DE 2026
+    # carries only the municipality key 02000000; earlier releases also district keys.
+    "02":       ("Hamburg",    "Hamburg"),
     "09161000": ("Ingolstadt", "Ingolstadt"),
     "09161":    ("Ingolstadt", "Ingolstadt"),
 }
@@ -811,7 +814,7 @@ def _resolve_municipality(gemeinde_key, filename_stem):
     if gemeinde_key:
         if gemeinde_key in GEMEINDE_MAP:
             return GEMEINDE_MAP[gemeinde_key]
-        for prefix_len in (8, 5):
+        for prefix_len in (8, 5, 2):        # municipality, district, Land (a city-state)
             prefix = gemeinde_key[:prefix_len]
             if prefix in GEMEINDE_MAP:
                 return GEMEINDE_MAP[prefix]
@@ -6367,8 +6370,15 @@ if __name__ == "__main__":
     if not candidates:
         print("ERROR: No .gml input files found. Pass one or more files or a directory.")
         sys.exit(1)
+    # CityGML 1.0 is read by neither codec: under its namespaces every file would be ingested
+    # as empty. Refused before anything is written; upgrade-citygml converts the files.
+    old = [p for p in candidates if detect_citygml_version(p) == "1.0"]
+    if old:
+        names = ", ".join(p.name for p in old[:3]) + (f" and {len(old) - 3} more" if len(old) > 3 else "")
+        sys.exit(f"ERROR: {len(old)} file(s) are CityGML 1.0, which the ingest does not read ({names}). "
+                 "Convert them first: pykci upgrade-citygml <files or folder> --out <folder>")
 
-    shared_id = _slug(args.dataset_name) if args.dataset_name else None
+    shared_id =_slug(args.dataset_name) if args.dataset_name else None
     do_nearby_edges = args.nearby_edges
     # Tiled (shared_id) path runs parse_workers concurrent tile ingests (writers
     # split among them); independent datasets each get their own full writer pool.
