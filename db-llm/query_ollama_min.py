@@ -24,27 +24,15 @@ Dependencies:
 """
 
 import argparse
-import json
-import os
 import re
 import time
-import urllib.error
-import urllib.request
 
 from langchain_ollama import ChatOllama
-from neo4j import GraphDatabase
 from neo4j.exceptions import ServiceUnavailable
 
-# ---------------------------------------------------------------------------
-# Connection settings
-# ---------------------------------------------------------------------------
-
-NEO4J_URL = os.getenv("NEO4J_URL", "bolt://localhost:7687")
-NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "neo4jneo4j")
-
-OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "deepseek-r1:14b")
+from ollama_session import (DEFAULT_MODEL, OLLAMA_BASE_URL, check_ollama, connect, neo4j_uri,
+                            print_rows, run_cypher)
+from pykci.llm_output import THINK_BLOCK, without_reasoning
 
 # ---------------------------------------------------------------------------
 # Minimal embedded context — the bare minimum the model needs to write Cypher
@@ -115,15 +103,9 @@ RULES
 # Cleanup helpers
 # ---------------------------------------------------------------------------
 
-_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
-
-
 def clean_cypher(raw: str) -> str:
     """Strip reasoning blocks, markdown fences, and prose around the query."""
-    text = _THINK_RE.sub("", raw)
-    # Drop any unclosed leading <think> remnant (model hit token limit mid-think)
-    if "<think>" in text and "</think>" not in text:
-        text = text.split("<think>", 1)[0]
+    text = without_reasoning(raw)
     # Prefer a fenced block if present
     fence = re.search(r"```(?:cypher)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
     if fence:
@@ -134,50 +116,6 @@ def clean_cypher(raw: str) -> str:
     if m:
         text = text[m.start():]
     return text.strip()
-
-
-# ---------------------------------------------------------------------------
-# Ollama / Neo4j helpers
-# ---------------------------------------------------------------------------
-
-
-def check_ollama(base_url: str, model: str) -> bool:
-    try:
-        with urllib.request.urlopen(f"{base_url}/api/tags", timeout=3) as resp:
-            data = json.loads(resp.read())
-        available = [m["name"] for m in data.get("models", [])]
-        if model not in available:
-            print(f"[warn] Model '{model}' not found locally. Available: {available}")
-            print(f"       Run:  ollama pull {model}")
-            return False
-        return True
-    except urllib.error.URLError:
-        print(f"[error] Ollama not reachable at {base_url}.")
-        print("        Start it with:  ollama serve  (or open the Ollama app)")
-        return False
-
-
-def run_cypher(driver, query: str) -> tuple[list[dict], float]:
-    with driver.session() as session:
-        t0 = time.perf_counter()
-        rows = [dict(r) for r in session.run(query)]
-        elapsed = time.perf_counter() - t0
-    return rows, elapsed
-
-
-def print_rows(rows: list[dict]) -> None:
-    if not rows:
-        print("  (no results)")
-        return
-    keys = list(rows[0].keys())
-    widths = {k: max(len(k), max(len(str(r.get(k, ""))) for r in rows)) for k in keys}
-    header = "  " + "  ".join(k.ljust(widths[k]) for k in keys)
-    print(header)
-    print("  " + "-" * (len(header) - 2))
-    for row in rows[:50]:
-        print("  " + "  ".join(str(row.get(k, "")).ljust(widths[k]) for k in keys))
-    if len(rows) > 50:
-        print(f"  ... ({len(rows)} rows total, showing first 50)")
 
 
 # ---------------------------------------------------------------------------
@@ -241,7 +179,7 @@ def repl(llm, driver, args) -> None:
                 ("system", SUMMARY_SYS),
                 ("human", f"Query result:\n{rows[:50]}\n\nQuestion: {line}\n\nAnswer:"),
             ]).content
-            answer = _THINK_RE.sub("", answer).strip()
+            answer = THINK_BLOCK.sub("", answer).strip()
             print(f"\n{answer}")
 
         print(f"\nGeneration : {gen_time:.2f} s   Query : {exec_time:.3f} s\n")
@@ -267,10 +205,9 @@ def main() -> None:
                      base_url=OLLAMA_BASE_URL)
 
     try:
-        driver = GraphDatabase.driver(NEO4J_URL, auth=(NEO4J_USER, NEO4J_PASSWORD))
-        driver.verify_connectivity()
+        driver = connect(verify=True)
     except ServiceUnavailable:
-        print(f"[error] Cannot reach Neo4j at {NEO4J_URL}. Start Neo4j and retry.")
+        print(f"[error] Cannot reach Neo4j at {neo4j_uri()}. Start Neo4j and retry.")
         return
 
     try:

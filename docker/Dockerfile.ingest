@@ -17,7 +17,9 @@ FROM python:3.13-slim
 # so no build toolchain is needed).
 RUN pip install --no-cache-dir lxml==6.1.0 neo4j==6.2.0 numpy==2.4.4
 
+# The package only: the ingest and what it imports from it need exactly the three
+# distributions above (tests/contract/test_docker_images.py keeps it that way).
 WORKDIR /app
-COPY ingest_citygml.py citygml_profiles.py pykci_runtime.py /app/
+COPY src/pykci /app/pykci
 
-ENTRYPOINT ["python", "ingest_citygml.py"]
+ENTRYPOINT ["python", "-m", "pykci.ingest_citygml"]

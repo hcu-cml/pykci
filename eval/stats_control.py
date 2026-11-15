@@ -80,11 +80,13 @@ except ImportError:
 # --------------------------------------------------------------------------- #
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+from pykci.crs import epsg_from_srs  # noqa: E402
+from pykci.runtime import connect  # noqa: E402
+
 RESULTS_DIR = ROOT / "eval" / "results"
 STATS_DIR = ROOT / "output" / "stats"
-
-NEO4J_URL = "bolt://localhost:7687"
-NEO4J_AUTH = ("neo4j", "neo4jneo4j")
 
 # Severity ordering (high number = more severe) for sorting the anomaly list.
 SEVERITY_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
@@ -109,28 +111,6 @@ def _ts() -> str:
 
 def _city_slug(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", (name or "").lower()).strip("_") or "dataset"
-
-
-# --------------------------------------------------------------------------- #
-# CRS resolution (compact copy of ingest_citygml._epsg_from_srs, kept in sync)
-# --------------------------------------------------------------------------- #
-
-def resolve_epsg(srs: str | None) -> str | None:
-    """srsName string -> 'EPSG:NNNN' (best effort), else the input, else None."""
-    if not srs:
-        return None
-    s = srs.upper().replace(" ", "")
-    m = re.search(r"EPSG[:/]+(?:\d+/)?(\d{4,6})", s)
-    if m:
-        return f"EPSG:{m.group(1)}"
-    m = re.search(r"UTM(\d{2})", s)
-    if m:
-        return f"EPSG:258{m.group(1)}"
-    if "CH1903+" in s or "LV95" in s:
-        return "EPSG:2056"
-    if "CH1903" in s or "LV03" in s:
-        return "EPSG:21781"
-    return srs
 
 
 # Rough geographic-CRS test so we can range-check coordinates. Geographic EPSG
@@ -456,7 +436,7 @@ def scan_citygml(paths: list[str], progress=True) -> dict:
 
     # coordinate-in-CRS-range sanity (single dominant srs)
     dom_srs = max(srs_seen, key=srs_seen.get) if srs_seen else None
-    dom_epsg = resolve_epsg(dom_srs)
+    dom_epsg = epsg_from_srs(dom_srs)
     crs_range_issue = None
     if dom_epsg and centroids_x:
         geographic = dom_epsg in GEOGRAPHIC_EPSG
@@ -701,13 +681,9 @@ def osm_anomalies(osm: dict) -> list[dict]:
 
 def _driver():
     try:
-        from neo4j import GraphDatabase
+        return connect(verify=True, notifications_disabled_classifications={"UNRECOGNIZED"})
     except ImportError:
         raise SystemExit("neo4j driver required for postcheck (pip install neo4j).")
-    d = GraphDatabase.driver(NEO4J_URL, auth=NEO4J_AUTH,
-                             notifications_disabled_classifications={"UNRECOGNIZED"})
-    d.verify_connectivity()
-    return d
 
 
 def _one(sess, q, **kw):

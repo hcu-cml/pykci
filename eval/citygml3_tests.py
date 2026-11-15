@@ -15,7 +15,7 @@ citygml3_tests.py — end-to-end tests of the CityGML 3.0 codec (ingest_citygml.
       identical, merged exports valid
   T7  (with --sample) 2.0-sourced data → 3.0: the T4 2.0 file re-ingested (2.0
       TrafficAreas) and exported as 3.0 with synthesised spaces → valid
-  T8  optional real tiles (--tiles a.gml b.gml …): one Dataset, layer 'streetspace',
+  T8  optional real tiles (--tiles a.gml b.gml …): one Dataset, layer 'transport',
       3.0 + 2.0 exports valid
   T9  (with --tiles) clipped --bbox export (--box, default a 400 m box around the centre
       of the tiles' Dataset) as 3.0 and 2.0: valid, no written (Auxiliary)TrafficArea/Marking
@@ -39,12 +39,12 @@ citygml3_tests.py — end-to-end tests of the CityGML 3.0 codec (ingest_citygml.
       https://www.citygmlwiki.org/index.php?title=FZK_Haus_CityGML_30 into
       input/citygml3/FZK-Haus/<variant>/<n>/ (citygml3_models in the result says how many ran)
 
-The database is WIPED. The script refuses bolt://…:7687 (the usual port of a real graph)
+The database is WIPED. The script refuses port 7687 (the usual port of a real graph)
 and any non-empty database unless --wipe is given. T5, T6 and T11 need only the fixtures in
 eval/fixtures/citygml3; the others run when --sample / --tiles name real files. The XSD
 checks need the OGC schema bundle once: `python tools/validate_citygml.py --setup`.
 
-    python eval/citygml3_tests.py --uri bolt://localhost:7688 --password … --wipe \
+    python eval/citygml3_tests.py --uri <Bolt URI, e.g. localhost on port 7688> --password … --wipe \
         [--out DIR] [--sample city3.gml] [--tiles tile1.gml tile2.gml] [--box WKT]
 """
 
@@ -58,9 +58,11 @@ import sys
 import time
 from pathlib import Path
 
-from neo4j import GraphDatabase
-
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "src"))
+
+from pykci.runtime import connect, console  # noqa: E402
+
 PY = sys.executable
 VALIDATOR = ROOT / "tools" / "validate_citygml.py"
 FIX = ROOT / "eval" / "fixtures" / "citygml3"
@@ -271,8 +273,8 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     log = open(out / "citygml3_tests.log", "w", encoding="utf-8")
     conn = ["--uri", args.uri, "--user", args.user, "--password", args.password]
-    drv = GraphDatabase.driver(args.uri, auth=(args.user, args.password),
-                               notifications_disabled_classifications={"DEPRECATION"})
+    drv = connect(args.uri, args.user, args.password,
+                  notifications_disabled_classifications={"DEPRECATION"})
     results = {}
 
     def ingest(path, *extra):
@@ -290,7 +292,7 @@ def main():
             sample_tests(s, Path(args.sample), out, log, results, ingest, export)
         # T5 kitchen sink
         wipe(s)
-        ingest(FIX / "kitchen_sink.gml", "--rtree-layer", "streetspace")
+        ingest(FIX / "kitchen_sink.gml", "--rtree-layer", "transport")
         ks3, ks2 = out / "ks_v3.gml", out / "ks_v2.gml"
         export(3, ks3)
         export(2, ks2)
@@ -300,13 +302,13 @@ def main():
                                       "v3": k3, "v2": k2, "census_missing_v3": kmiss}
         # T11 dynamizers
         wipe(s)
-        ingest(FIX / "dynamizer.gml", "--rtree-layer", "streetspace")
+        ingest(FIX / "dynamizer.gml", "--rtree-layer", "transport")
         dyn = s.run("MATCH (f:CityFurniture {id: 'fx_charger'})-[:HAS_DYNAMIZER]->(d:Dynamizer) "
                     "RETURN count(d) AS n, collect(d.datastream_id) AS ds, collect(d.dynamic_data_type) AS types, "
                     "sum(coalesce(d.n_values, 0)) AS values, "
                     "size([x IN collect(d) WHERE x:CityObject OR (x)-[:PART_OF]->()]) AS leaks").single()
         dg1 = digest(s)
-        ingest(FIX / "dynamizer.gml", "--rtree-layer", "streetspace")
+        ingest(FIX / "dynamizer.gml", "--rtree-layer", "transport")
         dg2 = digest(s)
         dy3, dy2 = out / "dyn_v3.gml", out / "dyn_v2.gml"
         export(3, dy3)
@@ -324,7 +326,7 @@ def main():
         # T6 tile merge
         wipe(s)
         for t_ in ("tile_b.gml", "tile_a.gml"):
-            ingest(FIX / t_, "--dataset-name", "streetspace_test", "--rtree-layer", "streetspace")
+            ingest(FIX / t_, "--dataset-name", "transport_test", "--rtree-layer", "transport")
         chk = s.run(
             "MATCH (r:Road {id: 'road_shared'}) WITH count(r) AS roads, collect(r)[0] AS r "
             "MATCH (sec:Section {id: 'sec_shared'})-[h:HAS_TRAFFIC_SPACE]->() "
@@ -336,7 +338,7 @@ def main():
         pend = s.run("MATCH (n:PendingRefs) RETURN count(n) AS c").single()["c"]
         t1 = digest(s)
         for t_ in ("tile_b.gml", "tile_a.gml"):
-            ingest(FIX / t_, "--dataset-name", "streetspace_test", "--rtree-layer", "streetspace")
+            ingest(FIX / t_, "--dataset-name", "transport_test", "--rtree-layer", "transport")
         t2 = digest(s)
         tv3, tv2 = out / "tiles_v3.gml", out / "tiles_v2.gml"
         export(3, tv3)
@@ -350,7 +352,7 @@ def main():
             "v3": tval3, "v2": tval2}
         # T12 source scope of gml:ids
         wipe(s)
-        ingest(FIX / "tile_a.gml", "--dataset-name", "scope_one", "--rtree-layer", "streetspace")
+        ingest(FIX / "tile_a.gml", "--dataset-name", "scope_one", "--rtree-layer", "transport")
         before = digest_of(s, "tile_a.gml")
         copy_a, copy_b = out / "tile_a_copy.gml", out / "tile_b_copy.gml"
         copy_a.write_bytes((FIX / "tile_a.gml").read_bytes())
@@ -416,8 +418,8 @@ def main():
             secs = 0.0
             for t_ in args.tiles:
                 # reconstructed data needs its method + version (GRAPH.md provenance rules)
-                _, dt = ingest(t_, "--dataset-name", "tiles", "--rtree-layer", "streetspace",
-                               "--source-type", "reconstructed", "--method", "streetspace-recon",
+                _, dt = ingest(t_, "--dataset-name", "tiles", "--rtree-layer", "transport",
+                               "--source-type", "reconstructed", "--method", "road-model",
                                "--method-version", "1.0")
                 secs += dt
             top = s.run("MATCH (n)-[:PART_OF]->(:Dataset {id: 'tiles'}) RETURN count(n) AS c").single()["c"]
@@ -506,7 +508,5 @@ def main():
 
 
 if __name__ == "__main__":
-    for _stream in (sys.stdout, sys.stderr):   # a cp1252 console must not crash on non-ASCII output
-        if hasattr(_stream, "reconfigure"):
-            _stream.reconfigure(errors="replace")
+    console()
     main()

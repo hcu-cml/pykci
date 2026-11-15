@@ -318,7 +318,8 @@ representation*, single-storage *where redundancy would be wrong*, and a confide
 
 `OsmFeature` also carries the shared `Entity` label (so generic `Entity(id)` edge-lookups
 work) and, when APOC is present, a dynamic semantic label for its mapped type
-(`OsmBuilding`, `OsmWater`, `OsmLandUse`, `OsmTree`, `OsmPOI`, …) so `MATCH (n:OsmBuilding)`
+(`OsmBuilding`, `OsmPOI`, `OsmWater`, `OsmLandUse`, `OsmVegetation`, `OsmRoad`, `OsmFurniture`;
+a feature of no mapped type keeps `OsmFeature` alone) so `MATCH (n:OsmBuilding)`
 works alongside `MATCH (n:OsmFeature {osm_kind:'building'})`.
 
 **`osm_kind` is the canonical, always-present type key** (use it for filtering — it works
@@ -378,7 +379,7 @@ The same machinery generalises:
   the natural, compact representation of "this building contains a café, a shop and an
   office". POIs that fall in no footprint become orphan `OsmFeature` nodes.
 - **Point trees / furniture** (`natural=tree`, `man_made=*` points): nearest-feature or
-  standalone `OsmFeature` (`OsmTree`/`OsmFurniture`), spatially indexed; linked to a
+  standalone `OsmFeature` (`OsmFurniture`), spatially indexed; linked to a
   `SolitaryVegetationObject`/`CityFurniture` only on a confident proximity match,
   otherwise kept as a flagged standalone node (pykci LoD2 city tiles rarely model every
   tree, so most OSM trees will be net-new, valuable nodes).

@@ -1,7 +1,7 @@
 # pykci command line
 
-`pykci_cli.py` is one entry point to the pipeline scripts. It is meant for people
-and for programs that drive pykci (the pykci web client, CI jobs, containers).
+`pykci` (the module `pykci.cli`) is one entry point to the pipeline. It is meant for people
+and for programs that drive pykci (CI jobs, containers, other applications).
 
 ```bash
 pip install -e .                      # editable install → `pykci` command
@@ -13,19 +13,22 @@ pykci export-citygml --ids DEHH_123,DEHH_456 --out selection.gml
 python pykci_cli.py info              # same thing without installing
 ```
 
-The scripts still run directly (`py ingest_citygml.py …`) exactly as before.
+The scripts still run directly from a checkout (`py ingest_citygml.py …`) exactly as before,
+without installing: the files at the repository root forward to the package (`_pykci_shim.py`).
+Installed, every step is also `python -m pykci.<module>`.
 
 ## Commands
 
 | Command | Runs | Purpose |
 | --- | --- | --- |
-| `ingest-citygml` | `ingest_citygml.py` | CityGML 2.0 / 3.0 → Neo4j (see CITYGML3.md) |
-| `ingest-osm` | `ingest_osm.py` | OpenStreetMap enrichment (`.osm.pbf`) |
-| `ingest-roofmats` | `ingest_roof_materials.py` | ML roof-material predictions (GeoJSON) |
-| `export-citygml` | `export_citygml.py` | Neo4j → CityGML 2.0 / 3.0 (`--version 3`): whole dataset, `--ids`/`--ids-file` selection, or `--bbox` |
-| `build-3dtiles` | `build_3dtiles.py` | Neo4j → 3D Tiles; `--tiled` for whole cities (see below) |
-| `footprints` | `tools/extract_citygml_building_footprints.py` | CityGML → GeoJSON footprints, no Neo4j |
-| `upgrade-citygml` | `tools/upgrade_citygml_10_to_20.py` | CityGML 1.0 → 2.0, no Neo4j |
+| `ingest-citygml` | `pykci.ingest_citygml` | CityGML 2.0 / 3.0 → Neo4j (see CITYGML3.md) |
+| `ingest-osm` | `pykci.ingest_osm` | OpenStreetMap enrichment (`.osm.pbf`) |
+| `ingest-roofmats` | `pykci.ingest_roof_materials` | ML roof-material predictions (GeoJSON) |
+| `export-citygml` | `pykci.export_citygml` | Neo4j → CityGML 2.0 / 3.0 (`--version 3`): whole dataset, `--ids`/`--ids-file` selection, or `--bbox` |
+| `build-3dtiles` | `pykci.build_3dtiles` | Neo4j → 3D Tiles; `--tiled` for whole cities (see below) |
+| `footprints` | `pykci.extract_citygml_building_footprints` | CityGML → GeoJSON footprints, no Neo4j |
+| `upgrade-citygml` | `pykci.upgrade_citygml_10_to_20` | CityGML 1.0 → 2.0, no Neo4j |
+| `validate-citygml` | `pykci.validate_citygml` | Offline XSD validation of CityGML 2.0 / 3.0 files (`--setup` once), no Neo4j |
 | `inventory` | `eval/parse_citygml_inventory.py` | Per-feature inventory of a GML file |
 | `stats` | `eval/stats_control.py` | `precheck` / `postcheck` / `report` |
 | `osm-census` | `eval/osm_ingestion_census.py` | OSM completeness gate |
@@ -33,8 +36,32 @@ The scripts still run directly (`py ingest_citygml.py …`) exactly as before.
 | `info` | built in | Graph summary: datasets (CRS, feature extent incl. WGS84), counts, which provenance layers exist. **JSON** |
 
 Pipeline commands pass their arguments through unchanged, so `pykci <command> --help`
-prints the script's own help. `tools/` and `eval/` commands need a source checkout or
-an editable install.
+prints the module's own help. The `eval/` commands are research scripts outside the
+package: they need a source checkout or an editable install.
+
+## As a library
+
+Every step is a module of the package `pykci`, so other programs import what they need
+instead of copying it:
+
+```python
+from pykci.ingest_citygml import ingest            # the ingest as a function
+from pykci.provenance import layer_of              # the provenance layer of a value
+from pykci.crs import horiz_epsg_from_srs          # srsName → EPSG
+from pykci.runtime import connect                  # a Neo4j driver for the configured connection
+```
+
+The command table can be extended for one call: `main()` takes further commands and the
+program name its help shows.
+
+```python
+from pykci import cli
+
+def main(argv=None):
+    return cli.main(argv, commands={"my-command": ("module", "my_package.my_command")}, prog="my-cli")
+```
+
+Each command must pass the checks of `tests/contract/test_commands.py`; see TESTING.md.
 
 ## Options for programs
 
@@ -45,7 +72,7 @@ an editable install.
 | `--neo4j-password` | `NEO4J_PASSWORD` | `neo4jneo4j` |
 | `--progress` | `PYKCI_PROGRESS=1` | off |
 
-The environment variables work for the plain scripts too (`pykci_runtime.py`).
+The environment variables work for the plain scripts too (`pykci.runtime`).
 
 **Progress events.** With `--progress`, the scripts print one line per event on stdout:
 
@@ -83,7 +110,7 @@ so callers do not have to parse the log.
   and `latitude`.
 - **Provenance.** Each schema property records its provenance layer (`authoritative`,
   `crowd_sourced`, `ml_predicted`, `reconstructed`, `derived`; see
-  `pykci_provenance.py`). `feature_schema.json` next to `tileset.json` repeats the
+  `pykci.provenance`). `feature_schema.json` next to `tileset.json` repeats the
   schema for clients.
 - **Speed.** `--workers N` builds leaf tiles in parallel processes.
 

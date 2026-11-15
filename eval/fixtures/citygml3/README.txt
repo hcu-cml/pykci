@@ -36,7 +36,7 @@ kitchen_sink.gml  every element type of the codec coverage list: tran:Road (date
   polygon too, ParameterizedTexture with TextureAssociation + TexCoordList over exterior+interior LinearRing,
   GeoreferencedTexture; theme summer: X3DMaterial sharing a target with the first).
 
-tile_a.gml / tile_b.gml  two 1 km "street-space tiles" mimicking the reconstruction writer:
+tile_a.gml / tile_b.gml  two 1 km tiles of a tiled transportation model:
   tran:Road "road_shared" -> tran:section/Section "sec_shared" -> TrafficSpace "ts_group_shared" in BOTH
   tiles with identical space attributes (class B, function 1, usage 2+3, granularity way, gen attr 'group')
   but DIFFERENT TrafficAreas (tile_a: ta_a_1, ta_a_2; tile_b: ta_b_1, ta_b_2) and a different, tile-clipped
@@ -258,7 +258,7 @@ Expected counts (per file; "with gml:id" = elements carrying a gml:id):
     appearanceMember (CityModel level): 1
     core:appearance (feature level): 0
     app:target (X3D/Georef/TextureAssociation): 12
-    themes: ['pykci-streetspace']
+    themes: ['transportation']
   other properties:
     ExternalReference: 2
     Height: 2
@@ -336,7 +336,7 @@ Expected counts (per file; "with gml:id" = elements carrying a gml:id):
     appearanceMember (CityModel level): 1
     core:appearance (feature level): 0
     app:target (X3D/Georef/TextureAssociation): 8
-    themes: ['pykci-streetspace']
+    themes: ['transportation']
   other properties:
     ExternalReference: 1
     Height: 1
