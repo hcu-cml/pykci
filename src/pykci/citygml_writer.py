@@ -31,6 +31,7 @@ import json
 import re
 import sys
 from collections import Counter, defaultdict
+from pathlib import Path
 
 from lxml import etree
 
@@ -117,6 +118,10 @@ TRANSPORT_LABELS = {"Road", "Railway", "Track", "Square", "Waterway", "Section",
 TRANSPORT_TOP = {"Road", "Railway", "Track", "Square", "Waterway", "TransportationComplex"}
 CLIP_RELS = {"HAS_SECTION", "HAS_INTERSECTION", "HAS_TRAFFIC_SPACE", "HAS_MARKING", "HAS_HOLE",
              "HAS_CLEARANCE_SPACE", "HAS_BOUNDARY"}
+# with a source file, also the own geometry of a transportation feature or space that
+# several files contributed to (each file wrote its own curves / surfaces)
+SOURCE_CLIP_RELS = CLIP_RELS | {"HAS_LOD_MULTICURVE", "HAS_LOD_SURFACE", "HAS_LOD_SOLID",
+                                "HAS_LOD_POINT"}
 def bbox_outside(props, box):
     """True / False when the node's bbox misses / meets box (minx, miny, maxx, maxy);
     None when the node has no bbox (it is then kept — conservative)."""
@@ -133,10 +138,11 @@ class GraphTree:
     the document will contain), an xlinked MultiSurface whose owner is not in the
     document is loaded and written inline instead of as a dangling reference."""
 
-    def __init__(self, sess, clip_box=None, plan=None):
+    def __init__(self, sess, clip_box=None, plan=None, clip_source=None):
         self.sess = sess
         self.nodes: dict = {}
         self.clip_box = clip_box
+        self.clip_source = clip_source     # keep only transportation children from this file
         self.plan = plan
         self.clipped = 0
         self.unclippable = 0
@@ -167,11 +173,17 @@ class GraphTree:
         "WITH e, a, r, b, ($box IS NOT NULL AND type(r) IN $clip "
         "     AND any(l IN labels(a) WHERE l IN $tlabels) "
         "     AND b.bbox_min_x IS NOT NULL AND (b.bbox_max_x < $box[0] OR b.bbox_min_x > $box[2] "
-        "     OR b.bbox_max_y < $box[1] OR b.bbox_min_y > $box[3])) AS outside "
+        "     OR b.bbox_max_y < $box[1] OR b.bbox_min_y > $box[3])) "
+        # clip test by source file: a child of a transportation space that did not come
+        # from the file (its `source` / `source_files`) is left out
+        "  OR ($src IS NOT NULL AND type(r) IN $sclip AND any(l IN labels(a) WHERE l IN $tlabels) "
+        "      AND NOT (b.source = $src OR $src IN coalesce(b.source_files, []))) AS outside "
         "RETURN e AS a, type(r) AS t, outside, "
         "CASE WHEN outside THEN null ELSE properties(r) END AS rp, elementId(b) AS b, "
         "CASE WHEN outside THEN null ELSE labels(b) END AS bl, "
-        "CASE WHEN outside THEN null WHEN type(r) IN $refs THEN {id: b.id} "
+        # a reference target comes with its file: a feature of a neighbouring tile is
+        # referenced there when the edge stored no href (BaseWriter.ref_target)
+        "CASE WHEN outside THEN null WHEN type(r) IN $refs THEN {id: b.id, source: b.source} "
         "ELSE properties(b) END AS bp")
 
     def _expand(self, frontier):
@@ -182,7 +194,8 @@ class GraphTree:
                 chunk = frontier[i:i + 2000]
                 rows = self.sess.run(self._EXPAND_Q, eids=chunk, refs=list(REF_RELS),
                                      box=box, clip=list(CLIP_RELS),
-                                     tlabels=list(TRANSPORT_LABELS))
+                                     tlabels=list(TRANSPORT_LABELS), src=self.clip_source,
+                                     sclip=list(SOURCE_CLIP_RELS))
                 for row in rows:
                     if row["outside"]:
                         self.clipped += 1
@@ -261,6 +274,7 @@ class BaseWriter:
         self.proto_done: set = set()
         self.proto_nodes: dict = {}        # prototype id → Node
         self.doc_ids: set = set()          # feature-level ids this document will contain
+        self.source_file = None            # export by source file: the file rebuilt
         self.proto_ids: set = set()
         self.clip = bool(opts.get("clip"))
         self._content: dict = {}
@@ -848,7 +862,7 @@ class Writer3(BaseWriter):
             if p.get(key):
                 self.E(el, "core", local, p[key])
         for rp, tgt in refs_with_pending(n, "RELATED_TO"):
-            href = self.ref_target(tgt.id, rp.get("href"))
+            href = self.ref_target(tgt.id, rp.get("href"), tgt)
             if href is None:
                 self.loss.add("relatedTo target not in export", tgt.id)
                 continue
@@ -924,11 +938,19 @@ class Writer3(BaseWriter):
         if info:
             self.E(er, "core", "informationSystem", info.strip())
 
-    def ref_target(self, tid, raw_href=None):
+    def ref_target(self, tid, raw_href=None, target=None):
         if tid in self.doc_ids:
             self.hrefs.append((tid, "reference"))
             return f"#{self.oid(tid)}"
-        return self.oref(raw_href) if raw_href else None
+        if raw_href:
+            return self.oref(raw_href)
+        # export by source file: a reference that was local in the file that resolved it
+        # stored no href; from the other files it points into the target's own file,
+        # which is rebuilt under the same name
+        src = (getattr(target, "p", None) or {}).get("source") if self.source_file else None
+        if src and Path(src).name != self.source_file:
+            return f"{Path(src).name}#{self.oid(tid)}"
+        return None
 
     def space(self, el, n, g, base, boundaries=None):
         p = n.p
@@ -1452,7 +1474,7 @@ class Writer3(BaseWriter):
                 self.occupancy(el, "tran", p)
                 for rel, local in (("PREDECESSOR", "predecessor"), ("SUCCESSOR", "successor")):
                     for r, t in refs_with_pending(c, rel):
-                        href = self.ref_target(t.id, r.get("href"))
+                        href = self.ref_target(t.id, r.get("href"), t)
                         if href is None:
                             self.loss.add(f"{local} target not in export", t.id)
                             continue
@@ -2523,6 +2545,28 @@ def select_features(sess, dataset_id, bbox_wkt=None, layer=None):
     return [r["id"] for r in rows]
 
 
+def select_source_features(sess, dataset_id, source_file):
+    """Top-level features of a Dataset that came from `source_file` (their `source` or
+    `source_files`): one tile of a tiled Dataset, in the order of select_features."""
+    rows = sess.run(
+        "MATCH (d:Dataset {id: $did})<-[:PART_OF]-(n) WHERE (n:Building OR n:CityObject) "
+        "AND (n.source = $src OR $src IN coalesce(n.source_files, [])) "
+        "RETURN n.id AS id, n:Building AS b, coalesce(n.feature_type, '') AS ft",
+        did=dataset_id, src=source_file).data()
+    rows.sort(key=lambda r: (not r["b"], r["ft"], r["id"]))
+    return [r["id"] for r in rows]
+
+
+def source_files(sess, dataset_id):
+    """The files a Dataset was ingested from (Dataset.source_files, else its members')."""
+    rec = sess.run("MATCH (d:Dataset {id: $did}) RETURN d.source_files AS f", did=dataset_id).single()
+    if rec and rec["f"]:
+        return sorted(rec["f"])
+    return sorted(sess.run(
+        "MATCH (:Dataset {id: $did})<-[:PART_OF]-(n) "
+        "UNWIND coalesce(n.source_files, [n.source]) AS f RETURN DISTINCT f", did=dataset_id).value())
+
+
 def wkt_box(wkt):
     """(minx, miny, maxx, maxy) of the coordinates in a WKT polygon."""
     nums = [float(v) for v in re.findall(r"-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?", wkt or "")]
@@ -2530,7 +2574,7 @@ def wkt_box(wkt):
     return (min(xs), min(ys), max(xs), max(ys))
 
 
-def plan_ids(sess, top_ids, box=None, chunk=500):
+def plan_ids(sess, top_ids, box=None, chunk=500, source=None):
     """The feature-level ids the document will contain: the selected top-level features
     and their sub-features / surfaces / openings (with --clip, below transportation
     features only those whose bbox meets the box, like GraphTree), plus the ids of the
@@ -2545,13 +2589,16 @@ def plan_ids(sess, top_ids, box=None, chunk=500):
          "      AND any(l IN labels(a) WHERE l IN $tlabels)) "
          "   OR c.bbox_min_x IS NULL OR NOT (c.bbox_max_x < $box[0] OR c.bbox_min_x > $box[2] "
          "      OR c.bbox_max_y < $box[1] OR c.bbox_min_y > $box[3]) "
+         "WITH a, r, c WHERE $src IS NULL OR NOT (type(r) IN $clip "
+         "      AND any(l IN labels(a) WHERE l IN $tlabels)) "
+         "   OR c.source = $src OR $src IN coalesce(c.source_files, []) "
          "RETURN DISTINCT c.id AS id, c.multi_surface_id AS ms")
     frontier = list(top_ids)
     while frontier:
         nxt = []
         for i in range(0, len(frontier), chunk):
             for r in sess.run(q, ids=frontier[i:i + chunk], box=list(box) if box else None,
-                              clip=list(CLIP_RELS), tlabels=list(TRANSPORT_LABELS)):
+                              clip=list(CLIP_RELS), tlabels=list(TRANSPORT_LABELS), src=source):
                 if r["id"] not in plan:
                     plan.add(r["id"])
                     nxt.append(r["id"])
@@ -2634,14 +2681,29 @@ def dataset_appearances(sess, w, dataset_id, area_limited=True, chunk=5000):
             if meta is None:
                 continue
             sd = Node(None, meta["l"], meta["p"])
-            sd.out = [("TARGETS", tp, _Ref(tgt)) for tp, tgt in targets.get(m, ())]
-            missing = (meta["deg"] or 0) - len(sd.out)
+            sd.out = [("TARGETS", tp, _Ref(tgt)) for tp, tgt in _targets_once(targets.get(m, ()))]
+            missing = (meta["deg"] or 0) - len(targets.get(m, ()))
             if missing > 0 and not area_limited:
                 w.loss.add("appearance target whose geometry is not in this document", m, n=missing)
             app.out.append(("HAS_SURFACE_DATA", {"order": ds_sd[m]["ord"] if ds_sd[m]["ord"] is not None else k}, sd))
         out.append(app)
     w.stats["dataset Appearances written (one per host, materials once)"] = len(out)
-    w.stats["appearance targets written"] = sum(len(v) for v in targets.values())
+    w.stats["appearance targets written"] = sum(len(_targets_once(v)) for v in targets.values())
+    return out
+
+
+def _targets_once(rows):
+    """[(edge props, target id)] with each target once per surface data (the same target
+    with other texture coordinates stays), at its first position. TARGETS edges are
+    merged on `order`, so a material that several tiles declare holds a target at each
+    position the tiles gave it; written out as is it would list the target twice."""
+    seen, out = set(), []
+    for tp, tgt in sorted(rows, key=lambda x: (_num(x[0].get("order")), str(x[1]))):
+        key = (tgt, json.dumps({k: v for k, v in tp.items() if k != "order"},
+                               sort_keys=True, default=str))
+        if key not in seen:
+            seen.add(key)
+            out.append((tp, tgt))
     return out
 
 
@@ -2661,14 +2723,54 @@ def _peak_rss_mb():
     return round(peak / (1048576 if sys.platform == "darwin" else 1024))
 
 
+def source_appearances(sess, w, dataset_id, source_file, chunk=5000):
+    """The CityModel-level Appearances that came from `source_file`, each with all its
+    surface data in the original order and the targets whose geometry this document
+    holds: a tile of a tiled Dataset gets its own Appearance back."""
+    rows = sess.run(
+        "MATCH (:Dataset {id: $did})-[:HAS_APPEARANCE]->(a:Appearance) WHERE a.source = $src "
+        "OPTIONAL MATCH (a)-[h:HAS_SURFACE_DATA]->(sd) "
+        "RETURN a.id AS app, properties(a) AS ap, sd.id AS sd, labels(sd) AS l, "
+        "properties(sd) AS p, h.order AS ord ORDER BY a.id, h.order",
+        did=dataset_id, src=source_file).data()
+    if not rows:
+        return []
+    mats = {r["sd"] for r in rows if r["sd"]}
+    targets = defaultdict(list)
+    written = [i for i in w.written if i]
+    for i in range(0, len(written), chunk):
+        for r in sess.run(
+                "UNWIND $ids AS i MATCH (g:Entity {id: i})<-[t:TARGETS]-(sd) "
+                "RETURN sd.id AS sd, i AS tgt, properties(t) AS tp", ids=written[i:i + chunk]):
+            if r["sd"] in mats:
+                targets[r["sd"]].append((r["tp"], r["tgt"]))
+    targets = {m: _targets_once(v) for m, v in targets.items()}
+    apps = {}
+    for r in rows:
+        app = apps.get(r["app"])
+        if app is None:
+            app = apps[r["app"]] = Node(None, ["Appearance"], dict(r["ap"]))
+        if r["sd"]:
+            sd = Node(None, r["l"], r["p"])
+            sd.out = [("TARGETS", tp, _Ref(tgt)) for tp, tgt in targets.get(r["sd"], ())]
+            app.out.append(("HAS_SURFACE_DATA", {"order": r["ord"]}, sd))
+    w.stats["Appearances of the source file written"] = len(apps)
+    w.stats["appearance targets written"] = sum(len(v) for v in targets.values())
+    return list(apps.values())
+
+
 def export_document(sess, dataset, version, out_path, opts=None, feature_ids=None,
-                    bbox_wkt=None, clip=None, batch=200):
+                    bbox_wkt=None, clip=None, batch=200, clip_source=None):
     """Write `dataset` (a Dataset node's properties) as CityGML `version` ('2.0'/'3.0')
     with the strict writer, STREAMED: top-level features are loaded, written and
     released in batches of `batch` (lxml.etree.xmlfile), so memory is bounded by the
     batch, not by the document. With bbox_wkt the R-tree selects the top-level features;
     clip (default: on with bbox_wkt) additionally prunes the transportation hierarchy to
-    the sub-features whose bbox meets the box. Returns (counts, loss_report_dict)."""
+    the sub-features whose bbox meets the box. With clip_source (a file the Dataset was
+    ingested from, e.g. one tile) the document is that file rebuilt from the graph: the
+    top-level features from it, below transportation features only the sub-features and
+    areas from it, the CityModel id the file's stem; references within the file stay local,
+    references into other files keep their original href. Returns (counts, loss_report_dict)."""
     import time as _time
     t0 = _time.perf_counter()
     prof = []
@@ -2685,12 +2787,17 @@ def export_document(sess, dataset, version, out_path, opts=None, feature_ids=Non
     opts["clip"] = clip
     W = Writer3 if str(version).startswith("3") else Writer2
     w = W(dataset, opts)
-    ids = feature_ids if feature_ids is not None else select_features(
-        sess, dataset["id"], bbox_wkt, dataset.get("rtree_layer"))
+    w.source_file = Path(clip_source).name if clip_source else None
+    if feature_ids is not None:
+        ids = feature_ids
+    elif clip_source:
+        ids = select_source_features(sess, dataset["id"], clip_source)
+    else:
+        ids = select_features(sess, dataset["id"], bbox_wkt, dataset.get("rtree_layer"))
     mark(f"select ({len(ids)} top-level features)")
-    w.doc_ids = plan_ids(sess, ids, box if clip else None)
+    w.doc_ids = plan_ids(sess, ids, box if clip else None, source=clip_source)
     mark(f"plan ({len(w.doc_ids)} ids)")
-    area_limited = box is not None or feature_ids is not None
+    area_limited = box is not None or feature_ids is not None or bool(clip_source)
     proto_tree = GraphTree(sess)
 
     P = w.P
@@ -2701,9 +2808,11 @@ def export_document(sess, dataset, version, out_path, opts=None, feature_ids=Non
     root_attrib = {f"{{{XSI_NS}}}schemaLocation":
                    (dataset.get("schema_location") if same_version else None) or P.schema_location(
                        [p for p in nsmap if p not in ("core", "gml", "xlink", "xsi", "xAL")])}
-    if dataset.get("gml_id"):
-        root_attrib[P.gml_id] = dataset["gml_id"]
-        w.written.add(dataset["gml_id"])
+    root_id = Path(clip_source).stem if clip_source and re.fullmatch(
+        r"[A-Za-z_][\w.-]*", Path(clip_source).stem) else dataset.get("gml_id")
+    if root_id:
+        root_attrib[P.gml_id] = root_id
+        w.written.add(root_id)
     head = etree.Element(P.q("core", "CityModel"), nsmap=nsmap)
     if dataset.get("gml_description"):
         w.E(head, "gml", "description", dataset["gml_description"])
@@ -2735,7 +2844,8 @@ def export_document(sess, dataset, version, out_path, opts=None, feature_ids=Non
                 xf.write("\n  ")
                 xf.write(child)
             for bi in range(0, len(ids), batch):
-                tree = GraphTree(sess, clip_box=box if clip else None, plan=w.doc_ids)
+                tree = GraphTree(sess, clip_box=box if clip else None, plan=w.doc_ids,
+                                 clip_source=clip_source)
                 tops = tree.load(ids[bi:bi + batch])
                 need = sorted({c.id for n in tree.nodes.values() for t, _rp, c in n.out
                                if t == "HAS_PROTOTYPE" and "GeometryPrototype" in c.labels}
@@ -2764,7 +2874,9 @@ def export_document(sess, dataset, version, out_path, opts=None, feature_ids=Non
                 w._content.clear()
                 del tree, tops
             mark(f"features ({sum(counts.values())} written)")
-            for a in dataset_appearances(sess, w, dataset["id"], area_limited):
+            apps = (source_appearances(sess, w, dataset["id"], clip_source) if clip_source
+                    else dataset_appearances(sess, w, dataset["id"], area_limited))
+            for a in apps:
                 holder = etree.Element(P.appearance_member, nsmap=nsmap)
                 w.appearance(holder, a)
                 drop_unwritten_targets(w, holder, area_limited)

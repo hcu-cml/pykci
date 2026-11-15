@@ -25,6 +25,11 @@ citygml3_tests.py — end-to-end tests of the CityGML 3.0 codec (ingest_citygml.
       3.0 export valid + lossless, 2.0 export valid with the dynamizers in the loss report
   T10 (with --tiles) --backfill-bbox reproduces the sub-feature bboxes written at ingest
       after they are removed (old-graph situation)
+  T14 export by source file: tile_b.gml and tile_a.gml in one Dataset, every file rebuilt
+      from the graph (export_citygml.py --each-source-file), re-ingested into an empty
+      database: the same graph (Dataset node aside), valid files; rebuilt again from an
+      older graph (no stored hrefs on references resolved inside one file, a material
+      target at two positions): the same references, no target listed twice
   T12 source scope of gml:ids: a copy of tile_a.gml (another file, same ids) ingested into a
       second Dataset is refused and the graph stays unchanged; with --id-prefix it is
       ingested as nodes of its own, exports without the prefix (valid, lossless), and a
@@ -134,6 +139,41 @@ def digest(sess):
     return hashlib.sha1("\n".join(lines).encode()).hexdigest(), len(lines)
 
 
+# the content hash in the ids of children without gml:id (synthetic_id): it depends on how
+# the element was serialized, so a re-exported file gives other (equally internal) ids
+_SYNTH = re.compile(r"_[0-9a-f]{10}(?![0-9a-f])")
+
+
+_XMLNS = re.compile(r'\s+xmlns(?::\w+)?=\\?"[^"\\]*\\?"')
+_LAYOUT = re.compile(r'(?:\\n|\n)\s*')         # indentation of a pretty-printed fragment
+
+
+def norm_value(v):
+    """A property value as digest_features compares it: random and content-hash ids masked,
+    verbatim XML fragments without the namespace declarations and the indentation of the
+    document they were read from."""
+    return _SYNTH.sub("_H", _MASK.sub("X", _LAYOUT.sub("", _XMLNS.sub("", str(v)))))
+
+
+def digest_features(sess):
+    """digest() without the Dataset node (its envelope and root id come from the files),
+    values compared with norm_value."""
+    lines = []
+    m = norm_value
+
+    for r in sess.run("MATCH (n) WHERE NOT n:SpatialLayer AND NOT n:Dataset AND size(labels(n)) > 0 "
+                      "RETURN labels(n) AS l, properties(n) AS p"):
+        p = {k: m(v) for k, v in r["p"].items() if k not in _SPATIAL_PROPS}
+        lines.append(json.dumps([sorted(r["l"]), p], sort_keys=True))
+    for r in sess.run("MATCH (a)-[x]->(b) WHERE NOT type(x) STARTS WITH 'RTREE' AND type(x) <> 'LAYER' "
+                      "AND NOT a:Dataset AND NOT b:Dataset "
+                      "RETURN type(x) AS t, properties(x) AS p, a.id AS a, b.id AS b"):
+        lines.append(json.dumps([r["t"], m(r["a"]), m(r["b"]),
+                                 {k: m(v) for k, v in r["p"].items()}], sort_keys=True))
+    lines.sort()
+    return hashlib.sha1("\n".join(lines).encode()).hexdigest(), len(lines)
+
+
 def digest_of(sess, source):
     """Digest of the nodes of one source file (labels and properties)."""
     lines = sorted(json.dumps([sorted(r["l"]), {k: str(v) for k, v in r["p"].items()
@@ -141,6 +181,37 @@ def digest_of(sess, source):
                    for r in sess.run("MATCH (n) WHERE n.source = $s RETURN labels(n) AS l, "
                                      "properties(n) AS p", s=source))
     return hashlib.sha1("\n".join(lines).encode()).hexdigest()
+
+
+def file_refs(folder):
+    """(file, owner gml:id, element, href) of every predecessor / successor / relatedTo
+    reference in the files of `folder`."""
+    from lxml import etree
+    gid, href = "{http://www.opengis.net/gml/3.2}id", "{http://www.w3.org/1999/xlink}href"
+    out = set()
+    for f in sorted(Path(folder).glob("*.gml")):
+        for el in etree.parse(str(f)).iter():
+            if not isinstance(el.tag, str) or el.get(href) is None:
+                continue
+            ln = etree.QName(el).localname
+            if ln in ("predecessor", "successor", "relatedTo"):
+                owner = next((a.get(gid) for a in el.iterancestors() if a.get(gid)), None)
+                out.add((f.name, owner, ln, el.get(href)))
+    return out
+
+
+def repeated_targets(folder):
+    """How many appearance targets the files of `folder` list twice for one surface data."""
+    from lxml import etree
+    n = 0
+    for f in sorted(Path(folder).glob("*.gml")):
+        for el in etree.parse(str(f)).iter():
+            if isinstance(el.tag, str) and etree.QName(el).localname in (
+                    "X3DMaterial", "ParameterizedTexture", "GeoreferencedTexture"):
+                tg = [(t.get("uri") or t.text or "").strip() for t in el.iter()
+                      if isinstance(t.tag, str) and etree.QName(t).localname == "target"]
+                n += len(tg) - len(set(tg))
+    return n
 
 
 def wipe(sess):
@@ -350,6 +421,40 @@ def main():
             and pend == 0 and t1 == t2 and tval3 == ("VALID", 0) and tval2 == ("VALID", 0),
             "merged": merged, "pending": pend, "reingest_identical": t1 == t2,
             "v3": tval3, "v2": tval2}
+        # T14 export by source file and re-ingest
+        wipe(s)
+        for t_ in ("tile_b.gml", "tile_a.gml"):
+            ingest(FIX / t_, "--dataset-name", "tiles14", "--rtree-layer", "transport")
+        before14 = digest_features(s)
+        out14 = out / "t14"
+        run([PY, "export_citygml.py", "--dataset", "tiles14", "--version", "3", "--each-source-file",
+             "--workers", "2", "--out", str(out14), *conn], log)
+        files14 = sorted(p_.name for p_ in out14.glob("*.gml"))
+        vals14 = [validate(out14 / f, 3, log) for f in files14]
+        wipe(s)
+        for t_ in ("tile_b.gml", "tile_a.gml"):
+            ingest(out14 / t_, "--dataset-name", "tiles14", "--rtree-layer", "transport")
+        after14 = digest_features(s)
+        # an older graph: references resolved inside one file stored no href, and a
+        # material declared by several tiles holds its targets at more than one position
+        # (TARGETS edges are merged on `order`); the files rebuilt from it carry the same
+        # references, each target once
+        s.run("MATCH ()-[r:PREDECESSOR|SUCCESSOR|RELATED_TO]->() REMOVE r.href").consume()
+        s.run("MATCH (m:X3DMaterial)-[r:TARGETS]->(p) WITH m, p, max(r.order) AS o "
+              "CREATE (m)-[:TARGETS {order: o + 100}]->(p)").consume()
+        old14 = out / "t14_old_graph"
+        run([PY, "export_citygml.py", "--dataset", "tiles14", "--version", "3", "--each-source-file",
+             "--workers", "2", "--out", str(old14), *conn], log)
+        refs14, refs_old = file_refs(out14), file_refs(old14)
+        rep_old = repeated_targets(old14)
+        results["T14_export_by_source_file"] = {
+            "ok": files14 == ["tile_a.gml", "tile_b.gml"] and before14 == after14
+            and all(v == ("VALID", 0) for v in vals14) and refs14 == refs_old and rep_old == 0,
+            "files": files14, "same_graph": before14 == after14, "lines": [before14[1], after14[1]],
+            "xsd": vals14, "references": len(refs14),
+            "old_graph_references_missing": sorted(refs14 - refs_old)[:5],
+            "old_graph_references_extra": sorted(refs_old - refs14)[:5],
+            "old_graph_repeated_targets": rep_old}
         # T12 source scope of gml:ids
         wipe(s)
         ingest(FIX / "tile_a.gml", "--dataset-name", "scope_one", "--rtree-layer", "transport")

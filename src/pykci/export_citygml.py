@@ -2013,6 +2013,56 @@ def _bbox_to_wkt(bbox: str) -> str:
             f"{minx} {maxy}, {minx} {miny}))")
 
 
+def _export_source_file(uri, user, password, ds, target, source_file, out, opts, batch):
+    """One file of a Dataset rebuilt from the graph (strict writer); its loss report next to
+    it. Runs in a worker process for --each-source-file."""
+    from pykci.citygml_writer import export_document
+    out = Path(out)
+    drv = connect(uri, user, password, **NO_SCHEMA_NOTICES)
+    try:
+        with drv.session(database="neo4j") as sess:
+            counts, loss = export_document(sess, ds, target, out, dict(opts), batch=batch,
+                                           clip_source=source_file)
+    finally:
+        drv.close()
+    out.with_suffix(".loss.json").write_text(json.dumps(
+        {"dataset": ds.get("id"), "source_file": source_file, "target_version": target,
+         "writer": "strict", "written": counts, "loss": loss}, indent=2, ensure_ascii=False),
+        encoding="utf-8")
+    return {"file": source_file, "kb": out.stat().st_size // 1024,
+            "features": sum(v for k, v in counts.items() if k != "appearanceMember"),
+            "loss": loss["total"], "by_category": loss["by_category"]}
+
+
+def _export_source_files(args, ds, target, files, out_dir, opts):
+    """--each-source-file: every file of the Dataset, in parallel worker processes."""
+    from collections import Counter
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+    out_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Dataset {ds.get('id')}: {len(files)} source files → {out_dir} "
+          f"(CityGML {target}, {args.workers} workers)")
+    losses, done, failed = Counter(), 0, []
+    with ProcessPoolExecutor(max_workers=max(1, args.workers)) as pool:
+        futs = {pool.submit(_export_source_file, args.uri, args.user, args.password, ds, target,
+                            f, str(out_dir / Path(f).name), opts, args.batch): f for f in files}
+        for fut in as_completed(futs):
+            f = futs[fut]
+            try:
+                s = fut.result()
+                losses.update(s["by_category"])
+                done += 1
+                print(f"  [{done}/{len(files)}] {f}: {s['features']} features, {s['kb']:,} KB, "
+                      f"loss {s['loss']}", flush=True)
+            except Exception as exc:
+                failed.append(f)
+                print(f"  ERROR {f}: {exc}", flush=True)
+    print(f"Done: {done} files, {len(failed)} failed; losses over all files:")
+    for k, v in sorted(losses.items(), key=lambda kv: -kv[1]):
+        print(f"    {v:>7}  {k}")
+    if failed:
+        sys.exit(1)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description="Export a pykci Dataset from Neo4j as CityGML 2.0 (default) or 3.0. "
@@ -2034,6 +2084,16 @@ def main(argv=None):
                          "export exactly these features")
     ap.add_argument("--ids-file", default=None,
                     help="File with feature ids: .json list, or one per line / first CSV column")
+    ap.add_argument("--source-file", default=None,
+                    help="rebuild one file the Dataset was ingested from (e.g. a tile of a tiled "
+                         "Dataset): its top-level features and, below transportation features, "
+                         "only the sub-features and areas from it; references into other files "
+                         "keep their original href (strict writer)")
+    ap.add_argument("--each-source-file", action="store_true",
+                    help="rebuild every file of the Dataset into the directory --out, one "
+                         "document per file under its original name (strict writer)")
+    ap.add_argument("--workers", type=int, default=1,
+                    help="parallel export processes for --each-source-file")
     ap.add_argument("--clip", default=None, action=argparse.BooleanOptionalAction,
                     help="with --bbox (default on): write only the transportation sub-features "
                          "(Sections, Intersections, spaces, areas, markings, …) whose bbox "
@@ -2092,6 +2152,30 @@ def main(argv=None):
         raise SystemExit(f"ERROR: Dataset {ds.get('id')} was ingested with --id-prefix "
                          f"'{ds['id_prefix']}', which only the strict writer strips; use "
                          "--writer strict, or --keep-id-prefix to write the prefixed ids.")
+    if args.source_file or args.each_source_file:
+        if sel_ids or bbox_wkt:
+            raise SystemExit("ERROR: --source-file / --each-source-file select the features "
+                             "themselves; leave out --ids, --ids-file and --bbox.")
+        if writer == "legacy":
+            raise SystemExit("ERROR: export by source file needs the strict writer.")
+        opts = {"v2_subfeatures": args.v2_subfeatures, "keep_id_prefix": args.keep_id_prefix}
+        if args.each_source_file:
+            if not args.out:
+                raise SystemExit("ERROR: --each-source-file needs --out <directory>.")
+            with drv.session(database="neo4j") as sess:
+                from pykci.citygml_writer import source_files
+                files = source_files(sess, ds["id"])
+            drv.close()
+            _export_source_files(args, ds, target, files, Path(args.out), opts)
+            return
+        out = Path(args.out) if args.out else Path("output/citygml") / Path(args.source_file).name
+        drv.close()
+        print(f"Dataset {ds.get('id')}: {args.source_file} → CityGML {target} → {out}")
+        summary = _export_source_file(args.uri, args.user, args.password, ds, target,
+                                      args.source_file, str(out), opts, args.batch)
+        print(f"Written: {out} ({summary['kb']:,} KB): {summary['features']} features, "
+              f"loss report {summary['loss']} items ({out.with_suffix('.loss.json')})")
+        return
     stem = Path(ds.get("source") or ds.get("name") or "dataset").stem
     sel = "_selection" if (sel_ids or bbox_wkt) else ""
     out = Path(args.out) if args.out else \
