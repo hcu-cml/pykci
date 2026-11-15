@@ -1,6 +1,7 @@
 """The tools that work on CityGML files without a database: building footprints
 (pykci.extract_citygml_building_footprints), the CityGML 1.0 → 2.0 upgrade
-(pykci.upgrade_citygml_10_to_20) and the offline XSD validation (pykci.validate_citygml).
+(pykci.upgrade_citygml_10_to_20, and the ingest refusing a 1.0 file) and the offline XSD
+validation (pykci.validate_citygml).
 Each is run as the command a user runs."""
 
 import json
@@ -62,6 +63,19 @@ def test_upgrade_rewrites_only_the_namespace_version(fzk_lod2, tmp_path):
     assert upgraded == v2                                   # nothing else changed
     assert (out / "current.gml").read_bytes() == v2         # a 2.0 file is copied as it is
     assert (source / "old.gml").read_bytes() == v1          # the original is never modified
+
+
+def test_ingest_refuses_citygml_1_0_and_names_the_upgrade(fzk_lod2, tmp_path):
+    """Read by neither codec, a 1.0 file would be ingested as empty with exit status 0 (all 783
+    tiles of LGV's LoD2-DE 2026). It is refused before the database is asked anything: the
+    closed port below is never reached."""
+    v1 = fzk_lod2.read_bytes().replace(b"opengis.net/citygml/2.0", b"opengis.net/citygml/1.0").replace(
+        b"opengis.net/citygml/building/2.0", b"opengis.net/citygml/building/1.0")
+    (tmp_path / "old.gml").write_bytes(v1)
+    result = _module("pykci.ingest_citygml", tmp_path / "old.gml", "--uri", "bolt://127.0.0.1:9", cwd=tmp_path)
+    assert result.returncode == 1
+    assert "1 file(s) are CityGML 1.0, which the ingest does not read (old.gml)" in result.stderr
+    assert "pykci upgrade-citygml" in result.stderr and "Connecting" not in result.stdout
 
 
 # ---- XSD validation -------------------------------------------------------------------------
