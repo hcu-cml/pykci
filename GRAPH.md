@@ -138,7 +138,7 @@ CityGML files require special handling to preserve all geometric and spatial inf
 - LOD level — detected by scanning which `bldg:lod*` elements are present; check both `*Solid` and `*MultiSurface` variants per LOD.
 - Building function / roof type codes — resolved at runtime using the ALKIS reference tables below.
 - `gen:stringAttribute` values — iterate and store **all** of them; never select by name. Property keys are derived with a **Unicode-aware** slug (`_attr_key`), not the ASCII-only `_slug`, so non-Latin attribute names (e.g. the Japanese names in Tokyo PLATEAU such as `地区計画`, `延べ面積換算係数`) are preserved as **distinct, queryable keys** (address them with backticks in Cypher) instead of all collapsing to `____`. The original verbatim name is also kept in `_gen_attrs_map` for lossless export. For pure-ASCII names `_attr_key` matches the old `_slug` output, so existing datasets are unchanged.
-- District / city — derived from `Gemeindeschluessel` gen:stringAttribute (prefix-matched against known keys) or from the filename stem as fallback.
+- District / city — derived from `Gemeindeschluessel` gen:stringAttribute (prefix-matched against known keys: 8 digits, then 5, then the 2-digit Land for a city-state such as Hamburg) or from the filename stem as fallback.
 - `format` version — read from the `xmlns` namespace URI of the root `CityModel` element.
 - **Codec selection** — the same namespace decides the codec: a CityGML 3.0 root
   (`http://www.opengis.net/citygml/3.0`) is read by the 3.0 codec, everything else by the
@@ -1687,6 +1687,7 @@ Common Hamburg keys:
 
 | Key | District / Stadtteil |
 |-----|----------------------|
+| `02000000` | Hamburg (the municipality key; the only key in LGV's LoD2-DE of 2026) |
 | `02100` | Hamburg (city-state) |
 | `02100104` | Hamburg-Mitte / HafenCity |
 | `02100401` | Hamburg-Nord |
@@ -1695,3 +1696,7 @@ Common Hamburg keys:
 | `02100901` | Wandsbek |
 | `02101001` | Bergedorf |
 | `02101101` | Harburg |
+
+What the ingest makes of them (`GEMEINDE_MAP` in `ingest_citygml.py`): `02100104` gives the
+District HafenCity, every other key of Land `02` the District and City Hamburg (one city-state),
+whether a release carries district keys (LoD2-DE 2025) or only the municipality key (2026).

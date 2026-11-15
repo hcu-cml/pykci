@@ -220,6 +220,8 @@ python ingest_citygml.py path/to/file.gml
 
 Parses a CityGML 2.0 file and writes all supported modules into Neo4j. The script is **idempotent** - re-running merges into existing nodes via `MERGE … SET` without creating duplicates. Works for any CityGML dataset; CRS, codes, LOD level, and attribute names are all read from the file at runtime.
 
+**Input:** a CityGML 2.0 or 3.0 file, or a folder of tiles that become one Dataset (`--dataset-name`). CityGML 1.0 is refused before anything is written, with the files named; convert them first with `pykci upgrade-citygml <files or folder> --out <folder>` (some official releases are still 1.0, e.g. Hamburg's LoD2-DE of 2026). The `District` and `City` come from the `Gemeindeschluessel` (see [GRAPH.md](GRAPH.md)), else from the file name.
+
 **Supported CityGML modules:** Building, Transportation (Road, Railway, Track, Square), Vegetation (SolitaryVegetationObject, PlantCover), WaterBody, LandUse, CityFurniture, Relief, Bridge, Tunnel, CityObjectGroup.
 
 **After writing feature nodes the script also:**
