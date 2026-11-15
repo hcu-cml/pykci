@@ -77,7 +77,8 @@ intact (audit trail, re-processing, provenance). The repaired copy is written ne
 
 ### Proof, not promise
 After writing the fixed file the script **re-validates it against the real XSDs** and records the
-verdict in the summary (`xsd_validation_after_fix`). On the example: 35 issues found → all fixed →
+verdict in the summary (`xsd_validation_after_fix`). On the example: 35 issues found (counted
+before a boundary surface with the wrong LoD tag was an issue of its own; the count is higher now) → all fixed →
 **`valid: true, errors: 0`**, with coordinate/opening/hole counts identical to the source (no data
 lost). Validation is best-effort: if the schema dir or network is unavailable it is reported as
 skipped, never fatal.
@@ -117,7 +118,11 @@ model (queryable, exportable, renderable by the existing tools):
 ```
 
 - `gml:posList` coordinates are stored **verbatim** on `GeometryRing.pos_list` (the lossless
-  round-trip invariant).
+  round-trip invariant); a ring of `gml:pos` elements is stored as their values joined.
+- The polygons of a multi-surface are read where they stand directly in it and inside a
+  `gml:CompositeSurface` (the FZK-Haus LoD3 model writes its walls so). Any other member (a
+  reference, an `OrientableSurface`) and a ring without positions are not read; the command
+  says so and counts them in `skipped_elements` of the summary.
 - Every created node carries the shared `Entity` label (except `GeometryRing`, which is never a
   generic edge endpoint) so the index-backed `MATCH (:Entity {id})` lookups resolve — exactly as in
   the core ingester.

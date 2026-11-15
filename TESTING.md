@@ -98,12 +98,5 @@ Tiles in the same way.
 
 ## Known defects the suite records
 
-Marked `xfail(strict=True)`, so the run fails when one is fixed and its entry can go:
-
-- OpenStreetMap fusion (`test_osm_fusion.py`): tags that GDAL's default `osmconf.ini` ignores
-  (`source`, `ele`, `note`, …) never reach the graph, although OSM_INTEGRATION.md says no tag is
-  dropped; a furniture point without a CityFurniture target gets the reason `no_overlap` instead
-  of the documented `no_pykci_type`; the documented `HAS_OSM_MEMBER` relationship is never written.
-- LoD3 facades (`test_lod3_facades.py`): a file whose only defect is the LoD tag gets no
-  repaired copy; rings written as `gml:pos` and polygons inside a `gml:CompositeSurface` are
-  skipped without a message.
+Marked `xfail(strict=True)`, so the run fails when one is fixed and its entry can go. None
+at the moment: a defect found by a new test is recorded here with the test that shows it.

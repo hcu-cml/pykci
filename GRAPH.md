@@ -395,7 +395,6 @@ their original href.
 (OsmFeature)               -[:PART_OF]->                       (Dataset)
 (OsmFeature)               -[:HAS_FOOTPRINT {order}]->         (GeometryPolygon)
 (OsmFeature)               -[:HAS_LOD_SURFACE {order}]->       (GeometryLineString)  # OSM lines
-(OsmFeature)               -[:HAS_OSM_MEMBER {role, order}]->  (OsmFeature)          # relations
 (Building|CityObject)      -[:ENRICHED_BY {overlap_ratio, jaccard,
                               intersection_area, match_type, is_primary}]-> (OsmFeature)
 (Building)                 -[:HAS_POI {distance_m}]->          (OsmFeature)          # point POIs

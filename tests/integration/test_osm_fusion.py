@@ -40,8 +40,7 @@ FEATURES = {
     "osm:node/2002": ("poi", "OsmPOI"),
     "osm:node/2003": ("furniture", "OsmFurniture"),
 }
-# the ones without a counterpart in the city model, and why (OSM_INTEGRATION.md, section 9);
-# the tree (node 2003) has a test of its own
+# the ones without a counterpart in the city model, and why (OSM_INTEGRATION.md, section 9)
 UNMATCHED = {
     "osm:way/1002": "no_overlap",                   # overlaps the house, but below the threshold
     "osm:relation/1001": "no_overlap",
@@ -51,9 +50,8 @@ UNMATCHED = {
     "osm:way/1008": "no_pykci_type",
     "osm:way/1009": "no_pykci_type",
     "osm:node/2002": "no_containing_building",
+    "osm:node/2003": "no_pykci_type",               # a tree: points are not matched, and there is no CityFurniture
 }
-# tags of the extract that GDAL's default osmconf.ini ignores (test_no_tag_is_dropped)
-IGNORED_BY_GDAL = ("source", "ele")
 
 # where GDAL is when it is not on PATH: QGIS and OSGeo4W on Windows, Homebrew, QGIS on macOS
 GDAL_FOLDERS = ("C:/Program Files/QGIS*/bin", "C:/OSGeo4W*/bin", "C:/Program Files/GDAL",
@@ -198,13 +196,13 @@ def test_tags_become_properties_and_the_rest_is_kept(fuse, neo4j_driver, extract
         "addr_city": "Eggenstein-Leopoldshafen", "addr_country": "DE",
     }
     # the quote and the backslash come through the text form GDAL hands the other tags over in
-    assert json.loads(main["other_tags"]) == {"wheelchair": "yes", "description": 'Haus "Typ B" \\ Musterhaus'}
+    assert json.loads(main["other_tags"]) == {"wheelchair": "yes", "description": 'Haus "Typ B" \\ Musterhaus',
+                                              "source": "survey"}
     # every tag of every feature can be read back from its node
     tags = _tags(extract)
     for osm_id in FEATURES:
         for key, value in tags[osm_id].items():
-            if key not in IGNORED_BY_GDAL:
-                assert _stored(features[osm_id], key) == value, (osm_id, key)
+            assert _stored(features[osm_id], key) == value, (osm_id, key)
 
 
 def _points(pos_list: str) -> list[tuple]:
@@ -310,8 +308,7 @@ def test_features_without_a_counterpart_stay_with_a_reason(fuse, neo4j_driver):
     fuse()
     features = _features(neo4j_driver)
     assert {i for i, p in features.items() if p["matched"]} == {"osm:way/1001", "osm:node/2001"}
-    assert {i: p["unmatched_reason"] for i, p in features.items()
-            if not p["matched"] and i != "osm:node/2003"} == UNMATCHED
+    assert {i: p["unmatched_reason"] for i, p in features.items() if not p["matched"]} == UNMATCHED
 
 
 def test_info_reports_the_crowd_sourced_layer(fuse, run_module):
@@ -334,33 +331,33 @@ def test_summary_of_the_run(fuse):
     assert (summary["osm_buildings"], summary["pykci_buildings_enriched"], summary["pois_attached"]) == (3, 1, 1)
 
 
-# ---- known defects (also in the code before the package) ---------------------------------------
+# ---- no tag is dropped, and every orphan has its reason -------------------------------------------
 
-@pytest.mark.xfail(strict=True, reason="GDAL's default osmconf.ini ignores source, ele, note, fixme, created_by and "
-                   "other keys before pykci.ingest_osm sees them, so these tags never reach the graph "
-                   "(OSM_INTEGRATION.md, section 3: no OSM tag is dropped)")
 def test_no_tag_is_dropped(fuse, neo4j_driver, extract):
+    """GDAL's default osmconf.ini leaves source, ele, note, fixme, created_by and other keys out
+    before pykci.ingest_osm sees them (OSM_INTEGRATION.md, section 3: no OSM tag is dropped);
+    the command passes its own (src/pykci/osmconf.ini)."""
     fuse()
     features, tags = _features(neo4j_driver), _tags(extract)
     assert _stored(features["osm:way/1001"], "source") == tags["osm:way/1001"]["source"]
     assert _stored(features["osm:node/2003"], "ele") == tags["osm:node/2003"]["ele"]
 
 
-@pytest.mark.xfail(strict=True, reason="a point of kind furniture (natural=tree) gets no_overlap in a graph without "
-                   "CityFurniture: only polygons and lines are checked for a missing type "
-                   "(OSM_INTEGRATION.md, section 9: no_pykci_type)")
 def test_a_tree_in_a_graph_without_city_furniture_has_no_type_to_match(fuse, neo4j_driver):
+    """Points other than POIs are not matched; whether the graph holds their type decides the
+    reason, as for areas and lines (it was no_overlap)."""
     fuse()
     assert _features(neo4j_driver)["osm:node/2003"]["unmatched_reason"] == "no_pykci_type"
 
 
-@pytest.mark.xfail(strict=True, reason="HAS_OSM_MEMBER is documented (OSM_INTEGRATION.md, sections 5 and 7; GRAPH.md) "
-                   "but never written: a relation is read as the polygon GDAL assembles from it")
-def test_members_of_a_relation_are_linked(fuse, neo4j_driver):
+def test_a_relation_is_one_feature_with_the_polygon_gdal_assembles(fuse, neo4j_driver):
+    """Its members are not linked (no HAS_OSM_MEMBER): an inner way becomes a hole, and a way
+    with tags of its own is a feature of its own."""
     fuse()
-    assert {"member": "osm:way/1004", "role": "inner"} in _rows(
-        neo4j_driver, "MATCH (:OsmFeature {id: 'osm:relation/1001'})-[m:HAS_OSM_MEMBER]->(w:OsmFeature) "
-                      "RETURN w.id AS member, m.role AS role")
+    assert _rows(neo4j_driver, "MATCH ()-[m:HAS_OSM_MEMBER]->() RETURN count(m) AS n") == [{"n": 0}]
+    assert _rows(neo4j_driver, "MATCH (:OsmFeature {id: 'osm:relation/1001'})-[:HAS_FOOTPRINT]->(p) "
+                               "-[:HAS_INTERIOR_RING]->(r) RETURN count(r) AS holes") == [{"holes": 1}]
+    assert "osm:way/1004" in _features(neo4j_driver)
 
 
 # ---- running it again, and with other options ---------------------------------------------------

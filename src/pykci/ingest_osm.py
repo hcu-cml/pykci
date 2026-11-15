@@ -305,11 +305,16 @@ LAYER_WHERE = {
 }
 
 
+# GDAL's default OSM configuration without its "ignore" lists: no tag is dropped (OSM_INTEGRATION.md, 3)
+OSM_CONFIG = Path(__file__).with_name("osmconf.ini")
+
+
 def extract_layer(pbf, layer, out_path, t_srs, spat):
     """Run ogr2ogr: clip (-spat, WGS84) + reproject (-t_srs) one layer → GeoJSON."""
     minx, miny, maxx, maxy = spat
     cmd = [
         "ogr2ogr", "-f", "GeoJSON", str(out_path), str(pbf), layer,
+        "-oo", f"CONFIG_FILE={OSM_CONFIG}",
         "-t_srs", t_srs,
         "-spat", str(minx), str(miny), str(maxx), str(maxy),
         "-skipfailures",
@@ -888,6 +893,7 @@ def main():
         area_geoms = defaultdict(dict)     # target_label/feature_type key -> {osm_id: geom}
         osm_props_by_id = {}               # osm node id -> its node prop dict
         point_pois = []                    # (osm node id, shapely Point)
+        point_targets = set()              # target keys of the other points (not matched)
         kind_counts = defaultdict(int)
 
         for layer, feat in all_features:
@@ -923,6 +929,8 @@ def main():
             elif geom.geom_type == "Point":
                 if kind == KIND_POI:
                     point_pois.append((node["id"], geom))
+                elif target_label:
+                    point_targets.add((target_label, target_ft))
 
             osm_props_by_id[node["id"]] = node
             nodes.append(node)
@@ -977,6 +985,12 @@ def main():
             print(f"    {target_label}/{target_ft}: {len(edges)} edges, "
                   f"{len(comps)} components, {len(scalar)} pykci features enriched "
                   f"({time.perf_counter()-t0:.0f}s)")
+
+        # points other than POIs are not matched: whether the graph holds their pykci type in
+        # the area at all decides between no_pykci_type and no_overlap, as for areas and lines
+        for key in point_targets - set(area_geoms):
+            if not fetch_pykci_footprints(driver, key[1] or key[0], match_bbox):
+                empty_targets.add(key)
 
         # ── POIs: point-in-footprint (vectorized bulk containment) ────────────
         pois_attached = 0
