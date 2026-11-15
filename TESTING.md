@@ -100,14 +100,10 @@ Tiles in the same way.
 
 Marked `xfail(strict=True)`, so the run fails when one is fixed and its entry can go:
 
-- A second ingest of a CityGML 2.0 file whose polygons have no `gml:id` (the FZK-Haus LoD0 and
-  LoD1 models) writes their `GeometryPolygon` and `GeometryRing` nodes again
-  (`test_graph_snapshots.py::test_second_ingest_changes_nothing`).
 - OpenStreetMap fusion (`test_osm_fusion.py`): tags that GDAL's default `osmconf.ini` ignores
   (`source`, `ele`, `note`, …) never reach the graph, although OSM_INTEGRATION.md says no tag is
   dropped; a furniture point without a CityFurniture target gets the reason `no_overlap` instead
   of the documented `no_pykci_type`; the documented `HAS_OSM_MEMBER` relationship is never written.
 - LoD3 facades (`test_lod3_facades.py`): a file whose only defect is the LoD tag gets no
   repaired copy; rings written as `gml:pos` and polygons inside a `gml:CompositeSurface` are
-  skipped without a message; node ids of geometry without `gml:id` differ from run to run and
-  can collide.
+  skipped without a message.

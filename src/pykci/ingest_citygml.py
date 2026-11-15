@@ -77,7 +77,6 @@ import re
 import sys
 import threading
 import time
-import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -86,7 +85,7 @@ from neo4j.exceptions import TransientError
 
 from pykci.runtime import NO_SCHEMA_NOTICES, add_connection_arguments, connect, console, progress
 from pykci.crs import Reprojector, epsg_from_srs, peek_srsname
-from pykci.graphdb import (backfill_bbox_from_geometry, create_indexes, create_point_index,
+from pykci.graphdb import (backfill_bbox_from_geometry, create_indexes, create_point_index, element_id,
                            ensure_spatial_layer, slug as _slug)
 
 # ---------------------------------------------------------------------------
@@ -1414,7 +1413,7 @@ def _ring_coords(ring_el):
 
 def _collect_polygon(poly_el, source, batch):
     """Collect GeometryPolygon + GeometryRing data into batch. Returns poly_id."""
-    poly_id = poly_el.get(GML_ID) or f"poly_{uuid.uuid4().hex[:16]}"
+    poly_id = poly_el.get(GML_ID) or element_id(poly_el, "poly", (GML_ID,))
     batch["polygons"].append({"id": poly_id, "source": source})
 
     ring_el = poly_el.find("gml:exterior/gml:LinearRing", NS)
@@ -2370,7 +2369,7 @@ def _collect_relief_geometry(el, feature_id, source, batch):
 
     for comp_wrapper in el.findall("dem:reliefComponent", NS):
         for comp_el in comp_wrapper:
-            comp_id = comp_el.get(GML_ID) or f"rc_{feature_id}_{uuid.uuid4().hex[:8]}"
+            comp_id = comp_el.get(GML_ID) or element_id(comp_el, "rc", (GML_ID,))
 
             # TINRelief — preserve the full TIN structure so it re-exports as
             # dem:TINRelief/dem:tin/gml:TriangulatedSurface/gml:trianglePatches/

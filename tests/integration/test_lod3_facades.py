@@ -385,9 +385,6 @@ def test_other_valid_ways_to_write_the_geometry_are_read(rewrite, copy, fixture_
     assert "Facade inventory: 2 building(s), 3 boundary surfaces, 2 openings, 7 rings." in out
 
 
-@pytest.mark.xfail(strict=True, reason="a polygon, ring or multi-surface without gml:id gets a node id made of the "
-                   "memory address of a temporary object (id()): it differs from run to run and two elements "
-                   "of one run can get the same one, which merges them into one node")
 def test_geometry_without_gml_id_gets_the_same_node_id_in_every_run(fixture_text):
     """No database: the ids are read off the rows the command would write. The elements of
     both readings are kept alive, so that an equal id cannot come from a reused address."""
