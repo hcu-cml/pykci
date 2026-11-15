@@ -300,6 +300,13 @@ def validate_xsd(gml_path, xsd_dir):
         def resolve(self, url, pubid, context):
             if "xAL.xsd" in url and "oasis" in url:      # OASIS xAL stub lacks AddressDetails
                 return self.resolve_filename(str(local_xal), context)
+            if url.startswith(("http://", "https://")):
+                # libxml2 2.14 and later has no HTTP client of its own: without this the
+                # remote imports (GML 3.1.1, xlink) are skipped and every file is "invalid"
+                import urllib.request
+                req = urllib.request.Request(url, headers={"User-Agent": "pykci-schema-fetch"})
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    return self.resolve_string(resp.read(), context, base_url=resp.geturl())
             return None
 
     try:
