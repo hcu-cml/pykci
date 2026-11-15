@@ -1,0 +1,70 @@
+# The test suite on every push and pull request (TESTING.md). A change is mergeable when this
+# passes: unit and contract tests, and the integration tests on a throwaway Neo4j.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      PYKCI_TEST_NEO4J_URI: bolt://localhost:17687
+      PYKCI_TEST_NEO4J_PASSWORD: pykci-test-only
+      PYKCI_TEST_REQUIRE_NEO4J: "1"     # a missing database fails the run instead of skipping
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install pykci and GDAL (ogr2ogr, for the OSM tests)
+        run: |
+          sudo apt-get update && sudo apt-get install -y --no-install-recommends gdal-bin
+          pip install -e ".[test]"
+
+      - name: Start the test database (Neo4j with APOC and Neo4j Spatial)
+        run: |
+          docker create --name pykci-test-neo4j -p 127.0.0.1:17687:7687 \
+            -e NEO4J_AUTH=neo4j/pykci-test-only \
+            -e "NEO4J_dbms_security_procedures_unrestricted=apoc.*,spatial.*" \
+            -e "NEO4J_dbms_security_procedures_allowlist=apoc.*,spatial.*" neo4j:2025.10.1
+          docker cp docker/plugins/apoc-2025.10.1-core.jar pykci-test-neo4j:/var/lib/neo4j/plugins/
+          docker cp docker/plugins/neo4j-spatial-server-plugin-2025.10.0-with-dependencies.jar \
+            pykci-test-neo4j:/var/lib/neo4j/plugins/
+          docker start pykci-test-neo4j
+          python - <<'EOF'
+          import time
+          from neo4j import GraphDatabase
+          for attempt in range(60):
+              try:
+                  with GraphDatabase.driver("bolt://localhost:17687", auth=("neo4j", "pykci-test-only")) as d:
+                      d.verify_connectivity()
+                  print("Neo4j is up")
+                  break
+              except Exception as exc:
+                  time.sleep(2)
+          else:
+              raise SystemExit(f"Neo4j did not start: {exc}")
+          EOF
+
+      - name: Cache the OGC schema bundle (XSD validation)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pykci/citygml-schemas
+          key: citygml-schemas-v1
+
+      - name: Fetch the OGC schema bundle
+        run: pykci validate-citygml --setup
+
+      - name: Tests
+        run: pytest
+
+      - name: Database log on failure
+        if: failure()
+        run: docker logs --tail 200 pykci-test-neo4j

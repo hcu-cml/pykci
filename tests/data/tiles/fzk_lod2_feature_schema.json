@@ -1,0 +1,405 @@
+{
+ "class": "feature",
+ "properties": [
+  {
+   "count": 1,
+   "derived": false,
+   "id": "bbox_max_x",
+   "name": "bbox_max_x",
+   "provenance": "authoritative",
+   "type": "FLOAT64"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "bbox_max_y",
+   "name": "bbox_max_y",
+   "provenance": "authoritative",
+   "type": "FLOAT64"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "bbox_max_z",
+   "name": "bbox_max_z",
+   "provenance": "authoritative",
+   "type": "FLOAT64"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "bbox_min_x",
+   "name": "bbox_min_x",
+   "provenance": "authoritative",
+   "type": "FLOAT64"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "bbox_min_y",
+   "name": "bbox_min_y",
+   "provenance": "authoritative",
+   "type": "FLOAT64"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "bbox_min_z",
+   "name": "bbox_min_z",
+   "provenance": "authoritative",
+   "type": "FLOAT64"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "center_x",
+   "name": "center_x",
+   "provenance": "authoritative",
+   "type": "FLOAT64"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "center_y",
+   "name": "center_y",
+   "provenance": "authoritative",
+   "type": "FLOAT64"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "citygml_version",
+   "name": "citygml_version",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "class_code",
+   "name": "class_code",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "class_codespace",
+   "name": "class_codespace",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "constructionmethod",
+   "name": "constructionmethod",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "creation_date",
+   "name": "creation_date",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "description",
+   "name": "description",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "function_code",
+   "name": "function_code",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "function_codespace",
+   "name": "function_codespace",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "gml_description",
+   "name": "gml_description",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "gml_name",
+   "name": "gml_name",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "grossplannedarea",
+   "name": "grossplannedarea",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "grossplannedarea_uom",
+   "name": "grossplannedarea_uom",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "ground_z",
+   "name": "ground_z",
+   "provenance": "authoritative",
+   "type": "FLOAT64"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "id",
+   "name": "id",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "islandmarked",
+   "name": "islandmarked",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "measured_height",
+   "name": "measured_height",
+   "provenance": "authoritative",
+   "type": "FLOAT64"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "measured_height_uom",
+   "name": "measured_height_uom",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "name",
+   "name": "name",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "relative_to_terrain",
+   "name": "relative_to_terrain",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "roof_type_code",
+   "name": "roof_type_code",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "roof_type_codespace",
+   "name": "roof_type_codespace",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "source",
+   "name": "source",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "storeys_above_ground",
+   "name": "storeys_above_ground",
+   "provenance": "authoritative",
+   "type": "FLOAT64"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "storeys_below_ground",
+   "name": "storeys_below_ground",
+   "provenance": "authoritative",
+   "type": "FLOAT64"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "usage_code",
+   "name": "usage_code",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "usage_codespace",
+   "name": "usage_codespace",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "count": 1,
+   "derived": false,
+   "id": "year_of_construction",
+   "name": "year_of_construction",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "derived": true,
+   "description": "CityGML feature type (Building, Road, WaterBody, …)",
+   "id": "feature_type",
+   "name": "feature_type",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "derived": true,
+   "description": "District the feature is LOCATED_IN",
+   "id": "district",
+   "name": "district",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "derived": true,
+   "description": "Decoded building function (BuildingFunction)",
+   "id": "function_name",
+   "name": "function_name",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "derived": true,
+   "description": "Decoded roof type (RoofType)",
+   "id": "roof_type_name",
+   "name": "roof_type_name",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "derived": true,
+   "description": "Street of the first bldg:address (xAL)",
+   "id": "address_street",
+   "name": "address_street",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "derived": true,
+   "description": "House number of the first bldg:address",
+   "id": "address_house_number",
+   "name": "address_house_number",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "derived": true,
+   "description": "Postcode of the first bldg:address",
+   "id": "address_postcode",
+   "name": "address_postcode",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "derived": true,
+   "description": "Locality of the first bldg:address",
+   "id": "address_locality",
+   "name": "address_locality",
+   "provenance": "authoritative",
+   "type": "STRING"
+  },
+  {
+   "derived": true,
+   "description": "Number of bldg:address entries",
+   "id": "address_count",
+   "name": "address_count",
+   "provenance": "authoritative",
+   "type": "FLOAT64"
+  },
+  {
+   "derived": true,
+   "description": "bbox_max_z − bbox_min_z of the feature geometry (CRS units)",
+   "id": "geometric_height",
+   "name": "geometric_height",
+   "provenance": "derived",
+   "type": "FLOAT64"
+  },
+  {
+   "derived": true,
+   "description": "Area of the ground footprint (CRS units²)",
+   "id": "footprint_area",
+   "name": "footprint_area",
+   "provenance": "derived",
+   "type": "FLOAT64"
+  },
+  {
+   "derived": true,
+   "description": "LoD of the geometry drawn in the tile (3: the reconstructed LoD3 facade, see lod3_*)",
+   "id": "geometry_lod",
+   "name": "geometry_lod",
+   "provenance": "derived",
+   "type": "FLOAT64"
+  },
+  {
+   "derived": true,
+   "description": "WGS84 longitude of the feature centre",
+   "id": "longitude",
+   "name": "longitude",
+   "provenance": "derived",
+   "type": "FLOAT64"
+  },
+  {
+   "derived": true,
+   "description": "WGS84 latitude of the feature centre",
+   "id": "latitude",
+   "name": "latitude",
+   "provenance": "derived",
+   "type": "FLOAT64"
+  }
+ ],
+ "provenance_layers": {
+  "authoritative": "Authoritative city model (CityGML / cadastral)",
+  "crowd_sourced": "Crowd-sourced (OpenStreetMap)",
+  "derived": "Derived: computed from other data (by an exporter or a pipeline step)",
+  "ml_predicted": "Machine-learning prediction",
+  "reconstructed": "Reconstructed geometry (LoD3)",
+  "sensed": "Sensed live (sensors, live feeds)"
+ }
+}
