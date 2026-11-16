@@ -12,7 +12,7 @@
 <p align="center">
   <img alt="Python 3" src="https://img.shields.io/badge/Python-3-0A2A5E?logo=python&logoColor=white">
   <img alt="Neo4j" src="https://img.shields.io/badge/Neo4j-graph%20store-0A2A5E?logo=neo4j&logoColor=white">
-  <img alt="CityGML 2.0" src="https://img.shields.io/badge/CityGML-2.0%20·%20LoD0–4-9FD89F?labelColor=0A2A5E">
+  <img alt="CityGML 2.0 and 3.0" src="https://img.shields.io/badge/CityGML-2.0%20·%203.0%20·%20LoD0–4-9FD89F?labelColor=0A2A5E">
   <img alt="3D Tiles" src="https://img.shields.io/badge/OGC-3D%20Tiles%201.1-9FD89F?labelColor=0A2A5E">
   <img alt="LLM" src="https://img.shields.io/badge/LLM-Ollama%20·%20Claude-9FD89F?labelColor=0A2A5E">
   <img alt="Round-trip" src="https://img.shields.io/badge/round--trip-lossless-9FD89F?labelColor=0A2A5E">
@@ -58,12 +58,14 @@ pykci is described in the paper [*pykci: A Compact Urban Knowledge Graph for Sem
 | | |
 | --- | --- |
 | 🏙️ **CityGML 2.0 coverage** | The 10 thematic modules with geometry (Building, Transportation, Vegetation, WaterBody, LandUse, CityFurniture, Relief, Bridge, Tunnel, CityObjectGroup), LoD 0–4, implicit geometry. |
+| 🧭 **CityGML 3.0** | Read and written around the same graph model: a 3.0 dataset (for example the transportation spaces of streets and intersections) goes into the graph next to a 2.0 city model and comes back out as valid 3.0, or as 2.0 with a loss report ([CITYGML3.md](CITYGML3.md)). CityGML 1.0 is upgraded to 2.0 first (`pykci upgrade-citygml`). |
 | 🔁 **Lossless round-trip** | Ingest → graph → export. A census gate checks that elements, attributes, text nodes, and coordinate tokens are reproduced; verified across LoD0–4 and all modules (the Appearance module is excluded by design). |
 | 🗣️ **Natural-language queries** | Model-agnostic LangChain layer: run a **local LLM** (Ollama) to keep data on-premise, or use **Claude** for harder spatial/semantic queries. |
 | 🌐 **3D in the browser** | Exports OGC **3D Tiles 1.1**, including window/door openings cut as holes in walls, viewable in CesiumJS. |
 | 🕸️ **Graph viewers** | Self-contained HTML: a 2D force-directed graph and a combined 3D-Tiles-plus-graph view, both with light/dark mode. |
 | 📍 **Spatial features** | Neo4j Spatial R-tree index, `NEARBY_BUILDING` proximity edges, and GDS Louvain community detection. |
 | 🗺️ **OpenStreetMap enrichment** | Optional non-destructive enrichment from `.osm.pbf`: building use, names, addresses, heights, roof shapes, POIs, land use, water, vegetation and the street network, matched to pykci features across 1:1/1:n/n:1/n:m footprints with full provenance ([OSM_INTEGRATION.md](OSM_INTEGRATION.md)). |
+| 🧩 **More sources, kept apart** | ML roof-material predictions ([ROOF_MATERIAL_INGESTION.md](ROOF_MATERIAL_INGESTION.md)) and reconstructed LoD3 facades with windows and doors ([LOD3_FACADE_INTEGRATION.md](LOD3_FACADE_INTEGRATION.md)) join the graph as layers of their own; every value says where it comes from, and none overwrites an authoritative one. |
 | 📊 **Benchmarked** | Holds all of Hamburg (6.93 GB CityGML, 388,267 buildings) in a graph **~6× smaller** than 3DCityKG's (15.2 M vs 89.5 M nodes). On a suite of 20 natural-language questions, every answerable question was answered correctly, with each query running **~2× to ~16× faster** than on 3DCityDB v5 (net of client startup, ~7× faster on average) with the **shortest query text length** (~290 vs ~970 chars compared to 3DCityDB v5) and the **fewest schema-discovery queries** (~2 vs ~7 consecutive queries for 3DCityKG). See [Benchmarks](#benchmarks). |
 
 ---
@@ -94,7 +96,8 @@ output/citygml  output/3dtiles  output/html    output/html        (NL → Cypher
 | | |
 | --- | --- |
 | **Graph store** | Local Neo4j (`bolt://localhost:7687`) with APOC, Spatial, GenAI, and GDS plugins |
-| **Input** | CityGML 2.0, all LOD levels (LoD0–4), implicit geometry |
+| **Input** | CityGML 2.0 and 3.0, all LOD levels (LoD0–4), implicit geometry; CityGML 1.0 after `pykci upgrade-citygml` |
+| **Output** | CityGML 2.0 or 3.0, 3D Tiles, HTML viewers |
 | **3D output** | OGC 3D Tiles 1.1 (GLB + `tileset.json`), viewable in CesiumJS |
 | **Viewers** | Three.js (from a CSV of IDs) · vis-network (full graph) · CesiumJS (3D + graph overlay) |
 | **NL queries** | LangChain → Cypher, model-agnostic - Ollama (private, on-premise) or Anthropic Claude (`ANTHROPIC_API_KEY`) |
@@ -155,11 +158,12 @@ docker compose down -v
 ### Python dependencies
 
 ```bash
-pip install lxml neo4j pyproj mapbox-earcut numpy
-pip install shapely                                                        # required for ingest_osm.py; also cleans window/door holes in 3D Tiles
+pip install lxml neo4j pyproj mapbox-earcut numpy shapely                  # the pipeline (pip install -e . installs these)
 pip install langchain langchain-community langchain-ollama langchain-neo4j  # NL queries (local)
 pip install langchain-anthropic                                            # NL queries (Claude)
 ```
+
+`pip install -e ".[llm]"` installs the packages of the NL queries with pykci.
 
 For the Claude backend, set an API key: `export ANTHROPIC_API_KEY=sk-ant-...` (PowerShell: `$env:ANTHROPIC_API_KEY = "sk-ant-..."`).
 
@@ -218,15 +222,17 @@ The **Graph Data Science** JAR is not bundled (its license restricts redistribut
 python ingest_citygml.py path/to/file.gml
 ```
 
-Parses a CityGML 2.0 file and writes all supported modules into Neo4j. The script is **idempotent** - re-running merges into existing nodes via `MERGE … SET` without creating duplicates. Works for any CityGML dataset; CRS, codes, LOD level, and attribute names are all read from the file at runtime.
+Parses a CityGML 2.0 or 3.0 file (3.0: [CITYGML3.md](CITYGML3.md)) and writes all supported modules into Neo4j. The script is **idempotent** - re-running merges into existing nodes via `MERGE … SET` without creating duplicates. Works for any CityGML dataset; CRS, codes, LOD level, and attribute names are all read from the file at runtime.
 
 **Input:** a CityGML 2.0 or 3.0 file, or a folder of tiles that become one Dataset (`--dataset-name`). CityGML 1.0 is refused before anything is written, with the files named; convert them first with `pykci upgrade-citygml <files or folder> --out <folder>` (some official releases are still 1.0, e.g. Hamburg's LoD2-DE of 2026). The `District` and `City` come from the `Gemeindeschluessel` (see [GRAPH.md](GRAPH.md)), else from the file name.
 
-**Supported CityGML modules:** Building, Transportation (Road, Railway, Track, Square), Vegetation (SolitaryVegetationObject, PlantCover), WaterBody, LandUse, CityFurniture, Relief, Bridge, Tunnel, CityObjectGroup.
+**Supported CityGML modules:** Building, Transportation (Road, Railway, Track, Square), Vegetation (SolitaryVegetationObject, PlantCover), WaterBody, LandUse, CityFurniture, Relief, Bridge, Tunnel, CityObjectGroup. CityGML 3.0 adds its own classes, such as the transportation spaces (Section, Intersection, TrafficSpace) and the construction elements; [CITYGML3.md](CITYGML3.md) lists them.
+
+**One source among several.** A dataset that is not the official city model says what it is: `--dataset-name` names its Dataset, `--source-type` (e.g. `reconstructed`) with `--method` and `--method-version` records where its values come from, `--rtree-layer` gives it a spatial layer of its own, and `--id-prefix` an id space of its own when its `gml:id`s could clash with another source's. `pykci ingest-citygml --help` lists all options.
 
 **After writing feature nodes the script also:**
 
-- Registers all features in the **Neo4j Spatial R-tree** index (layer `features`)
+- Registers all features in the **Neo4j Spatial R-tree** index (layer `features`, or the one `--rtree-layer` names)
 - Creates a `building_embeddings` **vector index** and encodes `Building.description` via the GenAI plugin (requires `NEO4J_GENAI_KEY`)
 - Creates **`NEARBY_BUILDING`** edges (100 m radius, R-tree accelerated)
 - Runs **GDS Louvain** community detection and writes `community_id` onto each `Building` node
@@ -246,17 +252,35 @@ Enriches the graph with OpenStreetMap data over the same area. Reads the target 
 
 Output: `OsmFeature` nodes + `ENRICHED_BY`/`HAS_POI` edges in Neo4j + `output/<stem>_osm_summary.md`
 
+### 1c · ML roof materials (optional)
+
+```bash
+python ingest_roof_materials.py input/geojson/<predictions>.geojson     # pykci ingest-roofmats …
+```
+
+Attaches an ML classifier's per-building roof-material predictions, matched by the building's `gml:id`, as the *ML-predicted* layer: `predicted_roof_material*` keys with the model's confidence, next to the official values. See **[ROOF_MATERIAL_INGESTION.md](ROOF_MATERIAL_INGESTION.md)** for the input files and the keys.
+
+### 1d · Reconstructed LoD3 facades (optional)
+
+```bash
+python enrich_lod3_facades.py path/to/lod3.gml --dataset <dataset>
+python enrich_lod3_facades.py path/to/lod3.gml --fix-only               # only repair the file
+```
+
+Folds a CityGML 2.0 LoD3 facade model (walls with windows and doors) into the buildings of an existing graph as a *reconstructed* overlay (`HAS_LOD3_FACADE`): the official LoD2 surfaces stay untouched, and the facades are indexed in their own `lod3_features` layer. See **[LOD3_FACADE_INTEGRATION.md](LOD3_FACADE_INTEGRATION.md)** for the method.
+
 ### 2 · Export Neo4j → CityGML
 
 ```bash
 python export_citygml.py
+python export_citygml.py --version 3
 ```
 
-Reconstructs a CityGML 2.0 file from the graph, covering all ingested modules. Geometry, bounding boxes, `creationDate`, `gen:stringAttribute` values (original CamelCase names preserved), `externalReference`, LOD solids, boundary surfaces, and terrain intersections are all restored.
+Reconstructs a CityGML 2.0 file from the graph, covering all ingested modules. Geometry, bounding boxes, `creationDate`, `gen:stringAttribute` values (original CamelCase names preserved), `externalReference`, LOD solids, boundary surfaces, and terrain intersections are all restored. With `--version 3` the file is CityGML 3.0; data that only 3.0 can hold is listed in a loss report when written as 2.0 ([CITYGML3.md](CITYGML3.md)).
 
 Instead of a whole Dataset: `--ids` / `--ids-file` (these features), `--bbox` (an area), or `--source-file <file>` / `--each-source-file --out <dir>`, which rebuild the files a Dataset was ingested from, e.g. the tiles of a tiled Dataset (see [GRAPH.md](GRAPH.md)).
 
-Output: `output/citygml/<stem>_export.gml`
+Output: `output/citygml/<stem>_export.gml` (3.0: `<stem>_export_v3.gml`)
 
 ### 3 · Export CityGML → 3D Tiles
 
@@ -489,6 +513,23 @@ Extracts one ground-level footprint polygon per building and writes a single Geo
 
 By default every footprint is **reprojected to WGS84** so datasets from different cities line up in one file — GML axis order is normalised and non-metric heights (e.g. NYC's EPSG:2263 feet) are scaled to metres, reusing the same `srsName` resolution as `ingest_citygml.py`. The resolved `source_crs` and `target_crs` are recorded as top-level members of the GeoJSON. Use `--keep-source-crs` for raw source coordinates or `--target-crs EPSG:N` to pick another target. See **[`tools/CITYGML_BUILDING_FOOTPRINT_EXTRACTION.md`](tools/CITYGML_BUILDING_FOOTPRINT_EXTRACTION.md)** for the full rationale.
 
+### CityGML 1.0 → 2.0
+
+```bash
+pykci upgrade-citygml input/citygml/old_release --out input/citygml/old_release_v2
+```
+
+Rewrites the namespaces of CityGML 1.0 files (a file or a folder) to 2.0, which `ingest-citygml` reads; the ingest refuses 1.0 and names this command.
+
+### Offline XSD validation
+
+```bash
+pykci validate-citygml --setup                  # once: the OGC schema bundle into ~/.cache/pykci
+pykci validate-citygml path/to/file.gml
+```
+
+Validates CityGML 2.0 and 3.0 files against the OGC schemas without a network connection.
+
 ---
 
 ## Graph model
@@ -513,6 +554,8 @@ CityGML 2.0 defines 14 modules. 10 are ingested; the remaining 4 are not stored 
 | Generics | - | gen:*Attribute values stored on feature nodes | - |
 | TexturedSurface | - | deprecated in CityGML 2.0 | - |
 | Core | - | abstract base types, not stored directly | - |
+
+CityGML 3.0 data uses the same nodes and relationships wherever both versions have the concept, so 3.0 buildings make the same graph as 2.0 buildings; what only 3.0 has (transportation spaces, storeys, construction elements, appearances, relations) gets nodes and edges of its own, listed in [CITYGML3.md](CITYGML3.md) and [GRAPH.md](GRAPH.md).
 
 All concrete feature types (`Building` + all `CityObject` subtypes) that carry a `gml:boundedBy` envelope are registered in the **Neo4j Spatial R-tree** (layer `features`) after ingestion, enabling `spatial.bbox`, `spatial.intersects`, and `spatial.withinDistance` queries across the entire dataset.
 
@@ -710,16 +753,21 @@ pykci/
 ├── eval/                 ← QA harness: round-trip fidelity + GML inventory
 │   └── tool_comparison/  ← pykci vs 3DCityKG vs 3DCityDB benchmark (report + run_benchmark.sh)
 ├── resources/            ← project logo and brand assets
-├── ingest_citygml.py     ← CityGML → Neo4j                      ┐
-├── ingest_osm.py         ← OpenStreetMap → Neo4j enrichment     │ the script names of this README:
-├── export_citygml.py     ← Neo4j → CityGML                      │ each file forwards to its module
-├── build_3dtiles.py      ← CityGML → 3D Tiles                   │ in src/pykci (_pykci_shim.py), so
+├── ingest_citygml.py     ← CityGML 2.0 / 3.0 → Neo4j            ┐
+├── ingest_osm.py         ← OpenStreetMap → Neo4j enrichment     │ the script names of this README
+├── ingest_roof_materials.py  ← ML roof materials → Neo4j        │ (and the other step scripts at the
+├── enrich_lod3_facades.py    ← LoD3 facades → Neo4j overlay     │ root): each file forwards to its
+├── export_citygml.py     ← Neo4j → CityGML 2.0 / 3.0            │ module in src/pykci
+├── build_3dtiles.py      ← CityGML → 3D Tiles                   │ (_pykci_shim.py), so
 ├── build_graph_pointcloud.py  ← Neo4j graph → 3D Tiles point-cloud │ `python <script>.py …` works from
 ├── export_roofmat_footprints.py  ← Neo4j → 2D footprint map     ┘ a checkout without installing
 ├── GRAPH.md              ← Full graph schema, Cypher rules, ALKIS codes
+├── CITYGML3.md           ← CityGML 3.0: codec, graph model, 2.0 ↔ 3.0 mapping, tests
 ├── CLI.md                ← The `pykci` command line and the library use
 ├── TESTING.md            ← The test suite and what it asks of a change
 ├── OSM_INTEGRATION.md    ← OSM enrichment concept, matching & schema
+├── ROOF_MATERIAL_INGESTION.md  ← ML roof materials: input, keys, provenance
+├── LOD3_FACADE_INTEGRATION.md  ← LoD3 facades: method and overlay
 ├── CYPHER.md             ← Cypher 25 + Neo4j Spatial reference
 └── README.md
 ```
@@ -731,7 +779,10 @@ pykci/
 | File | Audience | Contents |
 | ---- | -------- | -------- |
 | [`GRAPH.md`](GRAPH.md) | Agents / developers | Full graph schema, ingestion rules, ALKIS codes, Cypher examples |
+| [`CITYGML3.md`](CITYGML3.md) | Developers | CityGML 3.0: codec architecture, what 3.0 adds to the graph, the 2.0 ↔ 3.0 mapping and its loss policy, command line, tests, limitations |
 | [`OSM_INTEGRATION.md`](OSM_INTEGRATION.md) | Agents / developers | OSM enrichment: data model, semantic mapping, 1:1/1:n/n:1/n:m footprint matching, provenance schema, `ingest_osm.py` code map |
+| [`ROOF_MATERIAL_INGESTION.md`](ROOF_MATERIAL_INGESTION.md) | Developers | ML roof-material predictions: input files, matching by `gml:id`, keys and provenance |
+| [`LOD3_FACADE_INTEGRATION.md`](LOD3_FACADE_INTEGRATION.md) | Developers | Reconstructed LoD3 facades: repair of the input, the overlay on the official buildings, provenance |
 | [`CYPHER.md`](CYPHER.md) | Agents / LLM (injected) | Cypher 25 + Neo4j Spatial plugin reference |
 | [`CLI.md`](CLI.md) | Users / developers | The `pykci` command line, options for programs that drive pykci, use as a library |
 | [`TESTING.md`](TESTING.md) | Developers | The test suite: what is tested where, the test database, snapshots, what a new command, module or schema element needs |
